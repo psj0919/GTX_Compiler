@@ -21,17 +21,17 @@ import torch.nn.functional as F
 from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.quantization import quantize_tensors
 from gtx_shared.utils import GtxOption
-import utils as py_utils
+import gtx_utils as py_utils
 from gtx_shared.utils import gtx_KEYS, GLOBAL_MAP
 
-__all__ = ["Hardsigmoid"]
+__all__ = ["hardsigmoid"]
 
 
-class deephi_Hardsigmoid(torch.nn.Module):
-    r"""DeePhi Conv2d operation, support float and double"""
+class Hardsigmoid(torch.nn.Module):
+    r"""Hardsigmoid operation, support float and double"""
 
     def __init__(self, inplace=False, *args, **kwards):
-        super(deephi_Hardsigmoid, self).__init__()
+        super(Hardsigmoid, self).__init__()
         self.quant_mode, self.quantizer = maybe_get_quantizer()
         self.node = None
         self.inplace = inplace
@@ -59,5 +59,5 @@ class deephi_Hardsigmoid(torch.nn.Module):
 
 
 @py_utils.register_quant_op
-def Hardsigmoid(*args, **kwargs):
-    return deephi_Hardsigmoid(*args, **kwargs)
+def hardsigmoid(*args, **kwargs):
+    return Hardsigmoid(*args, **kwargs)

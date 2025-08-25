@@ -21,18 +21,18 @@ import torch.nn.functional as F
 from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.quantization import quantize_tensors
 from gtx_shared.utils import GtxOption
-import utils as py_utils
+import gtx_utils as py_utils
 from .fix_ops import fake_quantize_per_tensor
 from gtx_shared.utils import gtx_KEYS, GLOBAL_MAP
 
-__all__ = ["Hardswish"]
+__all__ = ["hardswish"]
 
 
-class deephi_Hardswish(torch.nn.Module):
-    r"""DeePhi Conv2d operation, support float and double"""
+class Hardswish(torch.nn.Module):
+    r"""Hardswish operation, support float and double"""
 
     def __init__(self, inplace=False, *args, **kwards):
-        super(deephi_Hardswish, self).__init__()
+        super(Hardswish, self).__init__()
         self.quant_mode, self.quantizer = maybe_get_quantizer()
         self.node = None
         self.inplace = inplace
@@ -72,5 +72,5 @@ class deephi_Hardswish(torch.nn.Module):
 
 
 @py_utils.register_quant_op
-def Hardswish(*args, **kwargs):
-    return deephi_Hardswish(*args, **kwargs)
+def hardswish(*args, **kwargs):
+    return Hardswish(*args, **kwargs)

@@ -22,19 +22,19 @@ from gtx_shared.utils import GtxOption, GtxScreenLogger, QError
 from gtx_shared.quantization import kernel_need_quant
 from gtx_shared.quantization import quantize_tensors
 from gtx_shared.quantization import maybe_get_quantizer
-import utils as py_utils
+import gtx_utils as py_utils
 import torch.nn.functional as F
 from utils import Const
 from .fix_ops import GtxISqrt
 
-__all__ = ["InstanceNorm"]
+__all__ = ["instanceNorm"]
 
 
-class deephi_InstanceNorm(torch.nn.modules.instancenorm._InstanceNorm):
-    r"""DeePhi instancenorm operation, support float and double"""
+class InstanceNorm(torch.nn.modules.instancenorm._InstanceNorm):
+    r"""InstanceNorm operation, support float and double"""
 
     def __init__(self, *args, **kwards):
-        super(deephi_InstanceNorm, self).__init__(*args, **kwards)
+        super(InstanceNorm, self).__init__(*args, **kwards)
         self.params_name = None
         self.node = None
         self.quant_mode, self.quantizer = maybe_get_quantizer()
@@ -266,5 +266,5 @@ class deephi_InstanceNorm(torch.nn.modules.instancenorm._InstanceNorm):
 
 
 @py_utils.register_quant_op
-def InstanceNorm(*args, **kwargs):
-    return deephi_InstanceNorm(*args, **kwargs)
+def instanceNorm(*args, **kwargs):
+    return InstanceNorm(*args, **kwargs)

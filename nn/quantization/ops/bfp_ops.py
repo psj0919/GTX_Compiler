@@ -18,7 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from nn.quantization.ops import quantize_ops
-from utils import onnx_utils
+from gtx_utils import onnx_utils
 
 
 def _get_exponent_v1(tensor, epsilon=2**-23):

@@ -25,37 +25,37 @@ import copy
 import numpy as np
 from gtx_shared.utils import GtxOption, GtxScreenLogger
 from nn.utils.decorator import pre_and_post_process_f16_tensor
-from utils.torch_utils import CmpFlag, compare_torch_version
+from gtx_utils.torch_utils import CmpFlag, compare_torch_version
 
 # from torch.utils.cpp_extension import load
 __all__ = [
-    "GtxFixNeuron",
-    "GtxRound",
-    "GtxDiffsFixPos",
-    "GtxDiffsFixPosChannel",
-    "GtxSigmoidTableLookup",
-    "GtxSigmoidTableLookupAIE2",
-    "GtxSigmoidSimulation",
-    "GtxTanhTableLookup",
-    "GtxTanhTableLookupAIE2",
-    "GtxTanhSimulation",
+    "FixNeuron",
+    "Round",
+    "DiffsFixPos",
+    "DiffsFixPosChannel",
+    "SigmoidTableLookup",
+    "SigmoidTableLookupAIE2",
+    "SigmoidSimulation",
+    "TanhTableLookup",
+    "TanhTableLookupAIE2",
+    "TanhSimulation",
     "FixNeuronWithBackward",
     "fake_quantize_per_tensor",
-    "GtxSoftmaxExpApproximate",
-    "GtxSoftmaxLOD",
-    "GtxSoftmaxSimulationPart1",
-    "GtxSoftmaxSimulationPart2",
+    "SoftmaxExpApproximate",
+    "SoftmaxLOD",
+    "SoftmaxSimulationPart1",
+    "SoftmaxSimulationPart2",
     "fake_quantize_per_channel",
     "fake_quantize_per_tensor_tensorrt",
     "fake_quantize_per_channel_tensorrt",
-    "GtxExpApprAIE2",
-    "GtxInverseAIE2",
-    "GtxLogSoftmaxFastLn",
-    "GtxLogSoftmaxSub",
-    "GtxAIESqrt",
-    "GtxAIEISqrt",
-    "GtxISqrt",
-    "GtxLayernormInvSqrt",
+    "ExpApprAIE2",
+    "InverseAIE2",
+    "LogSoftmaxFastLn",
+    "LogSoftmaxSub",
+    "AIESqrt",
+    "AIEISqrt",
+    "ISqrt",
+    "LayernormInvSqrt",
 ]
 
 
@@ -106,14 +106,14 @@ class FixNeuronWithBackward(torch.nn.Module):
 
 
 @pre_and_post_process_f16_tensor
-def GtxRound(Tinput, Toutput, method=2):
+def Round(Tinput, Toutput, method=2):
     device_id = 1 if Tinput.device == torch.device("cpu") else 0
     torch.ops.vai.Round(Tinput, Toutput, method, device_id)
     return Toutput
 
 
 @pre_and_post_process_f16_tensor
-def GtxFixNeuron(Tinput, Toutput, maxamp, method=2):
+def FixNeuron(Tinput, Toutput, maxamp, method=2):
     valmax, valamp = maxamp[0], maxamp[1]
     valmin = -valmax
     valmax = valmax - 1
@@ -167,7 +167,7 @@ def GtxFixNeuron(Tinput, Toutput, maxamp, method=2):
 
 
 @pre_and_post_process_f16_tensor
-def GtxDiffsFixPos(Tinput, Tbuffer, Tfixpos, bit_width=8, range=5, method=2):
+def DiffsFixPos(Tinput, Tbuffer, Tfixpos, bit_width=8, range=5, method=2):
     device_id = 1 if Tinput.device == torch.device("cpu") else 0
     Tinput = clone_view_tensor(Tinput)
     if support_onnx_export():
@@ -175,13 +175,14 @@ def GtxDiffsFixPos(Tinput, Tbuffer, Tfixpos, bit_width=8, range=5, method=2):
             Tinput, Tbuffer, Tfixpos, bit_width, range, method, device_id
         )
     else:
+        #! TODO: gtx_kernels is not defined
         gtx_kernels.DiffsFixPos(
             Tinput, Tbuffer, Tfixpos, bit_width, range, method, device_id
         )
 
 
 @pre_and_post_process_f16_tensor
-def GtxDiffsFixPosChannel(
+def DiffsFixPosChannel(
     Tinput, Tbuffer, Tfixpos, axis, bit_width=8, scope=5, method=2
 ):
     device_id = 1 if Tinput.device == torch.device("cpu") else 0

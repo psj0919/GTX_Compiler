@@ -18,7 +18,7 @@ import functools
 import torch
 from gtx_shared.base import GLOBAL_MAP, gtx_KEYS
 from gtx_shared.utils import GtxScreenLogger, QWarning
-from utils.module_util import to_device, collect_input_devices, get_flattened_input_args
+from gtx_utils.module_util import to_device, collect_input_devices, get_flattened_input_args
 
 
 def forward_processor(forward_func):

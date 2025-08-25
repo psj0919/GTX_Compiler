@@ -22,16 +22,16 @@ from gtx_shared.utils import GtxOption, GtxScreenLogger
 from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.quantization import quantize_tensors
 from .quant_noise import eval_qnoise
-import utils as py_utils
+import gtx_utils as py_utils
 
-__all__ = ["Clamp"]
+__all__ = ["clamp"]
 
 
-class deephi_clamp(torch.nn.Module):
-    r"""DeePhi clamp operation, support float and double"""
+class Clamp(torch.nn.Module):
+    r"""Clamp operation, support float and double"""
 
     def __init__(self, *args, **kwards):
-        super(deephi_clamp, self).__init__(*args, **kwards)
+        super(Clamp, self).__init__(*args, **kwards)
         self.quant_mode, self.quantizer = maybe_get_quantizer()
         self.node = None
 
@@ -74,8 +74,8 @@ class deephi_clamp(torch.nn.Module):
 
 
 @py_utils.register_quant_op
-def Clamp(*args, **kwargs):
+def clamp(*args, **kwargs):
     quant_mode, _ = maybe_get_quantizer()
     if quant_mode == None:
         return torch.clamp(*args, **kwargs)
-    return deephi_clamp(*args, **kwargs)
+    return Clamp(*args, **kwargs)

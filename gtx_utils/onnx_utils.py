@@ -15,7 +15,7 @@
 #
 import torch
 
-from utils.torch_utils import CmpFlag, compare_torch_version
+from gtx_utils.torch_utils import CmpFlag, compare_torch_version
 
 
 def get_opset_version():

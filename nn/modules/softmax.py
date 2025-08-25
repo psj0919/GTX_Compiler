@@ -30,17 +30,17 @@ from .fix_ops import (
     GtxExpApprAIE2,
     GtxInverseAIE2,
 )
-import utils as py_utils
+import gtx_utils as py_utils
 from nn.nonlinear import approx
 
-__all__ = ["Softmax"]
+__all__ = ["softmax"]
 
 
-class deephi_Softmax(torch.nn.modules.Softmax):
-    r"""DeePhi Softmax operation"""
+class Softmax(torch.nn.modules.Softmax):
+    r"""Softmax operation"""
 
     def __init__(self, dim=None):
-        super(deephi_Softmax, self).__init__()
+        super(Softmax, self).__init__()
         self.dim = dim
         self.quant_mode, self.quantizer = maybe_get_quantizer()
         self.node = None
@@ -226,8 +226,8 @@ class deephi_Softmax(torch.nn.modules.Softmax):
 
 
 @py_utils.register_quant_op
-def Softmax(*args, **kwargs):
+def softmax(*args, **kwargs):
     quant_mode, _ = maybe_get_quantizer()
     if quant_mode == None:
         return torch.nn.Softmax(*args, **kwargs)
-    return deephi_Softmax(*args, **kwargs)
+    return Softmax(*args, **kwargs)

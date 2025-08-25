@@ -4,7 +4,7 @@ import sys
 import torch
 from torch.utils.cpp_extension import load, _import_module_from_library
 from gtx_shared.utils import create_work_dir, GtxScreenLogger, QError, QWarning
-from utils.torch_utils import CmpFlag, compare_torch_version
+from gtx_utils.torch_utils import CmpFlag, compare_torch_version
 
 _cur_dir = os.path.dirname(os.path.realpath(__file__))
 _aot = False

@@ -1,7 +1,7 @@
 import torch
 
 
-class deephi_sigmoid_table(object):
+class SigmoidTable(object):
 
     __table = torch.tensor(
         [

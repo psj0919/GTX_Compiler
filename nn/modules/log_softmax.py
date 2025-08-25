@@ -21,16 +21,16 @@ from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.quantization import quantize_tensors
 from gtx_shared.utils import GtxOption
 from .fix_ops import GtxExpApprAIE2, GtxLogSoftmaxFastLn, GtxLogSoftmaxSub
-import utils as py_utils
+import gtx_utils as py_utils
 
-__all__ = ["LogSoftmax"]
+__all__ = ["logSoftmax"]
 
 
-class deephi_LogSoftmax(torch.nn.modules.LogSoftmax):
-    r"""DeePhi LogSoftmax operation"""
+class LogSoftmax(torch.nn.modules.LogSoftmax):
+    r"""LogSoftmax operation"""
 
     def __init__(self, dim=None):
-        super(deephi_LogSoftmax, self).__init__()
+        super(LogSoftmax, self).__init__()
         self.dim = dim
         self.quant_mode, self.quantizer = maybe_get_quantizer()
         self.node = None
@@ -93,8 +93,8 @@ class deephi_LogSoftmax(torch.nn.modules.LogSoftmax):
 
 
 @py_utils.register_quant_op
-def LogSoftmax(*args, **kwargs):
+def logSoftmax(*args, **kwargs):
     quant_mode, _ = maybe_get_quantizer()
     if quant_mode == None:
         return torch.nn.LogSoftmax(*args, **kwargs)
-    return deephi_LogSoftmax(*args, **kwargs)
+    return LogSoftmax(*args, **kwargs)

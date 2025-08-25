@@ -18,16 +18,16 @@ import torch
 from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.utils import GtxOption
 from gtx_shared.quantization import quantize_tensors
-import utils as py_utils
+import gtx_utils as py_utils
 
-__all__ = ["ReLU"]
+__all__ = ["relu"]
 
 
-class deephi_ReLU(torch.nn.ReLU):
-    r"""DeePhi ReLU operation"""
+class ReLU(torch.nn.ReLU):
+    r"""ReLU operation"""
 
     def __init__(self, *args, **kwargs):
-        super(deephi_ReLU, self).__init__(*args, **kwargs)
+        super(ReLU, self).__init__(*args, **kwargs)
         self.quant_mode, self.quantizer = maybe_get_quantizer()
         self.node = None
 
@@ -39,8 +39,8 @@ class deephi_ReLU(torch.nn.ReLU):
 
 
 @py_utils.register_quant_op
-def ReLU(*args, **kwargs):
+def relu(*args, **kwargs):
     # quant_mode,_ = maybe_get_quantizer()
     # if quant_mode==None:
     #    return
-    return deephi_ReLU(*args, **kwargs)
+    return ReLU(*args, **kwargs)

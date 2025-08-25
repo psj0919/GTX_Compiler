@@ -19,19 +19,19 @@ from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.utils import GtxOption
 from gtx_shared.quantization import kernel_need_quant
 from gtx_shared.quantization import quantize_tensors
-import utils as py_utils
+import gtx_utils as py_utils
 import numpy as np
 from utils import Const
 from .fix_ops import GtxISqrt, GtxAIEISqrt
 
-__all__ = ["LayerNorm"]
+__all__ = ["layerNorm"]
 
 
-class deephi_LayerNorm(torch.nn.LayerNorm):
-    r"""DeePhi ReLU operation"""
+class LayerNorm(torch.nn.LayerNorm):
+    r"""LayerNorm operation"""
 
     def __init__(self, *args, **kwargs):
-        super(deephi_LayerNorm, self).__init__(*args, **kwargs)
+        super(LayerNorm, self).__init__(*args, **kwargs)
         self.quant_mode, self.quantizer = maybe_get_quantizer()
         self.node = None
         self.param_quantized = False
@@ -327,8 +327,8 @@ class deephi_LayerNorm(torch.nn.LayerNorm):
 
 
 @py_utils.register_quant_op
-def LayerNorm(*args, **kwargs):
+def layerNorm(*args, **kwargs):
     quant_mode, _ = maybe_get_quantizer()
     if quant_mode is None:
         return torch.nn.LayerNorm(*args, **kwargs)
-    return deephi_LayerNorm(*args, **kwargs)
+    return LayerNorm(*args, **kwargs)

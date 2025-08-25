@@ -22,17 +22,17 @@ from gtx_shared.utils import GtxOption, GtxScreenLogger
 from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.quantization import quantize_tensors
 from .quant_noise import eval_qnoise
-import utils as py_utils
+import gtx_utils as py_utils
 import torch.nn.functional as F
 
-__all__ = ["Mish"]
+__all__ = ["mish"]
 
 
-class deephi_Mish(torch.nn.Mish):
-    r"""DeePhi Mish operation, support float and double"""
+class Mish(torch.nn.Mish):
+    r"""Mish operation, support float and double"""
 
     def __init__(self, *args, **kwards):
-        super(deephi_Mish, self).__init__(*args, **kwards)
+        super(Mish, self).__init__(*args, **kwards)
         self.node = None
         self.quant_mode, self.quantizer = maybe_get_quantizer()
 
@@ -45,8 +45,8 @@ class deephi_Mish(torch.nn.Mish):
 
 
 @py_utils.register_quant_op
-def Mish(*args, **kwargs):
+def mish(*args, **kwargs):
     quant_mode, _ = maybe_get_quantizer()
     if quant_mode == None:
         return torch.nn.Mish(*args, **kwargs)
-    return deephi_Mish(*args, **kwargs)
+    return Mish(*args, **kwargs)

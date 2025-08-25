@@ -23,11 +23,27 @@ from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.quantization import quantize_tensors
 from gtx_shared.quantization import quant_reluk_params
 from gtx_shared.quantization import quant_channel_scale_params
-import utils as py_utils
+import gtx_utils as py_utils
 from typing import Any, Optional, Sequence, Union
 from torch.autograd import Variable
 
-# __all__ = ["Int", "strided_slice", "Input", "slice_tensor_inplace_copy"]
+__all__ = ["int", "strided_slice", 
+           "input",
+           "quant_input", 
+           "dequant_output", 
+           "slice_tensor_inplace_copy",
+           "index",
+           "index_put_",
+           "reluk",
+           "channel_Scale",
+           "expand_as",
+           "correlation1d_Elemwise",
+           "correlation2d_Elemwise",
+           "costVolume",
+           "tupleUnpack",
+           "sub",
+           "rsub",
+           ]
 
 
 class _PrimModule(torch.nn.Module):
@@ -41,7 +57,7 @@ class _PrimModule(torch.nn.Module):
         pass
 
 
-class deephi_Int(_PrimModule):
+class Int(_PrimModule):
 
     def __init__(self):
         super().__init__()
@@ -52,11 +68,11 @@ class deephi_Int(_PrimModule):
 
 
 @py_utils.register_quant_op
-def Int(*args, **kwargs):
-    return deephi_Int(*args, **kwargs)
+def int(*args, **kwargs):
+    return Int(*args, **kwargs)
 
 
-class deephi_QuantInput(_PrimModule):
+class QuantInput(_PrimModule):
     def __init__(self):
         super().__init__()
 
@@ -89,10 +105,10 @@ class deephi_QuantInput(_PrimModule):
 
 @py_utils.register_quant_op
 def quant_input(*args, **kwargs):
-    return deephi_QuantInput(*args, **kwargs)
+    return QuantInput(*args, **kwargs)
 
 
-class deephi_DequantOutput(_PrimModule):
+class DequantOutput(_PrimModule):
     def __init__(self):
         super().__init__()
 
@@ -103,10 +119,10 @@ class deephi_DequantOutput(_PrimModule):
 
 @py_utils.register_quant_op
 def dequant_output(*args, **kwargs):
-    return deephi_DequantOutput(*args, **kwargs)
+    return DequantOutput(*args, **kwargs)
 
 
-class deephi_Input(_PrimModule):
+class Input(_PrimModule):
 
     def __init__(self):
         super().__init__()
@@ -173,11 +189,11 @@ class deephi_Input(_PrimModule):
 
 
 @py_utils.register_quant_op
-def Input(*args, **kwargs):
-    return deephi_Input(*args, **kwargs)
+def input(*args, **kwargs):
+    return Input(*args, **kwargs)
 
 
-class deephi_StridedSlice(_PrimModule):
+class StridedSlice(_PrimModule):
     def __init__(self):
         super().__init__()
 
@@ -215,10 +231,10 @@ class deephi_StridedSlice(_PrimModule):
 
 @py_utils.register_quant_op
 def strided_slice(*args, **kwargs):
-    return deephi_StridedSlice(*args, **kwargs)
+    return StridedSlice(*args, **kwargs)
 
 
-class deephi_SliceInplaceCopy(_PrimModule):
+class SliceInplaceCopy(_PrimModule):
     def __init__(self):
         super().__init__()
 
@@ -233,10 +249,10 @@ class deephi_SliceInplaceCopy(_PrimModule):
 
 @py_utils.register_quant_op
 def slice_tensor_inplace_copy(*args, **kwargs):
-    return deephi_SliceInplaceCopy(*args, **kwargs)
+    return SliceInplaceCopy(*args, **kwargs)
 
 
-class deephi_Index(_PrimModule):
+class Index(_PrimModule):
     def __init__(self):
         super().__init__()
 
@@ -262,11 +278,11 @@ class deephi_Index(_PrimModule):
 
 
 @py_utils.register_quant_op
-def Index(*args, **kwargs):
-    return deephi_Index(*args, **kwargs)
+def index(*args, **kwargs):
+    return Index(*args, **kwargs)
 
 
-class deephi_IndexInputInplace(_PrimModule):
+class IndexInputInplace(_PrimModule):
     def __init__(self):
         super().__init__()
 
@@ -280,10 +296,10 @@ class deephi_IndexInputInplace(_PrimModule):
 
 @py_utils.register_quant_op
 def index_put_(*args, **kwargs):
-    return deephi_IndexInputInplace(*args, **kwargs)
+    return IndexInputInplace(*args, **kwargs)
 
 
-class deephi_ReLUk(_PrimModule):
+class ReLUk(_PrimModule):
     def __init__(self):
         super().__init__()
 
@@ -310,11 +326,11 @@ class deephi_ReLUk(_PrimModule):
 
 
 @py_utils.register_quant_op
-def Reluk(*args, **kwargs):
-    return deephi_ReLUk(*args, **kwargs)
+def reluk(*args, **kwargs):
+    return ReLUk(*args, **kwargs)
 
 
-class deephi_ChannelScale(_PrimModule):
+class ChannelScale(_PrimModule):
     def __init__(self):
         super().__init__()
 
@@ -342,11 +358,11 @@ class deephi_ChannelScale(_PrimModule):
 
 
 @py_utils.register_quant_op
-def Channel_Scale(*args, **kwargs):
-    return deephi_ChannelScale(*args, **kwargs)
+def channel_Scale(*args, **kwargs):
+    return ChannelScale(*args, **kwargs)
 
 
-class deephi_ExpandAs(_PrimModule):
+class ExpandAs(_PrimModule):
     def __init__(self):
         super().__init__()
 
@@ -360,10 +376,10 @@ class deephi_ExpandAs(_PrimModule):
 
 @py_utils.register_quant_op
 def expand_as(*args, **kwargs):
-    return deephi_ExpandAs(*args, **kwargs)
+    return ExpandAs(*args, **kwargs)
 
 
-class deephi_Expand(_PrimModule):
+class Expand(_PrimModule):
     def __init__(self):
         super().__init__()
 
@@ -377,10 +393,10 @@ class deephi_Expand(_PrimModule):
 
 @py_utils.register_quant_op
 def expand(*args, **kwargs):
-    return deephi_Expand(*args, **kwargs)
+    return Expand(*args, **kwargs)
 
 
-class deephi_Correlation1D_Elemwise(_PrimModule):
+class Correlation1D_Elemwise(_PrimModule):
     def __init__(self):
         super().__init__()
 
@@ -415,11 +431,11 @@ class deephi_Correlation1D_Elemwise(_PrimModule):
 
 
 @py_utils.register_quant_op
-def Correlation1d_Elemwise(*args, **kwargs):
-    return deephi_Correlation1D_Elemwise(*args, **kwargs)
+def correlation1d_Elemwise(*args, **kwargs):
+    return Correlation1D_Elemwise(*args, **kwargs)
 
 
-class deephi_Correlation2D_Elemwise(_PrimModule):
+class Correlation2D_Elemwise(_PrimModule):
     def __init__(self):
         super().__init__()
 
@@ -455,11 +471,11 @@ class deephi_Correlation2D_Elemwise(_PrimModule):
 
 
 @py_utils.register_quant_op
-def Correlation2d_Elemwise(*args, **kwargs):
-    return deephi_Correlation2D_Elemwise(*args, **kwargs)
+def correlation2d_Elemwise(*args, **kwargs):
+    return Correlation2D_Elemwise(*args, **kwargs)
 
 
-class deephi_CostVolume(_PrimModule):
+class CostVolume(_PrimModule):
     def __init__(self):
         super().__init__()
 
@@ -508,11 +524,11 @@ class deephi_CostVolume(_PrimModule):
 
 
 @py_utils.register_quant_op
-def CostVolume(*args, **kwargs):
-    return deephi_CostVolume(*args, **kwargs)
+def costVolume(*args, **kwargs):
+    return CostVolume(*args, **kwargs)
 
 
-class deephi_TupleUnpack(_PrimModule):
+class TupleUnpack(_PrimModule):
 
     def __init__(self):
         super().__init__()
@@ -535,11 +551,11 @@ class deephi_TupleUnpack(_PrimModule):
 
 
 @py_utils.register_quant_op
-def TupleUnpack(*args, **kwargs):
-    return deephi_TupleUnpack(*args, **kwargs)
+def tupleUnpack(*args, **kwargs):
+    return TupleUnpack(*args, **kwargs)
 
 
-class deephi_Sub(_PrimModule):
+class Sub(_PrimModule):
     def __init__(self, reverse=False):
         super().__init__()
         self.reverse = reverse
@@ -556,10 +572,10 @@ class deephi_Sub(_PrimModule):
 
 
 @py_utils.register_quant_op
-def Sub(*args, **kwargs):
-    return deephi_Sub()
+def sub(*args, **kwargs):
+    return Sub()
 
 
 @py_utils.register_quant_op
-def Rsub(*args, **kwargs):
-    return deephi_Sub(reverse=True)
+def rsub(*args, **kwargs):
+    return Sub(reverse=True)

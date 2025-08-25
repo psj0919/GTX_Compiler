@@ -26,18 +26,18 @@ from .fix_ops import (
     GtxSigmoidSimulation,
     GtxSigmoidTableLookupAIE2,
 )
-import utils as py_utils
+import gtx_utils as py_utils
 
-__all__ = ["Sigmoid"]
+__all__ = ["sigmoid"]
 
-SIGMOID_TABLE = deephi_sigmoid_table()
+SIGMOID_TABLE = SigmoidTable()
 
 
-class deephi_Sigmoid(torch.nn.modules.Sigmoid):
-    r"""DeePhi Sigmoid operation"""
+class Sigmoid(torch.nn.modules.Sigmoid):
+    r"""Sigmoid operation"""
 
     def __init__(self):
-        super(deephi_Sigmoid, self).__init__()
+        super(Sigmoid, self).__init__()
         self.quant_mode, self.quantizer = maybe_get_quantizer()
         self.node = None
 
@@ -100,8 +100,8 @@ class deephi_Sigmoid(torch.nn.modules.Sigmoid):
 
 
 @py_utils.register_quant_op
-def Sigmoid(*args, **kwargs):
+def sigmoid(*args, **kwargs):
     quant_mode, _ = maybe_get_quantizer()
     if quant_mode is None:
         return torch.nn.Sigmoid(*args, **kwargs)
-    return deephi_Sigmoid(*args, **kwargs)
+    return Sigmoid(*args, **kwargs)

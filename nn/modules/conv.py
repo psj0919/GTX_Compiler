@@ -22,17 +22,17 @@ from gtx_shared.utils import GtxOption, GtxScreenLogger, QError, QWarning
 from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.quantization import quantize_tensors
 from .quant_noise import eval_qnoise
-import utils as py_utils
+from gtx_utils.op_register import register_quant_op
 import torch.nn.functional as F
 
-__all__ = ["Conv2d"]
+__all__ = ["conv2d"]
 
 
-class deephi_Conv2d(torch.nn.modules.conv.Conv2d):
-    r"""DeePhi Conv2d operation, support float and double"""
+class Conv2d(torch.nn.modules.conv.Conv2d):
+    r"""Conv2d operation, support float and double"""
 
     def __init__(self, *args, **kwards):
-        super(deephi_Conv2d, self).__init__(*args, **kwards)
+        super(Conv2d, self).__init__(*args, **kwards)
         self.params_name = None
         self.node = None
         self.quant_mode, self.quantizer = maybe_get_quantizer()
@@ -173,9 +173,9 @@ class deephi_Conv2d(torch.nn.modules.conv.Conv2d):
             return None
 
 
-@py_utils.register_quant_op
-def Conv2d(*args, **kwargs):
+@register_quant_op
+def conv2d(*args, **kwargs):
     quant_mode, _ = maybe_get_quantizer()
     if quant_mode == None:
         return torch.nn.Conv2d(*args, **kwargs)
-    return deephi_Conv2d(*args, **kwargs)
+    return Conv2d(*args, **kwargs)

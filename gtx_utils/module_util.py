@@ -252,10 +252,14 @@ def enable_dump_blob(model, graph=False, mode="print"):
     def print_saved_io(module):
         saved_inputs = getattr(module, inp_attr, None)
         saved_outputs = getattr(module, out_attr, None)
+        node = getattr(module, node_attr) if hasattr(module, node_attr) else None
+        module_name = (
+            getattr(module, prefix_attr) if hasattr(module, prefix_attr) else None
+        )
         if saved_inputs is None or saved_outputs is None:
             print(
                 "[WARN] No saved blob: node={}, module={}\n".format(
-                    node_name, module_name
+                    node.name, module_name
                 )
             )
             return

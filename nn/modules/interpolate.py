@@ -18,15 +18,15 @@ import torch
 
 from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.quantization import quantize_tensors
-import utils as py_utils
+import gtx_utils as py_utils
 
-__all__ = ["Interpolate"]
+__all__ = ["interpolate"]
 
 
-class deephi_Interpolate(torch.nn.Module):
+class Interpolate(torch.nn.Module):
 
     def __init__(self, *args, **kwards):
-        super(deephi_Interpolate, self).__init__(*args, **kwards)
+        super(Interpolate, self).__init__(*args, **kwards)
         self.node = None
         self.quant_mode, self.quantizer = maybe_get_quantizer()
 
@@ -45,5 +45,5 @@ class deephi_Interpolate(torch.nn.Module):
 
 
 @py_utils.register_quant_op
-def Interpolate(*args, **kwargs):
-    return deephi_Interpolate(*args, **kwargs)
+def interpolate(*args, **kwargs):
+    return Interpolate(*args, **kwargs)

@@ -20,17 +20,17 @@ from gtx_shared.utils import GtxOption, GtxScreenLogger, QWarning
 from gtx_shared.quantization import kernel_need_quant
 from gtx_shared.quantization import quantize_tensors
 import numpy as np
-import utils as py_utils
+import gtx_utils as py_utils
 from .fix_ops import GtxAIESqrt
 
 __all__ = ["sqrt"]
 
 
-class deephi_sqrt(torch.nn.Module):
-    r"""DeePhi sqrt operation"""
+class Sqrt(torch.nn.Module):
+    r"""Sqrt operation"""
 
     def __init__(self, *args, **kwargs):
-        super(deephi_sqrt, self).__init__(*args, **kwargs)
+        super(Sqrt, self).__init__(*args, **kwargs)
         self.quant_mode, self.quantizer = maybe_get_quantizer()
         self.node = None
 
@@ -67,4 +67,4 @@ class deephi_sqrt(torch.nn.Module):
 
 @py_utils.register_quant_op
 def sqrt(*args, **kwargs):
-    return deephi_sqrt(*args, **kwargs)
+    return Sqrt(*args, **kwargs)

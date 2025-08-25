@@ -17,15 +17,15 @@
 import torch
 from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.quantization import quantize_tensors
-import utils as py_utils
+import gtx_utils as py_utils
 
-__all__ = ["Mul"]
+__all__ = ["mul"]
 
 
-class deephi_Mul(torch.nn.Module):
+class Mul(torch.nn.Module):
 
     def __init__(self):
-        super(deephi_Mul, self).__init__()
+        super(Mul, self).__init__()
         self.quant_mode, self.quantizer = maybe_get_quantizer()
         self.node = None
 
@@ -38,6 +38,6 @@ class deephi_Mul(torch.nn.Module):
         return output
 
 
-# @py_utils.register_quant_op
-def Mul(*args, **kwargs):
-    return deephi_Mul(*args, **kwargs)
+@py_utils.register_quant_op
+def mul(*args, **kwargs):
+    return Mul(*args, **kwargs)

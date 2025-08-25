@@ -25,21 +25,21 @@ from gtx_shared.utils import GtxOption, GtxScreenLogger, create_work_dir
 from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.quantization import quantize_tensors
 from .quant_noise import eval_qnoise
-import utils as py_utils
+import gtx_utils.op_register as py_utils
 import torch.nn.functional as F
-from utils.torch_utils import CmpFlag, compare_torch_version
+from gtx_utils.torch_utils import CmpFlag, compare_torch_version
 
-__all__ = ["GELU"]
+__all__ = ["gelu"]
 
 
-class deephi_GELU(torch.nn.GELU):
-    r"""DeePhi GELU operation, support float and double"""
+class GELU(torch.nn.GELU):
+    r"""GELU operation, support float and double"""
 
     def __init__(self, approximate=None):
         if compare_torch_version(CmpFlag.GREATER_EQUAL, "1.12.0"):
-            super(deephi_GELU, self).__init__(approximate)
+            super(GELU, self).__init__(approximate)
         else:
-            super(deephi_GELU, self).__init__()
+            super(GELU, self).__init__()
             self.approximate = approximate
         self.node = None
         self.quant_mode, self.quantizer = maybe_get_quantizer()
@@ -87,8 +87,8 @@ class deephi_GELU(torch.nn.GELU):
 
 
 @py_utils.register_quant_op
-def GELU(*args, **kwargs):
+def gelu(*args, **kwargs):
     quant_mode, _ = maybe_get_quantizer()
     if quant_mode == None:
         return torch.nn.GELU(*args, **kwargs)
-    return deephi_GELU(*args, **kwargs)
+    return GELU(*args, **kwargs)

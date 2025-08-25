@@ -17,18 +17,18 @@
 import math
 import torch
 
-import utils as py_utils
+import gtx_utils as py_utils
 from gtx_shared.quantization import maybe_get_quantizer, quantize_tensors
 from gtx_shared.utils import GtxOption, GtxScreenLogger
 
-__all__ = ["AdaptiveAvgPool2d"]
+__all__ = ["adaptiveAvgPool2d"]
 
 
-class deephi_AdaptiveAvgPool2d(torch.nn.modules.AdaptiveAvgPool2d):
-    r"""DeePhi Conv2d operation, support float and double"""
+class AdaptiveAvgPool2d(torch.nn.modules.AdaptiveAvgPool2d):
+    r"""AdaptiveAvgPool2d operation, support float and double"""
 
     def __init__(self, *args, **kwards):
-        super(deephi_AdaptiveAvgPool2d, self).__init__(*args, **kwards)
+        super(AdaptiveAvgPool2d, self).__init__(*args, **kwards)
         self.node = None
         self.quant_mode, self.quantizer = maybe_get_quantizer()
 
@@ -84,8 +84,8 @@ class deephi_AdaptiveAvgPool2d(torch.nn.modules.AdaptiveAvgPool2d):
 
 
 @py_utils.register_quant_op
-def AdaptiveAvgPool2d(*args, **kwargs):
+def adaptiveAvgPool2d(*args, **kwargs):
     quant_mode, _ = maybe_get_quantizer()
     if quant_mode is None or GtxOption.gtx_quant_off.value:
         return torch.nn.AdaptiveAvgPool2d(*args, **kwargs)
-    return deephi_AdaptiveAvgPool2d(*args, **kwargs)
+    return AdaptiveAvgPool2d(*args, **kwargs)

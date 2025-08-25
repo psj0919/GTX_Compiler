@@ -62,7 +62,7 @@ def sqrt(input):
 
 # aie kernel: 1/sqrt(x) with Newton iteration
 def isqrt(input):
-    from bfloat16 import bfloat16
+    from gtx_utils.bfloat16 import bfloat16
 
     def downshift_onebit(i):  # input: int16, numpy ndarray
         x = (i >> 1).reshape(-1)

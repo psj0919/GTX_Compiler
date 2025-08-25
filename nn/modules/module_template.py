@@ -32,8 +32,7 @@ def creat_module(torch_op_type, torch_op_attr, *args, **kwargs):
         # creat module for module
         module_cls = getattr(torch.nn, torch_op_type, None)
         if module_cls:
-
-            class DeephiModule(module_cls):
+            class Module(module_cls):
                 r"""quantizable operation"""
 
                 def __init__(self, *args, **kwargs):
@@ -97,7 +96,7 @@ def creat_module(torch_op_type, torch_op_attr, *args, **kwargs):
                         output = quantize_tensors([output], self.node)[0]
                     return output
 
-            return DeephiModule(*args, **kwargs)
+            return Module(*args, **kwargs)
 
     elif torch_op_attr.op_class_type in [
         TorchOpClassType.NN_FUNCTION,
@@ -115,7 +114,7 @@ def creat_module(torch_op_type, torch_op_attr, *args, **kwargs):
         )
         if caller:
 
-            class DeephiFuncModule(torch.nn.Module):
+            class FuncModule(torch.nn.Module):
                 r"""quantizable operation"""
 
                 def __init__(self, caller, *args, **kwards):
@@ -165,13 +164,13 @@ def creat_module(torch_op_type, torch_op_attr, *args, **kwargs):
 
                     return output
 
-            return DeephiFuncModule(caller, *args, **kwargs)
+            return FuncModule(caller, *args, **kwargs)
 
     elif torch_op_attr.op_class_type == TorchOpClassType.TENSOR:
         # create module for method
         if getattr(torch.Tensor, torch_op_type, None):
 
-            class DeephiTensorModule(torch.nn.Module):
+            class TensorModule(torch.nn.Module):
                 r"""quantizable operation"""
 
                 def __init__(self, op_type, *args, **kwards):
@@ -204,14 +203,14 @@ def creat_module(torch_op_type, torch_op_attr, *args, **kwargs):
 
                     return output
 
-            return DeephiTensorModule(torch_op_type, *args, **kwargs)
+            return TensorModule(torch_op_type, *args, **kwargs)
     elif torch_op_attr.op_class_type in [
         TorchOpClassType.TORCH_SCRIPT_BUILTIN_FUNCTION,
         TorchOpClassType.MATH_BUILTIN_FUNCTION,
         TorchOpClassType.GLOBAL_BUILTIN_FUNCTION,
     ]:
 
-        class DeephiBuiltinFuncModule(torch.nn.Module):
+        class BuiltinFuncModule(torch.nn.Module):
 
             def __init__(self):
                 super().__init__()
@@ -248,11 +247,11 @@ def creat_module(torch_op_type, torch_op_attr, *args, **kwargs):
 
                 return output
 
-        return DeephiBuiltinFuncModule()
+        return BuiltinFuncModule()
 
     elif torch_op_attr.op_class_type == TorchOpClassType.CUSTOM_FUNCTION:
 
-        class DeephiCustomModule(torch.nn.Module):
+        class CustomModule(torch.nn.Module):
             def __init__(self):
                 super().__init__()
                 self.node = None
@@ -271,10 +270,10 @@ def creat_module(torch_op_type, torch_op_attr, *args, **kwargs):
                     output = quantize_tensors([output], self.node)[0]
                 return output
 
-        return DeephiCustomModule()
+        return CustomModule()
     elif torch_op_attr.op_class_type == TorchOpClassType.AUTO_INFER_OP:
 
-        class DeephiBuiltinFuncModule(torch.nn.Module):
+        class BuiltinFuncModule(torch.nn.Module):
 
             def __init__(self):
                 super().__init__()
@@ -294,7 +293,7 @@ def creat_module(torch_op_type, torch_op_attr, *args, **kwargs):
                     output = quantize_tensors([output], self.node)[0]
                 return output
 
-        return DeephiBuiltinFuncModule()
+        return BuiltinFuncModule()
 
     else:
         raise RuntimeError("Unkown op type:{torch_op_type}")
@@ -306,7 +305,7 @@ def Module(gtx_type, *args, **kwargs):
     return creat_module(torch_op_type, torch_op_attr, *args, **kwargs)
 
 
-class DeephiCallFunctionModule(torch.nn.Module):
+class CallFunctionModule(torch.nn.Module):
     r"""quantizable operation"""
 
     def __init__(self, caller):

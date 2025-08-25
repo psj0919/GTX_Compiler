@@ -18,16 +18,16 @@ import torch
 from gtx_shared.utils import GtxOption
 from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.quantization import quantize_tensors
-import utils as py_utils
+import gtx_utils as py_utils
 
 __all__ = ["embedding"]
 
 
-class deephi_Embedding(torch.nn.modules.sparse.Embedding):
-    r"""DeePhi transpose operation, support float and double"""
+class Embedding(torch.nn.modules.sparse.Embedding):
+    r"""Embedding operation, support float and double"""
 
     def __init__(self, *args, **kwargs):
-        super(deephi_Embedding, self).__init__(*args, **kwargs)
+        super(Embedding, self).__init__(*args, **kwargs)
         self.params_name = None
         self.node = None
         self.quant_mode, self.quantizer = maybe_get_quantizer()
@@ -90,4 +90,4 @@ def embedding(*args, **kwargs):
     quant_mode, _ = maybe_get_quantizer()
     if quant_mode == None:
         return torch.nn.Embedding(*args, **kwargs)
-    return deephi_Embedding(*args, **kwargs)
+    return Embedding(*args, **kwargs)

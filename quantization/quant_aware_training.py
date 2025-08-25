@@ -27,7 +27,7 @@ from gtx_shared.utils.msg_code import QError
 from gtx_shared.utils.msg_code import QWarning
 
 import parse
-import utils as py_utils
+import gtx_utils as py_utils
 from nn.modules import functional
 from nn.quantization.modules import conv_fused
 from nn.quantization.modules import tqt as tqt_mod

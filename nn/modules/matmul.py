@@ -17,15 +17,15 @@
 import torch
 from gtx_shared.quantization.utils import maybe_get_quantizer
 from gtx_shared.quantization import quantize_tensors
-import utils as py_utils
+import gtx_utils as py_utils
 
-__all__ = ["Matmul"]
+__all__ = ["matmul"]
 
 
-class deephi_Matmul(torch.nn.Module):
+class Matmul(torch.nn.Module):
 
     def __init__(self):
-        super(deephi_Matmul, self).__init__()
+        super(Matmul, self).__init__()
         self.quant_mode, self.quantizer = maybe_get_quantizer()
         self.node = None
 
@@ -39,5 +39,5 @@ class deephi_Matmul(torch.nn.Module):
 
 
 @py_utils.register_quant_op
-def Matmul(*args, **kwargs):
-    return deephi_Matmul(*args, **kwargs)
+def matmul(*args, **kwargs):
+    return Matmul(*args, **kwargs)

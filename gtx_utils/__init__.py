@@ -4,6 +4,6 @@ from .op_register import *
 from .torch_const import *
 from .tensor_util import *
 from .schema import *
-
+from .bfloat16 import *
 # from .torch_qconfig import *
 from .function_util import *

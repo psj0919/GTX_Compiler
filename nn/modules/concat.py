@@ -17,16 +17,16 @@
 import torch
 from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.quantization import quantize_tensors
-import utils as py_utils
+import gtx_utils as py_utils
 
-__all__ = ["Cat"]
+__all__ = ["concat"]
 
 
-class deephi_Cat(torch.nn.Module):
-    r"""DeePhi Concat operation"""
+class Concat(torch.nn.Module):
+    r"""Concat operation"""
 
     def __init__(self, *args, **kwargs):
-        super(deephi_Cat, self).__init__()
+        super(Concat, self).__init__()
         # self.dim = kwargs.get('dim', 0)
         self.quant_mode, self.quantizer = maybe_get_quantizer()
         self.node = None
@@ -40,5 +40,5 @@ class deephi_Cat(torch.nn.Module):
 
 
 @py_utils.register_quant_op
-def Cat(*args, **kwargs):
-    return deephi_Cat(*args, **kwargs)
+def concat(*args, **kwargs):
+    return Concat(*args, **kwargs)

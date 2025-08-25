@@ -22,19 +22,19 @@ from gtx_shared.utils import GtxOption, GtxScreenLogger, QError
 from gtx_shared.quantization import kernel_need_quant
 from gtx_shared.quantization import quantize_tensors
 from gtx_shared.quantization import maybe_get_quantizer
-import utils as py_utils
+import gtx_utils as py_utils
 import torch.nn.functional as F
-from utils import Const
+from gtx_utils import Const
 from .fix_ops import GtxISqrt
 
-__all__ = ["GroupNorm"]
+__all__ = ["groupNorm"]
 
 
-class deephi_GroupNorm(torch.nn.modules.normalization.GroupNorm):
-    r"""DeePhi group normalization operation, support float and double"""
+class GroupNorm(torch.nn.modules.normalization.GroupNorm):
+    r"""GroupNorm operation, support float and double"""
 
     def __init__(self, *args, **kwards):
-        super(deephi_GroupNorm, self).__init__(*args, **kwards)
+        super(GroupNorm, self).__init__(*args, **kwards)
         self.params_name = None
         self.node = None
         self.quant_mode, self.quantizer = maybe_get_quantizer()
@@ -226,5 +226,5 @@ class deephi_GroupNorm(torch.nn.modules.normalization.GroupNorm):
 
 
 @py_utils.register_quant_op
-def GroupNorm(*args, **kwargs):
-    return deephi_GroupNorm(*args, **kwargs)
+def groupNorm(*args, **kwargs):
+    return GroupNorm(*args, **kwargs)

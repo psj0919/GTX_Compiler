@@ -20,16 +20,16 @@ from torch.autograd import Variable
 
 from gtx_shared.quantization import maybe_get_quantizer, quantize_tensors
 from gtx_shared.utils import GtxOption
-import utils as py_utils
+import gtx_utils as py_utils
 
-__all__ = ["AvgPool2d"]
+__all__ = ["avgPool2d"]
 
 
-class deephi_AvgPool2d(torch.nn.modules.AvgPool2d):
-    r"""DeePhi Conv2d operation, support float and double"""
+class AvgPool2d(torch.nn.modules.AvgPool2d):
+    r"""AvgPool2d operation, support float and double"""
 
     def __init__(self, *args, **kwards):
-        super(deephi_AvgPool2d, self).__init__(*args, **kwards)
+        super(AvgPool2d, self).__init__(*args, **kwards)
         self.quant_mode, self.quantizer = maybe_get_quantizer()
         self.node = None
 
@@ -80,8 +80,8 @@ class deephi_AvgPool2d(torch.nn.modules.AvgPool2d):
 
 
 @py_utils.register_quant_op
-def AvgPool2d(*args, **kwargs):
+def avgPool2d(*args, **kwargs):
     quant_mode, _ = maybe_get_quantizer()
     if quant_mode is None or GtxOption.gtx_quant_off.value:
         return torch.nn.AvgPool2d(*args, **kwargs)
-    return deephi_AvgPool2d(*args, **kwargs)
+    return AvgPool2d(*args, **kwargs)

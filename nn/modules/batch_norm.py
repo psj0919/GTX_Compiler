@@ -21,17 +21,17 @@ import math
 from gtx_shared.utils import GtxOption
 from gtx_shared.quantization import quantize_tensors
 from gtx_shared.quantization import maybe_get_quantizer
-import utils as py_utils
+import gtx_utils as py_utils
 import torch.nn.functional as F
 
-__all__ = ["BatchNorm"]
+__all__ = ["batchNorm"]
 
 
-class deephi_BatchNorm(torch.nn.modules.batchnorm._BatchNorm):
-    r"""DeePhi batchnorm operation, support float and double"""
+class BatchNorm(torch.nn.modules.batchnorm._BatchNorm):
+    r"""BatchNorm operation, support float and double"""
 
     def __init__(self, *args, **kwards):
-        super(deephi_BatchNorm, self).__init__(*args, **kwards)
+        super(BatchNorm, self).__init__(*args, **kwards)
         self.params_name = None
         self.node = None
         self.quant_mode, self.quantizer = maybe_get_quantizer()
@@ -109,7 +109,7 @@ class deephi_BatchNorm(torch.nn.modules.batchnorm._BatchNorm):
 
 
 @py_utils.register_quant_op
-def BatchNorm(*args, **kwargs):
+def batchNorm(*args, **kwargs):
     quant_mode, _ = maybe_get_quantizer()
     if quant_mode == None:
 
@@ -122,4 +122,4 @@ def BatchNorm(*args, **kwargs):
 
         nn._check_input_dim = types.MethodType(_check_input_dim, nn)
         return nn
-    return deephi_BatchNorm(*args, **kwargs)
+    return BatchNorm(*args, **kwargs)

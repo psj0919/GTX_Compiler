@@ -21,16 +21,16 @@ from torch.autograd import Variable
 from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.utils import GtxOption
 from gtx_shared.quantization import quantize_tensors
-import utils as py_utils
+import gtx_utils as py_utils
 
-__all__ = ["MaxPool2d"]
+__all__ = ["maxPool2d"]
 
 
-class deephi_MaxPool2d(torch.nn.modules.MaxPool2d):
-    r"""DeePhi Conv2d operation, support float and double"""
+class MaxPool2d(torch.nn.modules.MaxPool2d):
+    r"""MaxPool2d operation, support float and double"""
 
     def __init__(self, *args, **kwards):
-        super(deephi_MaxPool2d, self).__init__(*args, **kwards)
+        super(MaxPool2d, self).__init__(*args, **kwards)
         self.node = None
         self.quant_mode, self.quantizer = maybe_get_quantizer()
 
@@ -42,8 +42,8 @@ class deephi_MaxPool2d(torch.nn.modules.MaxPool2d):
 
 
 @py_utils.register_quant_op
-def MaxPool2d(*args, **kwargs):
+def maxPool2d(*args, **kwargs):
     quant_mode, _ = maybe_get_quantizer()
     if quant_mode == None:
         return torch.nn.MaxPool2d(*args, **kwargs)
-    return deephi_MaxPool2d(*args, **kwargs)
+    return MaxPool2d(*args, **kwargs)

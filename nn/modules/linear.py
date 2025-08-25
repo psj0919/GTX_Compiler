@@ -20,18 +20,18 @@ from gtx_shared.utils import GtxOption, GtxScreenLogger, QError, QWarning
 from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.quantization import quantize_tensors
 from .quant_noise import eval_qnoise
-import utils as py_utils
+import gtx_utils as py_utils
 from .add import Add
 from .multiply import Mul
 
-__all__ = ["Linear"]
+__all__ = ["linear"]
 
 
-class deephi_Linear(torch.nn.modules.linear.Linear):
-    r"""DeePhi Linear operation, support float and double"""
+class Linear(torch.nn.modules.linear.Linear):
+    r"""Linear operation, support float and double"""
 
     def __init__(self, *args, **kwards):
-        super(deephi_Linear, self).__init__(*args, **kwards)
+        super(Linear, self).__init__(*args, **kwards)
         self.params_name = None
         self.node = None
         self.quant_mode, self.quantizer = maybe_get_quantizer()
@@ -178,8 +178,8 @@ class deephi_Linear(torch.nn.modules.linear.Linear):
 
 
 @py_utils.register_quant_op
-def Linear(*args, **kwargs):
+def linear(*args, **kwargs):
     quant_mode, _ = maybe_get_quantizer()
     if quant_mode == None:
         return torch.nn.Linear(*args, **kwargs)
-    return deephi_Linear(*args, **kwargs)
+    return Linear(*args, **kwargs)

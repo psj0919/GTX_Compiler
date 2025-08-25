@@ -22,17 +22,17 @@ from gtx_shared.utils import GtxOption, GtxScreenLogger
 from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.quantization import quantize_tensors
 from .quant_noise import eval_qnoise
-import utils as py_utils
+import gtx_utils as py_utils
 import torch.nn.functional as F
 
-__all__ = ["PReLU"]
+__all__ = ["prelu"]
 
 
-class deephi_PReLU(torch.nn.PReLU):
-    r"""DeePhi PReLU operation, support float and double"""
+class PReLU(torch.nn.PReLU):
+    r"""PReLU operation, support float and double"""
 
     def __init__(self, *args, **kwards):
-        super(deephi_PReLU, self).__init__(*args, **kwards)
+        super(PReLU, self).__init__(*args, **kwards)
         self.params_name = None
         self.node = None
         self.quant_mode, self.quantizer = maybe_get_quantizer()
@@ -77,8 +77,8 @@ class deephi_PReLU(torch.nn.PReLU):
 
 
 @py_utils.register_quant_op
-def PReLU(*args, **kwargs):
+def prelu(*args, **kwargs):
     quant_mode, _ = maybe_get_quantizer()
     if quant_mode == None:
         return torch.nn.PReLU(*args, **kwargs)
-    return deephi_PReLU(*args, **kwargs)
+    return PReLU(*args, **kwargs)

@@ -17,17 +17,17 @@ import torch
 from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.quantization import quantize_tensors
 from gtx_shared.utils import GtxOption
-import utils as py_utils
+import gtx_utils as py_utils
 from gtx_shared.utils import calculate_op_scale
 
-__all__ = ["Mean"]
+__all__ = ["mean"]
 
 
-class deephi_Mean(torch.nn.Module):
-    r"""DeePhi Concat operation"""
+class Mean(torch.nn.Module):
+    r"""Mean operation"""
 
     def __init__(self, *args, **kwargs):
-        super(deephi_Mean, self).__init__()
+        super(Mean, self).__init__()
         self.quant_mode, self.quantizer = maybe_get_quantizer()
         self.node = None
 
@@ -81,5 +81,5 @@ class deephi_Mean(torch.nn.Module):
 
 
 @py_utils.register_quant_op
-def Mean(*args, **kwargs):
-    return deephi_Mean(*args, **kwargs)
+def mean(*args, **kwargs):
+    return Mean(*args, **kwargs)

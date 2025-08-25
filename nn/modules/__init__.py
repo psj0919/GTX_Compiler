@@ -42,7 +42,7 @@ from .prelu import *
 
 # from .clamp import *
 from .sqrt import *
-from utils.torch_utils import CmpFlag, compare_torch_version
+from gtx_utils.torch_utils import CmpFlag, compare_torch_version
 
 if compare_torch_version(CmpFlag.GREATER_EQUAL, "1.9"):
     from .mish import *

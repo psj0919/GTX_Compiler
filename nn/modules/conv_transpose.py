@@ -22,18 +22,18 @@ from gtx_shared.utils import GtxOption, GtxScreenLogger, QError, QWarning
 from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.quantization import quantize_tensors
 from .quant_noise import eval_qnoise
-import utils as py_utils
+import gtx_utils as py_utils
 import torch.nn.functional as F
-from utils.torch_utils import CmpFlag, compare_torch_version
+from gtx_utils.torch_utils import CmpFlag, compare_torch_version
 
-__all__ = ["ConvTranspose2d"]
+__all__ = ["convTranspose2d"]
 
 
-class deephi_ConvTranspose2d(torch.nn.modules.conv.ConvTranspose2d):
-    r"""DeePhi ConvTranspose2d operation, support float and double"""
+class ConvTranspose2d(torch.nn.modules.conv.ConvTranspose2d):
+    r"""ConvTranspose2d operation, support float and double"""
 
     def __init__(self, *args, **kwards):
-        super(deephi_ConvTranspose2d, self).__init__(*args, **kwards)
+        super(ConvTranspose2d, self).__init__(*args, **kwards)
         self.params_name = None
         self.node = None
         self.quant_mode, self.quantizer = maybe_get_quantizer()
@@ -199,8 +199,8 @@ class deephi_ConvTranspose2d(torch.nn.modules.conv.ConvTranspose2d):
 
 
 @py_utils.register_quant_op
-def ConvTranspose2d(*args, **kwargs):
+def convTranspose2d(*args, **kwargs):
     quant_mode, _ = maybe_get_quantizer()
     if quant_mode == None:
         return torch.nn.ConvTranspose2d(*args, **kwargs)
-    return deephi_ConvTranspose2d(*args, **kwargs)
+    return ConvTranspose2d(*args, **kwargs)

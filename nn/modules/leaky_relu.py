@@ -17,14 +17,14 @@
 import torch
 from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.quantization import quantize_tensors
-import utils as py_utils
+import gtx_utils as py_utils
 from gtx_shared.utils import GtxOption
 
-__all__ = ["LeakyReLU"]
+__all__ = ["leakyReLU"]
 
 
-class deephi_LeakyReLU(torch.nn.LeakyReLU):
-    r"""DeePhi LeakyReLU operation"""
+class LeakyReLU(torch.nn.LeakyReLU):
+    r"""LeakyReLU operation"""
 
     def __init__(self, *args, **kwargs):
         # only support the specified slope and inplace operation
@@ -42,8 +42,8 @@ class deephi_LeakyReLU(torch.nn.LeakyReLU):
 
 
 @py_utils.register_quant_op
-def LeakyReLU(*args, **kwargs):
+def leakyReLU(*args, **kwargs):
     quant_mode, _ = maybe_get_quantizer()
     if quant_mode is None or GtxOption.gtx_quant_off.value:
         return torch.nn.LeakyReLU(*args, **kwargs)
-    return deephi_LeakyReLU(*args, **kwargs)
+    return LeakyReLU(*args, **kwargs)

@@ -1,7 +1,7 @@
 import torch
 
 
-class deephi_tanh_table(object):
+class TanhTable(object):
 
     __table = torch.tensor(
         [
