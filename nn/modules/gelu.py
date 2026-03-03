@@ -25,7 +25,15 @@ from gtx_shared.utils import GtxOption, GtxScreenLogger, create_work_dir
 from gtx_shared.quantization import maybe_get_quantizer
 from gtx_shared.quantization import quantize_tensors
 from .quant_noise import eval_qnoise
-import gtx_utils.op_register as py_utils
+import importlib as _importlib
+_op_register_mod = _importlib.import_module('gtx_utils.op_register')
+
+class _PyUtilsProxy:
+    """gtx_utils.op_register 모듈 프록시 (이름 shadowing 우회)"""
+    def __getattr__(self, name):
+        return getattr(_op_register_mod, name)
+
+py_utils = _PyUtilsProxy()
 import torch.nn.functional as F
 from gtx_utils.torch_utils import CmpFlag, compare_torch_version
 

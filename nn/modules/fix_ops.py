@@ -33,29 +33,29 @@ __all__ = [
     "Round",
     "DiffsFixPos",
     "DiffsFixPosChannel",
-    "SigmoidTableLookup",
-    "SigmoidTableLookupAIE2",
-    "SigmoidSimulation",
-    "TanhTableLookup",
-    "TanhTableLookupAIE2",
-    "TanhSimulation",
+    "GtxSigmoidTableLookup",
+    "GtxSigmoidTableLookupAIE2",
+    "GtxSigmoidSimulation",
+    "GtxTanhTableLookup",
+    "GtxTanhTableLookupAIE2",
+    "GtxTanhSimulation",
     "FixNeuronWithBackward",
     "fake_quantize_per_tensor",
-    "SoftmaxExpApproximate",
-    "SoftmaxLOD",
-    "SoftmaxSimulationPart1",
-    "SoftmaxSimulationPart2",
+    "GtxSoftmaxExpApproximate",
+    "GtxSoftmaxLOD",
+    "GtxSoftmaxSimulationPart1",
+    "GtxSoftmaxSimulationPart2",
     "fake_quantize_per_channel",
     "fake_quantize_per_tensor_tensorrt",
     "fake_quantize_per_channel_tensorrt",
-    "ExpApprAIE2",
-    "InverseAIE2",
-    "LogSoftmaxFastLn",
-    "LogSoftmaxSub",
-    "AIESqrt",
-    "AIEISqrt",
-    "ISqrt",
-    "LayernormInvSqrt",
+    "GtxExpApprAIE2",
+    "GtxInverseAIE2",
+    "GtxLogSoftmaxFastLn",
+    "GtxLogSoftmaxSub",
+    "GtxAIESqrt",
+    "GtxAIEISqrt",
+    "GtxISqrt",
+    "GtxLayernormInvSqrt",
 ]
 
 
@@ -107,7 +107,7 @@ class FixNeuronWithBackward(torch.nn.Module):
 
 @pre_and_post_process_f16_tensor
 def Round(Tinput, Toutput, method=2):
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     torch.ops.vai.Round(Tinput, Toutput, method, device_id)
     return Toutput
 
@@ -117,7 +117,7 @@ def FixNeuron(Tinput, Toutput, maxamp, method=2):
     valmax, valamp = maxamp[0], maxamp[1]
     valmin = -valmax
     valmax = valmax - 1
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     if support_onnx_export():
         Toutput = torch.ops.vai.fix_neuron(
             Tinput, valmin, valmax, valamp, 0, method, device_id, 1
@@ -129,7 +129,7 @@ def FixNeuron(Tinput, Toutput, maxamp, method=2):
     return Toutput
     '''
   if Tinput.device == torch.device("cpu"):
-    output = Tinput.cuda()
+    output = Tinput.clone()
     gtx_kernels.FixNeuronV2(output, output, valmax,
                               valamp, method)
     Tinput.copy_(output.cpu())
@@ -168,7 +168,7 @@ def FixNeuron(Tinput, Toutput, maxamp, method=2):
 
 @pre_and_post_process_f16_tensor
 def DiffsFixPos(Tinput, Tbuffer, Tfixpos, bit_width=8, range=5, method=2):
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     Tinput = clone_view_tensor(Tinput)
     if support_onnx_export():
         torch.ops.vai.diffs_fix_pos(
@@ -185,7 +185,7 @@ def DiffsFixPos(Tinput, Tbuffer, Tfixpos, bit_width=8, range=5, method=2):
 def DiffsFixPosChannel(
     Tinput, Tbuffer, Tfixpos, axis, bit_width=8, scope=5, method=2
 ):
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     input_split = torch.split(Tinput, 1, dim=axis)
     buffer_split = torch.split(Tbuffer, 1, dim=axis)
     # TODO(@kewang): The split is a tensor view operation. Is it neccessary to clone tensor before calib and test ?
@@ -215,7 +215,7 @@ def DiffsFixPosChannel(
 
 @pre_and_post_process_f16_tensor
 def GtxSigmoidTableLookup(Tinput, Ttable, Toutput, fragpos):
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     Tinput = clone_view_tensor(Tinput)
     if support_onnx_export():
         torch.ops.vai.SigmoidTableLookup(Tinput, Ttable, Toutput, fragpos, device_id)
@@ -225,7 +225,7 @@ def GtxSigmoidTableLookup(Tinput, Ttable, Toutput, fragpos):
 
 @pre_and_post_process_f16_tensor
 def GtxSigmoidSimulation(Tinput, Toutput, fragpos):
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     Tinput = clone_view_tensor(Tinput)
     if device_id == 1:
         print("Sigmoid simulation does not support CPU")
@@ -238,7 +238,7 @@ def GtxSigmoidSimulation(Tinput, Toutput, fragpos):
 
 @pre_and_post_process_f16_tensor
 def GtxTanhTableLookup(Tinput, Ttable, Toutput, fragpos):
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     Tinput = clone_view_tensor(Tinput)
     if support_onnx_export():
         torch.ops.vai.TanhTableLookup(Tinput, Ttable, Toutput, fragpos, device_id)
@@ -248,7 +248,7 @@ def GtxTanhTableLookup(Tinput, Ttable, Toutput, fragpos):
 
 @pre_and_post_process_f16_tensor
 def GtxTanhSimulation(Tinput, Toutput, fragpos):
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     Tinput = clone_view_tensor(Tinput)
     if device_id == 1:
         print("Tanh simulation does not support CPU")
@@ -261,7 +261,7 @@ def GtxTanhSimulation(Tinput, Toutput, fragpos):
 
 @pre_and_post_process_f16_tensor
 def GtxSoftmaxExpApproximate(Tinput, Toutput):
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     Tinput = clone_view_tensor(Tinput)
     if device_id == 1:
         print("Softmax Exponent Approximate does not support CPU")
@@ -274,7 +274,7 @@ def GtxSoftmaxExpApproximate(Tinput, Toutput):
 
 @pre_and_post_process_f16_tensor
 def GtxSoftmaxLOD(Tinput, Toutput):
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     Tinput = clone_view_tensor(Tinput)
     if device_id == 1:
         print("Softmax LOD does not support CPU")
@@ -287,7 +287,7 @@ def GtxSoftmaxLOD(Tinput, Toutput):
 
 @pre_and_post_process_f16_tensor
 def GtxSoftmaxSimulationPart1(Tinput, Toutput):
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     Tinput = clone_view_tensor(Tinput)
     if device_id == 1:
         print("Softmax Simulation Part 1 does not support CPU")
@@ -300,7 +300,7 @@ def GtxSoftmaxSimulationPart1(Tinput, Toutput):
 
 @pre_and_post_process_f16_tensor
 def GtxSoftmaxSimulationPart2(sum, Toutput):
-    device_id = 1 if Toutput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     sum = clone_view_tensor(sum)
     if device_id == 1:
         print("Softmax Simulation Part 2 does not support CPU")
@@ -324,7 +324,7 @@ def fake_quantize_per_tensor(
         )
     else:
         input = clone_view_tensor(input)
-        device_id = 1 if input.device == torch.device("cpu") else 0
+        device_id = 1  # CPU-only
 
         if support_onnx_export():
             output = torch.ops.vai.fix_neuron(
@@ -366,7 +366,7 @@ def fake_quantize_per_channel(
             input, 1.0 / scale_inv, zero_point, axis, quant_min, quant_max
         )
     else:
-        device_id = 1 if input.device == torch.device("cpu") else 0
+        device_id = 1  # CPU-only
         if support_onnx_export():
             scale = torch.where(
                 scale_inv < sys.float_info.min,
@@ -535,21 +535,21 @@ def fake_quantize_per_tensor_tensorrt(inputs, amax, min_bound, max_bound):
 @pre_and_post_process_f16_tensor
 def GtxSigmoidTableLookupAIE2(Tinput, Toutput, fragpos):
     Tinput = clone_view_tensor(Tinput)
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     torch.ops.vai.SigmoidTableLookupAIE2(Tinput, Toutput, fragpos, device_id)
 
 
 @pre_and_post_process_f16_tensor
 def GtxTanhTableLookupAIE2(Tinput, Toutput, fragpos):
     Tinput = clone_view_tensor(Tinput)
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     torch.ops.vai.TanhTableLookupAIE2(Tinput, Toutput, fragpos, device_id)
 
 
 @pre_and_post_process_f16_tensor
 def GtxExpApprAIE2(Tinput, Toutput, bit_width):
     Tinput = clone_view_tensor(Tinput)
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     if device_id == 1:
         print("Exp Approximation does not support CPU")
     else:
@@ -559,7 +559,7 @@ def GtxExpApprAIE2(Tinput, Toutput, bit_width):
 @pre_and_post_process_f16_tensor
 def GtxLogSoftmaxFastLn(Tinput, Toutput):
     Tinput = clone_view_tensor(Tinput)
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     if device_id == 1:
         print("LogSoftmax fast ln does not support CPU")
     else:
@@ -569,7 +569,7 @@ def GtxLogSoftmaxFastLn(Tinput, Toutput):
 @pre_and_post_process_f16_tensor
 def GtxLogSoftmaxSub(Tinput, Toutput, Tsum):
     Tinput = clone_view_tensor(Tinput)
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     if device_id == 1:
         print("LogSoftmax subtraction does not support CPU")
     else:
@@ -579,28 +579,28 @@ def GtxLogSoftmaxSub(Tinput, Toutput, Tsum):
 @pre_and_post_process_f16_tensor
 def GtxAIESqrt(Tinput, Toutput):
     Tinput = clone_view_tensor(Tinput)
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     torch.ops.vai.AIESqrt(Tinput, Toutput, device_id)
 
 
 @pre_and_post_process_f16_tensor
 def GtxAIEISqrt(Tinput, Toutput):
     Tinput = clone_view_tensor(Tinput)
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     torch.ops.vai.AIEISqrt(Tinput, Toutput, device_id)
 
 
 @pre_and_post_process_f16_tensor
 def GtxISqrt(Tinput, Toutput):
     Tinput = clone_view_tensor(Tinput)
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     torch.ops.vai.LayernormISqrt(Tinput, Toutput, device_id)
 
 
 @pre_and_post_process_f16_tensor
 def GtxLayernormInvSqrt(Tinput, Toutput):
     Tinput = clone_view_tensor(Tinput)
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     if device_id == 1:
         print("Layernorm InvSqrt does not support CPU")
     else:
@@ -610,7 +610,7 @@ def GtxLayernormInvSqrt(Tinput, Toutput):
 @pre_and_post_process_f16_tensor
 def GtxInverseAIE2(Tinput, Toutput):
     Tinput = clone_view_tensor(Tinput)
-    device_id = 1 if Tinput.device == torch.device("cpu") else 0
+    device_id = 1  # CPU-only
     if device_id == 1:
         print("Inverse AIE2 does not support CPU")
     else:

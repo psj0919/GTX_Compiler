@@ -506,7 +506,7 @@ class CostVolume(_PrimModule):
                     qinput_1.size()[2],
                     qinput_1.size()[3],
                 )
-            ).cuda()
+            ).cpu()
 
         for i in range(maxdisp // 4):
             if i > 0:

@@ -9,7 +9,7 @@ __all__ = ["SparseConv2d", "SparseLinear"]
 def reshape_tensor(matrix, m):
     if matrix.shape[1] % m > 0:
         # padding 0
-        mat = torch.cuda.FloatTensor(
+        mat = torch.FloatTensor(
             matrix.shape[0], matrix.shape[1] + (m - matrix.shape[1] % m)
         ).fill_(0)
         mat[:, : matrix.shape[1]] = matrix
@@ -110,7 +110,7 @@ class SparseConv2d(nn.Module):
         if input.shape[1] % self.block_size != 0:
             in_channels_to_pad = self.block_size - input.shape[1] % self.block_size
 
-            padded_input = torch.cuda.FloatTensor(
+            padded_input = torch.FloatTensor(
                 input.shape[0],
                 input.shape[1] + in_channels_to_pad,
                 input.shape[2],
@@ -118,7 +118,7 @@ class SparseConv2d(nn.Module):
             ).fill_(0)
             padded_input[:, 0 : input.shape[1], :, :] = input
 
-            padded_weights = torch.cuda.FloatTensor(
+            padded_weights = torch.FloatTensor(
                 w_shape[0], w_shape[1] + in_channels_to_pad, w_shape[2], w_shape[3]
             ).fill_(0)
             padded_weights[:, 0 : w_shape[1], :, :] = self.conv.weight

@@ -29,7 +29,7 @@ from gtx_shared.utils import (
 )
 from gtx_shared.utils import QError, QWarning
 from .gtx_graph import XGraph
-from .iss_op_creator import ISS_CONVERTOR, custom_iss_op, to_gtx
+from .xop_creator import ISS_CONVERTOR, custom_iss_op, to_gtx
 
 GtxQuantInfo = Dict[str, Dict[str, List[int]]]
 
@@ -120,6 +120,41 @@ class GtxCompiler(object):
             xgraph.export_to_xmodel(output_file_name)
 
         return xgraph
+
+    @staticmethod
+    def generate_c_code(
+        compile_graph: Graph,
+        output_dir: str = "./output",
+        model_name: str = "model",
+        nest_id: int = 0,
+        spu_id: int = 0,
+    ) -> dict:
+        r"""GTX Graph를 C 소스코드(.c/.h)로 변환.
+
+        GTX intrinsic 함수 호출로 구성된 C 코드를 생성합니다.
+        생성된 코드는 RISC-V 크로스 컴파일러로 빌드하여
+        GTX_ISS 시뮬레이터에서 실행할 수 있습니다.
+
+        Args:
+            compile_graph: 파싱/최적화된 GTX Graph (shape/params 포함)
+            output_dir: 출력 디렉토리 경로
+            model_name: 생성될 C 파일명 (기본: "model")
+            nest_id: 타겟 NEST ID (0-3). 기본값 0.
+            spu_id: 타겟 SPU ID (0-3). 기본값 0.
+
+        Returns:
+            생성된 파일 경로 딕셔너리
+        """
+        from .c_codegen import CCodeGenerator
+
+        codegen = CCodeGenerator(
+            graph=compile_graph,
+            output_dir=output_dir,
+            model_name=model_name,
+            nest_id=nest_id,
+            spu_id=spu_id,
+        )
+        return codegen.generate()
 
     @staticmethod
     def verify_xmodel(compile_graph: Graph, xgraph: XGraph):

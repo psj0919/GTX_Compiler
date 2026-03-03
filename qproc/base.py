@@ -126,7 +126,7 @@ class TorchQuantProcessor:
         bitwidth_w: int = 8,
         bitwidth_a: int = 8,
         mix_bit: bool = False,
-        device: torch.device = torch.device("cuda"),
+        device: torch.device = torch.device("cpu"),
         lstm_app: bool = False,
         custom_quant_ops: Optional[List[str]] = None,
         quant_config_file: Optional[str] = None,
@@ -154,16 +154,8 @@ class TorchQuantProcessor:
                 f"Data parallel is not supported. The wrapper 'torch.nn.DataParallel' has been removed in quantizer.",
             )
 
-        # Check device available
-        if device.type == "cuda":
-            if not (
-                torch.cuda.is_available() and ("CUDA_HOME" or "ROCM_HOME" in os.environ)
-            ):
-                device = torch.device("cpu")
-                GtxScreenLogger().warning2user(
-                    QWarning.CUDA_UNAVAILABLE,
-                    f"CUDA (HIP) is not available, change device to CPU.",
-                )
+        # Force CPU-only mode
+        device = torch.device("cpu")
 
         # Transform torch module to quantized module format
         gtx_utils.create_work_dir(output_dir)
@@ -717,16 +709,8 @@ def dump_xmodel(output_dir="quantize_result", deploy_check=False, lstm_app=False
 
 
 def GTX_system_info(device):
-    # Check device available
-    if device.type == "cuda":
-        if not (
-            torch.cuda.is_available() and ("CUDA_HOME" or "ROCM_HOME" in os.environ)
-        ):
-            device = torch.device("cpu")
-            GtxScreenLogger().warning2user(
-                QWarning.CUDA_UNAVAILABLE,
-                f"CUDA (HIP) is not available, change device to CPU",
-            )
+    # Force CPU-only mode
+    device = torch.device("cpu")
 
     GtxScreenLogger().check2user(
         QError.TORCH_VERSION,
@@ -762,14 +746,7 @@ def GTX_system_info(device):
               pytorch --- {torch.__version__}\n"
     )
     # gtx_pytorch --- {ggml.__version__}"
-    if device == torch.device("cuda"):
-        GtxScreenLogger().info(
-            f"GPU information:\n\
-          device name --- {torch.cuda.get_device_name()}\n\
-     device available --- {torch.cuda.is_available()}\n\
-         device count --- {torch.cuda.device_count()}\n\
-       current device --- {torch.cuda.current_device()}"
-        )
+    # GPU info removed - CPU-only mode
 
 
 partial_graph = False
@@ -833,7 +810,7 @@ class DynamoQuantProcessor(object):
         bitwidth_w: int = 8,
         bitwidth_a: int = 8,
         mix_bit: bool = False,
-        device: torch.device = torch.device("cuda"),
+        device: torch.device = torch.device("cpu"),
         lstm_app: bool = False,
         custom_quant_ops: Optional[List[str]] = None,
         quant_config_file: Optional[str] = None,
@@ -852,16 +829,8 @@ class DynamoQuantProcessor(object):
                 f"Data parallel is not supported. The wrapper 'torch.nn.DataParallel' has been removed in quantizer.",
             )
 
-        # Check device available
-        if device.type == "cuda":
-            if not (
-                torch.cuda.is_available() and ("CUDA_HOME" or "ROCM_HOME" in os.environ)
-            ):
-                device = torch.device("cpu")
-                GtxScreenLogger().warning2user(
-                    QWarning.CUDA_UNAVAILABLE,
-                    f"CUDA (HIP) is not available, change device to CPU.",
-                )
+        # Force CPU-only mode
+        device = torch.device("cpu")
 
         # Transform torch module to quantized module format
         gtx_utils.create_work_dir(output_dir)

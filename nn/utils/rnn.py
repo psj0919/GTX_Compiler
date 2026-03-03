@@ -3,7 +3,10 @@ import numpy as np
 from torch.nn.utils.rnn import PackedSequence
 import torch.nn as nn
 
-from ...gtx_shared.quantization.utils import maybe_get_quantizer
+try:
+    from gtx_shared.quantization.utils import maybe_get_quantizer
+except ImportError:
+    from ...gtx_shared.quantization.utils import maybe_get_quantizer
 
 def deephi_pack_padded_sequence(input, lengths, batch_first=False):
     if isinstance(lengths, list):

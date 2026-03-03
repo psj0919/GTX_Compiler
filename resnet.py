@@ -28,7 +28,7 @@ def main():
     # Export 폴더 준비
     
     os.makedirs("export1", exist_ok=True)
-    print(f"[yolov9t.py] Export dir: export1", flush=True)
+    print("[yolov9t.py] Export dir: export1", flush=True)
 
     try:
         # TorchParser로 그래프 파싱
@@ -61,4 +61,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

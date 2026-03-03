@@ -408,7 +408,6 @@ class AdvancedQuantProcessor(torch.nn.Module):
                         ]
                         new_input_args.append(ip)
                 _ = f_model(*new_input_args)
-        torch.cuda.empty_cache()
         self.clean_hooks(handlers)
 
         for i in range(iters):
@@ -476,7 +475,6 @@ class AdvancedQuantProcessor(torch.nn.Module):
         # self.clean_hooks()
         del self.cached_outputs[float_layer]
         # del cached_outputs
-        torch.cuda.empty_cache()
         # print(f"iter:{i}")
         return net_loss
 
@@ -574,7 +572,6 @@ class AdvancedQuantProcessor(torch.nn.Module):
 
             self.clean_hooks(monitor_handlers + cache_handlers)
 
-        torch.cuda.empty_cache()
         GtxScreenLogger().info(
             f"Mem cost by fast finetuning: {total_memory_cost:.2f}G."
         )
@@ -594,7 +591,6 @@ class AdvancedQuantProcessor(torch.nn.Module):
         set_option_value("gtx_quant_off", False)
         with torch.no_grad():
             run_fn(*run_args)
-        torch.cuda.empty_cache()
 
         # print("****Parameter finetuning")
         GtxScreenLogger().info(
@@ -652,7 +648,6 @@ class AdvancedQuantProcessor(torch.nn.Module):
         net_loss = self.eval_loss(net_inputs, last_quant_mods, device)
         self.clean_hooks(handlers)
         # model.clean_hooks()
-        torch.cuda.empty_cache()
 
         finetune_group = {}
         # hook_mods = []
@@ -710,7 +705,6 @@ class AdvancedQuantProcessor(torch.nn.Module):
             )
             # print(f"{node.name}:{net_loss}")
             del layer_inputs
-            torch.cuda.empty_cache()
 
         # recover quantizer status
         for node in self.graph.nodes:
@@ -792,7 +786,6 @@ class AdvancedQuantProcessor(torch.nn.Module):
             net_outputs[node.module] = cached_net_output
             del self.cached_outputs[node.module]
 
-        torch.cuda.empty_cache()
         return net_inputs, net_outputs
 
     def calibrate(self, run_fn, run_args):
@@ -803,7 +796,6 @@ class AdvancedQuantProcessor(torch.nn.Module):
 
         with torch.no_grad():
             run_fn(*run_args)
-        torch.cuda.empty_cache()
 
     def collect_layer_act_pair(self):
         graph_searcher = GraphSearcher(self.graph)
@@ -1194,7 +1186,6 @@ please remove it if there is "torch.no_grad()" in forward process'
                     except StopForward:
                         pass
 
-            torch.cuda.empty_cache()
             self.clean_hooks(handlers)
             for i in range(iters):
                 # print(f"--------iter={i}-----------------")
@@ -1291,7 +1282,6 @@ please remove it if there is "torch.no_grad()" in forward process'
         if bias_grad is not None:
             layer.bias.requires_grad_(requires_grad=bias_grad)
 
-        torch.cuda.empty_cache()
         # print(f"iter:{i}")
         return net_loss
 

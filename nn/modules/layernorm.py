@@ -21,7 +21,7 @@ from gtx_shared.quantization import kernel_need_quant
 from gtx_shared.quantization import quantize_tensors
 import gtx_utils as py_utils
 import numpy as np
-from utils import Const
+from gtx_utils import Const
 from .fix_ops import GtxISqrt, GtxAIEISqrt
 
 __all__ = ["layerNorm"]

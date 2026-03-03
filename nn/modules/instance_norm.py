@@ -24,7 +24,7 @@ from gtx_shared.quantization import quantize_tensors
 from gtx_shared.quantization import maybe_get_quantizer
 import gtx_utils as py_utils
 import torch.nn.functional as F
-from utils import Const
+from gtx_utils import Const
 from .fix_ops import GtxISqrt
 
 __all__ = ["instanceNorm"]

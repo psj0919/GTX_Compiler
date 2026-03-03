@@ -127,7 +127,7 @@ class CostVolumeF(torch.autograd.Function):
                     input_1.size()[2],
                     input_1.size()[3],
                 )
-            ).cuda()
+            ).cpu()
 
         for i in range(maxdisp // 4):
             if i > 0:

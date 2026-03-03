@@ -1,74 +1,231 @@
-`graph → (exporter) → Python 파일 → 파일에서 로드한 단일 nn.Module(안에 모든 op가 submodules) 이 핵심이며, 이 파이프라인은 prepare_quantizable_module / recreate_gtx_module → module_template.py(per-op 모듈 생성) → ModuleHooker(연결/훅) 순으로 동작
+# GTX Compiler
 
+PyTorch 모델을 GTX NPU 하드웨어에서 실행 가능한 C 소스코드로 변환하는 컴파일러.
 
-전체 흐름은 모델(파이토치) → GTX 그래프(파싱/최적화/quant 준비) → (선택적으로) exporter로 Python 클래스 생성 → 다시 로드한 단일 nn.Module(quant_module)과 그래프를 서로 연결 → 그래프(또는 패턴 그래프)를 GtxCompiler가 XGraph/XIR로 변환 → xmodel 생성/컴파일 순으로 진행됩니다. GtxCompiler는 이 흐름에서 그래프를 실제 하드웨어용 XIR/XModel로 변환하는 최종 변환기 역할을 합니다.
+## 컴파일 파이프라인
 
-단계별 상세 매핑
+```
+PyTorch Model
+    │
+    ▼
+TorchParser (parse/)
+    │  FX 기반 그래프 추출
+    ▼
+GTX Graph (gtx_shared/gtx_graph/)
+    │  최적화 (Conv-BN fusion 등)
+    ▼
+CCodeGenerator (gtx_shared/compile/c_codegen.py)
+    │
+    ├──→ model.c / model.h       GTX intrinsic 추론 코드
+    ├──→ weights.bin              fp16 바이너리 가중치
+    ├──→ weight_map.h             DDR 절대 주소 매핑
+    ├──→ data_embed.S             .incbin으로 ELF에 데이터 임베딩
+    ├──→ crt0.S / linker.ld       Bare-metal 스타트업 + 메모리 맵
+    └──→ Makefile                 RISC-V 크로스 컴파일 빌드
+            │
+            ▼
+    riscv64-unknown-elf-gcc
+            │
+            ▼
+      model.elf  →  GTX_ISS 시뮬레이터
+```
 
-1. PyTorch 모델 실행/파싱
-   - 파일/함수: 파서(parse.TorchParser)
-   - 출력: GTX Graph (노드, 텐서, op.attrs, op.params 포함)
+## 사전 요구사항
 
-2. prepare_quantizable_module / recreate_gtx_module
-    - 파일/함수: qproc.utils.prepare_quantizable_module / recreate_gtx_module
-    - 동작:
-        - 그래프를 기반으로 quantizable한 quant_module(하나의 nn.Module로 재구성) 생성.
-        - (옵션) script-writer/exporter가 그래프를 Python 파일로 쓰고, 그 파일을 동적으로 로드하여 단일 클래스 인스턴스 생성 (recreate_gtx_module).
-        - ModuleHooker.hook_module_with_node로 노드 ↔ 서브모듈 연결, 출력 훅 등록 등 수행.
-        - 산출: (quant_module, graph) — 둘은 서로 연결되어 블롭(출력 값) 및 파라미터 동기화가 가능.
+- Python >= 3.10
+- [uv](https://github.com/astral-sh/uv) (패키지 매니저)
+- RISC-V 크로스 컴파일러: `riscv64-unknown-elf-gcc` (RV64GC)
+- SystemC 2.3+ (`/opt/systemc/lib` — 시뮬레이터 실행 시)
 
-3. ModuleHooker와 데이터 동기화
-    - 파일/함수: qproc.ModuleHooker
-    - 동작:
-        - 각 서브모듈에 .node 참조 부여
-        - forward 훅으로 노드 출력/shape/데이터를 캡처
-        - update_gtx_blob_data / update_parameters 등으로 graph의 텐서·파라미터 정보를 채움
-    - 목적: GTX 그래프의 노드 정보(출력 shape, 값, 파라미터)를 런타임에서 보강 -> 이후 변환에 필요한 shape/const 확보
+## 설치
 
-4. Graph 최적화 / DevGraph 변환
-    - 파일/함수: gtx_shared.compile.DevGraphOptimizer 등
-    - 동작: redundant op 제거, layout 변환, constant folding 등으로 배포용 dev_graph 생성
+```bash
+git clone <repository-url>
+cd GTX_Compiler
+uv sync
+```
 
-5. GTX 변환 (GtxCompiler)
-    - 파일/함수: gtx_shared.compile.gtx_compiler.GtxCompiler.do_compile
-    - 입력:
-        - compile_graph (GTX Graph 또는 Pattern Graph) — 노드, out_tensors.shape, op.params(데이터) 필요
-        - quant_config_info (옵션) — 노드/파라미터별 quant 정보(정수 xmodel 생성시)
-    - 주요 동작:
-        - graph의 파라미터(상수)를 XGraph에 fixed const로 복사(필요시 dtype/axis 조정 — 예: convtranspose flip)
-        - 각 노드를 ISS_CONVERTOR에 등록된 변환기 함수로 XGraph 상의 iss_op로 변환
-    - (옵션) xmodel 파일로 export (float 또는 int 접미)
-        - 출력: XGraph 인스턴스 (그리고 파일 출력 시 xmodel)
-        - 검증: verify_xmodel(shape 일치 검증), verify_gtx_graph(지원 여부 검사)
+## 사용법
 
-- 관계도(간단)
-  - PyTorch model --(parse)--> GTX Graph
-  - GTX Graph --(prepare_quantizable_module)--> quant_module + Graph (hooked)
-  - quant_module (forward + hooks) → update blobs/shapes in Graph
-  - Graph / dev_graph --(GtxCompiler.do_compile, quant_config_info)--> XGraph (xmodel)
-  - XGraph --(xcompiler)--> 하드웨어 타깃용 compiled graph
+### 1. PyTorch 모델 → C 코드 변환
 
-핵심 의존성/전제조건 (GtxCompiler가 제대로 동작하려면)
-- Graph의 각 노드에 대해 출력 shape가 정확히 존재해야 함(verify_xmodel에서 비교). shape 누락 시 변환 실패 또는 불일치.
-- op.params에 실제 numpy 데이터가 있어야 함(상수를 XGraph에 넣기 위해). ModuleHooker.update_blobs_once 또는 update_gtx_blob_data로 채워야 함.
-- 변환기(ISS_CONVERTOR)에 해당 op 타입의 변환 함수가 등록되어 있어야 함. 커스텀 op는 매핑을 추가해야 함.
-- quantized xmodel을 원하면 quant_config_info(노드별 bn/fp 정보 등)를 정확히 전달해야 함.
+```bash
+# torchvision 모델 직접 변환
+uv run python compile_to_c.py --torch-model resnet18 --output output/ --name resnet18
 
-실무적 주의점(문제 발생 시 확인 순서)
-- Graph에 out_tensors.shape가 채워져 있는가? (없으면 Module을 forward 해 hook으로 채워야 함)
-- op.params(가중치 등)가 Graph에 포함되어 있는가? (prepare / ModuleHooker로 동기화)
-- 변환기 매핑(ISS_CONVERTOR)에 op 지원이 있는가? (커스텀 · 복합 op 점검)
-- quant 모드 사용 시 quant_config_info의 포맷과 노드 키가 맞는가?
-- 변환 중 예외(AddXopError) 발생 위치 — 에러 메시지에서 노드명/타입 확인
+# 사전 추출된 IR 파일 사용
+uv run python resnet.py                    # IR 생성 (export1/ResNet.py)
+uv run python compile_to_c.py --model export1/ResNet.py --output output/ --name resnet18
 
-디버깅 팁
-- 먼저 prepare_quantizable_module로 (quant_module, graph)를 얻고, ModuleHooker.update_blobs_once로 graph의 tensor 값/shape를 채운 뒤 GtxCompiler.do_compile(graph, output_file_name=None)을 호출해보면 변환 실패 지점을 빠르게 찾을 수 있습니다.
-- verify_xmodel을 호출해 shape mismatch 로그를 확인.
-- 작은 서브그래프(예: conv→bn→relu)로 먼저 end-to-end 실행해 성공 케이스를 만든 뒤 복잡 모델로 확장.
+# 옵션
+#   --input-shape 1,3,224,224    입력 텐서 shape (기본값: 1,3,224,224)
+#   --nest-id 0                  타겟 NEST ID (0-3)
+#   --spu-id 0                   타겟 SPU ID (0-3)
+#   --no-makefile                빌드 파일 생성 생략
+```
 
-테스트/실험 제안
-- 현재 assemble_example.py에 있는 fake pipeline 대신 실제 prepare_quantizable_module(혹은 스텁으로 만든 버전)으로 quant_module과 graph를 얻고, 그 graph를 GtxCompiler.do_compile에 넘겨보면 전체 흐름을 시뮬레이션할 수 있습니다. (테스트 스텁에서는 XGraph와 iss_op 변환자들이 어떻게 동작하는지 부분적으로만 확인됩니다.)
+### 2. 크로스 컴파일
 
-요약
-- prepare_quantizable_module → module_template(per-op modules) → ModuleHooker는 GTX graph와 실행 가능한 파이토치 모듈을 동기화하여 graph가 변환(특히 상수/shape 정보) 가능한 상태가 되도록 준비합니다.
-- GtxCompiler는 그 준비된 graph를 받아 XGraph/XIR로 변환하고 xmodel을 생성하는 단계입니다. 즉, prepare_quantizable_module이 주는 graph/quant 정보가 없으면 GtxCompiler는 필요한 데이터(파라미터/shape/quant config)를 얻지 못해 실패하거나 잘못된 xmodel을 만들 수 있습니다.
+```bash
+cd output && make
+# 생성: model.elf (RISC-V bare-metal 바이너리)
+```
+
+### 3. 시뮬레이터 실행
+
+```bash
+export LD_LIBRARY_PATH=/opt/systemc/lib:$LD_LIBRARY_PATH
+../simulator/GTX_ISS -I output/resnet18.elf -M -W 0
+#   -I    입력 ELF 파일
+#   -M    모니터링 모드 (코드 무결성 검증)
+#   -l 3  로그 레벨 (선택)
+```
+
+### 4. 테스트
+
+```bash
+# pytest 기반 수치 검증 (코드 생성 + ELF 빌드 + 시뮬레이터 무결성 + PyTorch 참조값)
+uv run pytest tests/test_numerical.py -v
+
+# 코드 생성 테스트 (Mock 그래프)
+uv run python test_codegen.py
+
+# 미니 모델 E2E 테스트 (크로스 컴파일 + 시뮬레이터)
+uv run python test_codegen.py --mini
+
+# 개별 연산자 빌드 + 시뮬레이터 테스트
+uv run python test_codegen.py --op-test
+
+# 전체 모델 ELF 빌드 + 시뮬레이터 테스트
+uv run python test_codegen.py --compile-all
+```
+
+## GTX 실행 모델
+
+```
+CPU → __split() → Plan { Shared ∥ Thread } → __join() → CPU
+
+DMA 2단계:
+  Shared Scope (SMU): DDR ↔ L2 SPM
+  Thread Scope (SPU): L2 SPM ↔ L1 SPM + GTX ISA 계산
+
+Credit 동기화:
+  Shared → Thread: __load_cr(DDR→L2, credit)  →  Thread가 credit 대기 후 L2→L1 로드
+  Thread → Shared: __store_cr(L1→L2, credit)  →  Shared가 __credit_chk()로 대기
+```
+
+## 메모리 맵
+
+### DDR (External Memory)
+
+| 영역 | 주소 | 용도 |
+|------|------|------|
+| Input | `0x80000000` | 입력 데이터 |
+| Output | `0x90000000` | 추론 결과 |
+| Weight | `0xA0000000` | 모델 가중치 |
+| Temp | `0xB0000000` | 중간 버퍼 |
+
+### L1 SPM (Scratchpad Memory)
+
+| Bank | 주소 | 크기 | 용도 |
+|------|------|------|------|
+| A | `0x00000` | 128KB | 입력 |
+| B | `0x20000` | 64KB | 가중치 |
+| C | `0x30000` | 128KB | 출력 |
+| R | `0x50000` | 64KB | 임시 |
+
+## 지원 연산
+
+| 카테고리 | Op | GTX Intrinsic |
+|----------|-----|---------------|
+| **Convolution** | Conv2d | `__im2col_n` + `__mm` |
+| | ConvTranspose2d | `__col2im` + `__mm` |
+| | DepthwiseConv2d | `__dw_conv` |
+| **Normalization** | BatchNorm | `__batchnorm_aff` |
+| | LayerNorm, GroupNorm, InstanceNorm | `__layernorm` / `__groupnorm` |
+| **Activation** | ReLU / ReLU6 | `__relu` / `__relu6` |
+| | LeakyReLU / PReLU | `__lrelu` |
+| | GELU / Mish | `__gelu` / `__mish` |
+| | Sigmoid / Tanh | `__sigm` / `__tanh` |
+| | Hardswish / Hardsigmoid | `__hswish` / `__hsigm` |
+| | Softmax | `__esum` + `__softmax` |
+| **Pooling** | MaxPool2d | `__pool_m` |
+| | AvgPool2d / AdaptiveAvgPool2d | `__pool_a` |
+| **Linear** | Dense (Linear) | `__mm` |
+| **Elementwise** | Add / Mul / Div | `__add_vv` / `__mul_vv` / `__div_vv` |
+| **Reshape** | Flatten / Reshape / Permute | No-op (메모리 재해석) |
+| **기타** | Concat, Pad, Resize, PixelShuffle 등 | 메모리 조작 기반 |
+
+## 디렉토리 구조
+
+```
+GTX_Compiler/
+├── compile_to_c.py              # E2E 컴파일 파이프라인 CLI
+├── resnet.py                    # 예제: ResNet-18 파싱 → IR 생성
+├── test_codegen.py              # C 코드 생성 + 빌드 + 시뮬레이터 테스트
+├── tests/
+│   └── test_numerical.py        # pytest 수치 검증 테스트
+│
+├── gtx_shared/                  # 컴파일러 핵심 인프라
+│   ├── compile/
+│   │   ├── c_codegen.py         # C 코드 생성기 (CCodeGenerator)
+│   │   ├── memory_planner.py    # L1/L2/DDR 메모리 할당 + 타일링
+│   │   ├── weight_exporter.py   # 가중치 fp16 변환 + 바이너리 내보내기
+│   │   ├── gtx_compiler.py      # GTX 컴파일러 API
+│   │   └── op_test_runner.py    # 개별 연산자 시뮬레이터 테스트 러너
+│   ├── gtx_graph/               # GTX Graph IR (노드, 텐서, 연산)
+│   ├── optimization/            # 그래프 최적화 (Conv-BN fusion 등)
+│   ├── quantization/            # 양자화 설정 및 연산
+│   ├── base/                    # 상수 정의 (GTX_OP, 디버그 레벨)
+│   └── utils/                   # 공통 유틸리티
+│
+├── nn/                          # GTX 하드웨어 인터페이스
+│   ├── include/gtx/             # GTX intrinsic 헤더
+│   │   ├── intrin_level1.h      # Level 1: 기본 ISA (DMA, 연산)
+│   │   ├── intrin_level2.h      # Level 2: 편의 매크로
+│   │   ├── intrin_level3.h      # Level 3: 고수준 연산 (BN, ReLU 등)
+│   │   ├── gtx_csr.h            # CSR 레지스터 정의
+│   │   └── gtx_utils.h          # 유틸리티 함수
+│   ├── src/gtx/                 # GTX intrinsic C 구현체
+│   └── modules/                 # NN 레이어 PyTorch 모듈 구현
+│
+├── parse/                       # TorchParser: PyTorch → GTX Graph
+├── fx/                          # FX 기반 그래프 변환 유틸리티
+├── qproc/                       # 양자화 프로세서, ModuleHooker, export
+├── quantization/                # 양자화 알고리즘
+├── gtx_utils/                   # 유틸리티 (op 등록, 타입 매핑 등)
+│
+└── simulator/                   # GTX ISS (SystemC TLM 2.0 기반)
+    ├── GTX_ISS                  # 시뮬레이터 바이너리
+    ├── src/                     # RISC-V CPU + GTX 확장 유닛 (SPU, NSU, TMU)
+    └── inc/                     # 시뮬레이터 헤더
+```
+
+## 프로젝트 상태
+
+### 완료
+
+- PyTorch 모델 파싱 → GTX Graph IR 변환
+- GTX intrinsic 기반 C 코드 생성 (18+ 연산자)
+- L1/L2/DDR 메모리 타일링 및 DMA 코드 자동 생성
+- Credit 동기화 코드 자동 생성 (Shared ↔ Thread)
+- NEST/SPU ID 설정 가능화 (매크로 기반)
+- ELF 데이터 임베딩 (`.incbin` + 링커 스크립트)
+- 시뮬레이터 통합 (PTY 기반 실행, 메모리 덤프)
+- pytest 기반 수치 검증 테스트 (24 tests passing)
+
+### 진행 중
+
+- 시뮬레이터 비-monitoring 모드에서의 실제 연산 결과 추출
+  - 현재 `-M` 모드: 코드 무결성만 검증, DMA/연산 미실행
+  - 비-M 모드: credit 동기화 문제로 hang (시뮬레이터 제한)
+
+### 향후 계획
+
+- 시뮬레이터 수치 검증 활성화 (output 메모리 덤프 vs PyTorch 참조값 비교)
+- `c_codegen.py`의 `_emit_*` 메서드를 `nn/modules/` 구조로 리팩터링
+- 추가 모델 지원 확대 (YOLO, Transformer 등)
+
+## 라이선스
+
+MIT License - Copyright (c) 2025 Sudo42b

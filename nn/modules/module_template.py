@@ -296,7 +296,28 @@ def creat_module(torch_op_type, torch_op_attr, *args, **kwargs):
         return BuiltinFuncModule()
 
     else:
-        raise RuntimeError("Unkown op type:{torch_op_type}")
+        # UNKNOWN op_class_type — passthrough module (INPUT, RETURN 등)
+        class PassthroughModule(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.node = None
+                self.quant_mode, self.quantizer = maybe_get_quantizer()
+                self.torch_op_type = torch_op_type
+
+            def extra_repr(self):
+                return f"'{torch_op_type}'"
+
+            def forward(self, *args, **kwargs):
+                if args:
+                    return args[0]
+                if 'input' in kwargs:
+                    return kwargs['input']
+                # return first kwarg value
+                for v in kwargs.values():
+                    return v
+                return None
+
+        return PassthroughModule()
 
 
 def Module(gtx_type, *args, **kwargs):

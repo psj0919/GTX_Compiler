@@ -14,7 +14,7 @@
 # limitations under the License.
 #
 
-from lib2to3.pgen2.token import OP
+# from lib2to3.pgen2.token import OP
 from types import DynamicClassAttribute
 from .option_def import Option
 

@@ -1,8 +1,12 @@
-import imp
+# import imp
 import os
 import sys
 import torch
-from torch.utils.cpp_extension import load, _import_module_from_library
+try:
+    from torch.utils.cpp_extension import load, _import_module_from_library
+except ImportError:
+    load = None
+    _import_module_from_library = None
 from gtx_shared.utils import create_work_dir, GtxScreenLogger, QError, QWarning
 from gtx_utils.torch_utils import CmpFlag, compare_torch_version
 
@@ -32,7 +36,7 @@ if _aot:
         GtxScreenLogger().error2user(QError.IMPORT_KERNEL, f"{str(e)}")
         sys.exit(1)
     else:
-        GtxScreenLogger().info(f"Loading SuperGate GTX kernels...")
+        GtxScreenLogger().info("Loading SuperGate GTX kernels...")
 
 else:
     if os.path.exists(os.path.join(_cur_dir, "kernel")):
@@ -44,7 +48,6 @@ else:
         cwd = NN_PATH
         lib_path = os.path.join(cwd, "lib")
         create_work_dir(lib_path)
-        exit()
         # cpu_src_path = os.path.join(cwd, "../../../csrc/cpu")
         source_files = []
         # for name in os.listdir(cpu_src_path):
@@ -58,37 +61,12 @@ else:
 
         with_cuda = False
         extra_cflags = ""
-        if "CUDA_HOME" in os.environ:
-            GtxScreenLogger().check2user(
-                QError.TORCH_VERSION,
-                f"CUDA_HOME is set in environment, \
-but pytorch installed is CPU version. \
-Please install CUDA version pytorch.",
-                torch.cuda.is_available(),
-            )
-            cuda_src_path = os.path.join(cwd, "../../../csrc/cuda")
-            for name in os.listdir(cuda_src_path):
-                if name.split(".")[-1] in ["cu", "cpp", "cc", "c"]:
-                    source_files.append(os.path.join(cuda_src_path, name))
-
-            cpp_src_path = os.path.join(cwd, "src/cuda")
-            for name in os.listdir(cpp_src_path):
-                if name.split(".")[-1] in ["cpp", "cc", "c"]:
-                    source_files.append(os.path.join(cpp_src_path, name))
-
-            extra_include_paths.append(os.path.join(cwd, "../../../include/cuda"))
-            with_cuda = None
-        else:
-            print(
-                "CUDA is not available, or CUDA_HOME not found in the environment "
-                "so building CPU Only support."
-            )
-            # 추후 이부분 넣어야 할 듯?
-            # cpp_src_path = os.path.join(cwd, "src/cpu")
-            # for name in os.listdir(cpp_src_path):
-            #     if name.split(".")[-1] in ["cpp", "cc", "c"]:
-            #         pass
-            #         source_files.append(os.path.join(cpp_src_path, name))
+        # CPU-only mode: CUDA kernel loading removed
+        # CPU source files can be added here if needed:
+        # cpp_src_path = os.path.join(cwd, "src/cpu")
+        # for name in os.listdir(cpp_src_path):
+        #     if name.split(".")[-1] in ["cpp", "cc", "c"]:
+        #         source_files.append(os.path.join(cpp_src_path, name))
 
         is_python_module = False if new_kernel else True
         if source_files:

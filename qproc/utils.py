@@ -255,7 +255,7 @@ def prepare_quantizable_module(
     export_folder: str,
     state_dict_file: Optional[str] = None,
     quant_mode: int = 1,
-    device: "torch.device" = torch.device("cuda"),
+    device: "torch.device" = torch.device("cpu"),
     connect_qm_with_graph=True,
 ) -> Tuple[torch.nn.Module, Graph]:
 
@@ -664,7 +664,7 @@ def insert_fix_neuron_in_script_model(script_model, quantizer):
                     == "cpu"
                     else 0
                 )
-                device = torch.device("cpu") if device_id == 1 else torch.device("cuda")
+                device = torch.device("cpu")
                 jit_utils.set_attr_value(const_node, "value", tensor.to(device))
                 if tensor_name in quant_config["param"].keys():
                     bnfp = quantizer.get_quant_config(tensor_name, True, "param")

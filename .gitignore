@@ -206,4 +206,28 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 *.pt
-export/
+
+
+# ============================================================
+# GTX Compiler project-specific
+# ============================================================
+
+# Compiler generated output directories
+output/
+output_*/
+export1/
+
+# Cross-compiled binaries and data
+*.elf
+*.bin
+*.hex
+
+# Simulator dumps
+MEM_DUMP.hex
+COMMAND_DUMP.hex
+
+# AI tool caches
+.serena/
+.claude/
+.benchmarks/
+simulator/
