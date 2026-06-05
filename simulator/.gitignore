@@ -1,8 +1,0 @@
-libvfio-user.so
-build/
-obj/
-*.o
-*.d
-*.hex
-GTX_ISS
-*.out
