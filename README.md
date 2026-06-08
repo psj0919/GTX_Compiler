@@ -1,88 +1,77 @@
 #  Compiler
 
-PyTorch 모델을  하드웨어에서 실행 가능한 C 소스코드로 변환하는 컴파일러.
+PyTorch 모델을 **vision.cpp(ggml) arch 스타일 C++ + GGUF 가중치**로 변환하는 컴파일러.
+생성물은 ggml(libggml.so) 위에서 그대로 실행/검증된다.
 
 ## 컴파일 파이프라인
 
 ```
 PyTorch Model
-    │
+    │  TorchParser (parse/) — torch.jit.trace → Graph IR
     ▼
-TorchParser (parse/)
-    │  FX 기반 그래프 추출
+ Graph IR (shared/graph/) — Conv-BN fusion 등 최적화
+    │  ScriptWriter → export1/<Model>.py (op-chain)
     ▼
- Graph (shared/graph/)
-    │  최적화 (Conv-BN fusion 등)
+ VispCodeGenerator (shared/compile/ggml_codegen.py)
+    │  op 별 render(node, ctx) 레지스트리 (render_api)
+    ▼
+ output/<Model>.{cpp,h}  (visp arch 스타일 ggml 그래프)
+ output/<Model>.gguf     (state_dict → fp16, 텐서명=state_dict 키)
+ output/<Model>.py       (+ggml 실행 진입점)
 ```
 
 ## 사전 요구사항
 
 - Python >= 3.10
 - [uv](https://github.com/astral-sh/uv) (패키지 매니저)
-- RISC-V 크로스 컴파일러: `riscv64-unknown-elf-gcc` (RV64GC)
-- SystemC 2.3+ (`/opt/systemc/lib` — 시뮬레이터 실행 시)
+- `vision.cpp` (git submodule, ggml/GGUF 백엔드) — 아래 설치 참조
 
 ## 설치
 
 ```bash
 git clone <repository-url>
 cd Compiler
-uv sync
+git submodule update --init --recursive      # vision.cpp (+ depend/llama)
+uv sync                                       # 의존성 + g2c CLI 설치
 ```
 
 ## 사용법
 
-### 1. PyTorch 모델 → C 코드 변환
+### `g2c` — PyTorch 모델 → vision.cpp(ggml) C++ + GGUF
+
+`g2c` 는 pip 콘솔 스크립트(= `shared.compile.pipeline:main`)다. `uv sync`/`uv pip install -e .`
+후 사용한다.
 
 ```bash
-# torchvision 모델 직접 변환
-uv run python compile_to_c.py --torch-model resnet18 --output output/ --name resnet18
+# 모델 표현식 (ultralytics 래퍼는 .model 백본 자동 추출)
+uv run g2c --model "ultralytics.YOLO('yolo11n')" --output output/yolo11n
 
-# 사전 추출된 IR 파일 사용
-uv run python resnet.py                    # IR 생성 (export1/ResNet.py)
-uv run python compile_to_c.py --model export1/ResNet.py --output output/ --name resnet18
+# torchvision 분류 모델 (이름 또는 점경로)
+uv run g2c --model resnet18 --output output/resnet18
+uv run g2c --model torchvision.models.resnet50 --name r50 --output output/r50
 
-# 옵션
-#   --input-shape 1,3,224,224    입력 텐서 shape (기본값: 1,3,224,224)
-#   --nest-id 0                  타겟 NEST ID (0-3)
-#   --spu-id 0                   타겟 SPU ID (0-3)
-#   --no-makefile                빌드 파일 생성 생략
+# .pt/.pth 가중치 로드 / 입력 shape 지정
+uv run g2c --model "ultralytics.YOLO('yolov8n')" --pth weights.pth \
+           --input-shape 1,3,640,640 --output output/
+
+# 옵션: --model(필수, 표현식/이름/.pt) --pth --output --name --input-shape
+#   input shape 미지정 시 yolo→(1,3,640,640), 그 외→(1,3,224,224)
 ```
 
-### 2. 크로스 컴파일
+생성된 `output/<Model>.cpp/.h` 는 vision.cpp 의 `src/visp/arch/` 에 두면 ggml 로 빌드/실행된다.
+
+### ggml 로 바로 실행 (검증용)
 
 ```bash
-cd output && make
-# 생성: model.elf (RISC-V bare-metal 바이너리)
+# 생성된 export 를 ggml(libggml.so) 커널로 직접 실행 (PyTorch 참조 없이 forward)
+uv run python output/yolo11n/DetectionModel.py     # [ggml] output: (1, ...)
 ```
 
-### 3. 시뮬레이터 실행
+### 테스트 / 예제 스크립트
 
 ```bash
-export LD_LIBRARY_PATH=/opt/systemc/lib:$LD_LIBRARY_PATH
-../simulator/ISS -I output/resnet18.elf -M -W 0
-#   -I    입력 ELF 파일
-#   -M    모니터링 모드 (코드 무결성 검증)
-#   -l 3  로그 레벨 (선택)
-```
-
-### 4. 테스트
-
-```bash
-# pytest 기반 수치 검증 (코드 생성 + ELF 빌드 + 시뮬레이터 무결성 + PyTorch 참조값)
-uv run pytest tests/test_numerical.py -v
-
-# 코드 생성 테스트 (Mock 그래프)
-uv run python test_codegen.py
-
-# 미니 모델 E2E 테스트 (크로스 컴파일 + 시뮬레이터)
-uv run python test_codegen.py --mini
-
-# 개별 연산자 빌드 + 시뮬레이터 테스트
-uv run python test_codegen.py --op-test
-
-# 전체 모델 ELF 빌드 + 시뮬레이터 테스트
-uv run python test_codegen.py --compile-all
+# 과거 진입점(테스트용 shim). 기본 resnet18, g2c 와 동일 파이프라인.
+uv run python test/compile_to_c.py --model yolov8n --output output/yolov8n
 ```
 
 ##  실행 모델
@@ -123,68 +112,60 @@ Credit 동기화:
 
 ```
 Compiler/
-├── compile_to_c.py              # E2E 컴파일 파이프라인 CLI
-├── resnet.py                    # 예제: ResNet-18 파싱 → IR 생성
-├── test_codegen.py              # C 코드 생성 + 빌드 + 시뮬레이터 테스트
-├── tests/
-│   └── test_numerical.py        # pytest 수치 검증 테스트
+├── pyproject.toml               # g2c 콘솔 스크립트 등록 ([project.scripts])
+├── resnet.py                    # 예제: ResNet-18 파싱 → export 생성
+├── test/
+│   └── compile_to_c.py          # 과거 진입점(테스트 shim) → pipeline 재사용
 │
-├── shared/                  # 컴파일러 핵심 인프라
+├── shared/                      # 컴파일러 핵심 인프라
 │   ├── compile/
-│   │   ├── c_codegen.py         # C 코드 생성기 (CCodeGenerator)
-│   │   ├── memory_planner.py    # L1/L2/DDR 메모리 할당 + 타일링
-│   │   ├── weight_exporter.py   # 가중치 fp16 변환 + 바이너리 내보내기
-│   │   ├── compiler.py      #  컴파일러 API
-│   │   └── op_test_runner.py    # 개별 연산자 시뮬레이터 테스트 러너
-│   ├── graph/               #  Graph IR (노드, 텐서, 연산)
+│   │   ├── pipeline.py          # g2c 구현: 모델로드→parse→export→cpp/h+gguf
+│   │   ├── ggml_codegen.py      # VispCodeGenerator (visp/ggml arch C++ 생성)
+│   │   ├── render_api.py        # op render 레지스트리/RenderContext/헬퍼
+│   │   ├── memory_planner.py    # (legacy intrinsic) L1/L2/DDR 타일링
+│   │   └── weight_exporter.py   # 가중치 fp16 변환
+│   ├── graph/                   # Graph IR (노드, 텐서, 연산)
 │   ├── optimization/            # 그래프 최적화 (Conv-BN fusion 등)
 │   ├── quantization/            # 양자화 설정 및 연산
-│   ├── base/                    # 상수 정의 (OP, 디버그 레벨)
+│   ├── base/                    # 상수 정의 (OP enum, 디버그 레벨)
 │   └── utils/                   # 공통 유틸리티
 │
-├── nn/                          #  하드웨어 인터페이스
-│   ├── include//             #  intrinsic 헤더
-│   │   ├── intrin_level1.h      # Level 1: 기본 ISA (DMA, 연산)
-│   │   ├── intrin_level2.h      # Level 2: 편의 매크로
-│   │   ├── intrin_level3.h      # Level 3: 고수준 연산 (BN, ReLU 등)
-│   │   ├── csr.h            # CSR 레지스터 정의
-│   │   └── utils.h          # 유틸리티 함수
-│   ├── src//                 #  intrinsic C 구현체
-│   └── modules/                 # NN 레이어 PyTorch 모듈 구현
+├── nn/                          # NN 모듈 + ggml 백엔드
+│   ├── modules/
+│   │   ├── <op>.py              # op별 PyTorch 모듈 + render(node,ctx) (ggml emit)
+│   │   ├── head_render.py       # detection-head/anchor/DFL/meta op render
+│   │   ├── vision_ops_render.py # 활성화/정규화/math op render
+│   │   └── ggml_backend.py      # set_backend('ggml') 런타임 실행 백엔드
+│   └── include//, src//         # (legacy) intrinsic 헤더/구현
 │
-├── parse/                       # TorchParser: PyTorch →  Graph
-├── fx/                          # FX 기반 그래프 변환 유틸리티
-├── qproc/                       # 양자화 프로세서, ModuleHooker, export
-├── quantization/                # 양자화 알고리즘
-├── utils/                   # 유틸리티 (op 등록, 타입 매핑 등)
-│
-└── x86/                   # x86에서 동작하는 intrinsic 에뮬
+├── parse/                       # TorchParser: PyTorch → Graph IR
+├── qproc/                       # ModuleHooker, adaquant, export(ScriptWriter)
+├── quantization/, utils/        # 양자화 알고리즘 / op 등록·타입 매핑
+└── vision.cpp/                  # (submodule) ggml/GGUF 추론 라이브러리
 ```
+
+## ggml operator 커버리지
+
+codegen render + 런타임 백엔드가 사용하는 ggml op(추론 전용; 학습 op 제외): conv_2d,
+mul_mat, pool_2d, add/sub/mul/div, relu/silu/sigmoid/gelu/tanh/leaky_relu/clamp,
+soft_max/log_softmax, norm/group_norm, concat/cont/transpose/permute/reshape/view,
+repeat/upscale/arange/top_k/argmax/get_rows, sqrt/sum/mean/scale. detection head 의
+meta op(strided_slice/gather/index/max/meshgrid/stack/full/const/floor_divide 등)도
+실제 ggml 그래프 op 으로 emit한다(passthrough 없음).
 
 ## 프로젝트 상태
 
 ### 완료
 
-- PyTorch 모델 파싱 →  Graph IR 변환
--  intrinsic 기반 C 코드 생성 (18+ 연산자)
-- L1/L2/DDR 메모리 타일링 및 DMA 코드 자동 생성
-- Credit 동기화 코드 자동 생성 (Shared ↔ Thread)
-- NEST/SPU ID 설정 가능화 (매크로 기반)
-- ELF 데이터 임베딩 (`.incbin` + 링커 스크립트)
-- 시뮬레이터 통합 (PTY 기반 실행, 메모리 덤프)
-- pytest 기반 수치 검증 테스트 (24 tests passing)
+- PyTorch 모델 파싱 → Graph IR → visp/ggml arch C++ + GGUF 생성 (`g2c`)
+- ResNet18 / YOLO v8~v12 codegen: detection head 포함 **0 unhandled op**
+- ggml(libggml.so) 런타임 백엔드 검증: ResNet18 / YOLO v8~v12 vs PyTorch cosine 1.0
 
-### 진행 중
+### 진행 중 / 향후
 
-- 시뮬레이터 비-monitoring 모드에서의 실제 연산 결과 추출
-  - 현재 `-M` 모드: 코드 무결성만 검증, DMA/연산 미실행
-  - 비-M 모드: credit 동기화 문제로 hang (시뮬레이터 제한)
-
-### 향후 계획
-
-- 시뮬레이터 수치 검증 활성화 (output 메모리 덤프 vs PyTorch 참조값 비교)
-- `c_codegen.py`의 `_emit_*` 메서드를 `nn/modules/` 구조로 리팩터링
-- 추가 모델 지원 확대 (YOLO, Transformer 등)
+- 생성 .cpp 를 vision.cpp arch 로 빌드해 ggml 수치 검증 (현재 일부 head op 은 best-effort)
+- group_norm affine / strided_slice offset 등 best-effort render 정밀화
+- 추가 모델 지원 확대 (Transformer/세그멘테이션)
 
 ## 라이선스
 
