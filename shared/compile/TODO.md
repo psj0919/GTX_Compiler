@@ -6,22 +6,27 @@ ggml 정규 op 97개(106 − 제외 9) 대상 codegen 커버리지의 남은 작
 ## ✅ Done
 
 - **빌더 가용성 97/97** — 모든 대상 op 이 현재 ggml 라이브러리에 빌더 존재(conv_transpose_2d 는 `_p0` 변형).
-- **render 와이어링 46/97** — codegen 이 실제 ggml 호출을 emit:
+- **render 와이어링 64/97** — codegen 이 실제 ggml 호출을 emit:
   - 기본/활성화: conv_2d, conv_2d_dw, mul_mat, pool_2d, add/sub/mul/div, relu/silu/sigmoid/gelu(+erf/quick)/tanh/leaky_relu/elu/clamp/relu6/softplus/hardsigmoid/hardswish, soft_max/log_softmax, exp/log/neg/floor/ceil, sqrt/sum/mean, scale, norm/group_norm, concat/cont/repeat/upscale/arange/top_k/argmax/get_rows/view, pad, reshape/unsqueeze 등
+  - **B그룹 단일 op(완료)**: sin/cos/abs/sgn/step/round/sqr/expm1/trunc/xielu, argsort/sum_rows/cumsum, pool_1d(max/avg), conv_3d, conv_transpose_1d/2d, pad_reflect_1d (OP enum 추가 + render). conv_3d/conv_transpose 는 인자 시그니처 best-effort(TODO 주석).
   - **fused(op 시퀀스 융합, `ggml_fusion.py`)**: swiglu/geglu/reglu, rms_norm, l2_norm, flash_attn_ext
 - **fusion 프레임워크**: `shared/compile/ggml_fusion.py` (`shared/inspector` SubgraphMatcher 활용, 패턴 6종). backbone(YOLO/ResNet) 무회귀 확인.
 - **검증 도구**: `tools/ggml_codegen_coverage.py`.
 
-## ⏳ 남은 51개 — 분류별 구현 방안
+## ⏳ 남은 33개 — 분류별 구현 방안
 
 ### A. fused op — 실제 모델 trace 패턴 필요 (pattern-match 로 wiring 가능)
 `rope`, `add_rel_pos`/`get_rel_pos`, `timestep_embedding`, `flash_attn_ext`(정교화), GLU 변형(`geglu_erf`/`geglu_quick`/`swiglu_oai`).
 - 현재 `flash_attn` 패턴은 **직접 인접** `matmul→softmax→matmul` 만 매칭 → 실제 attention 은 중간에 `scale`/`transpose` 가 끼어 미매칭. 가변 패턴(옵션 노드 허용) 필요.
 - **구현 전제**: transformer 계열 비전 모델(ViT/DETR/RT-DETR/SAM 등) 입력을 trace 해 실제 op 분해를 확인해야 패턴이 맞다(이 repo 엔 아직 해당 아키텍처 입력 없음 → 합성 그래프로만 검증됨).
 
-### B. 단일 op — 대응 PyTorch op + OP enum 만 있으면 즉시 wiring
-`sin`, `cos`, `abs`, `sgn`, `step`, `round`, `sqr`, `expm1`, `trunc`, `xielu`, `argsort`, `sum_rows`, `pool_1d`, `conv_3d`, `conv_transpose_1d/2d`, `im2col`/`im2col_3d`, `pad_reflect_1d`, `cumsum`.
-- 작업: `shared/base/key_names.OP` 에 누락 op 추가(있으면) → `nn/modules/vision_ops_render.py` 에 `_unary`/단일 render 추가. (sin/cos/abs/sgn/step/round/sqr 등은 현재 OP enum 부재)
+### B. 단일 op — ✅ 완료 (OP enum 추가 + render wiring)
+`sin/cos/abs/sgn/step/round/sqr/expm1/trunc/xielu`, `argsort/sum_rows/cumsum`,
+`pool_1d(max/avg)`, `conv_3d`, `conv_transpose_1d/2d`, `pad_reflect_1d` → `vision_ops_render.py`.
+- 남은 잔여: `im2col`/`im2col_3d` (conv 내부 연산, 사용자 PyTorch op 아님 → 보류).
+- **주의(parse-side)**: render(codegen)는 준비됐으나, 실제 트리거되려면 `parse/op_dispatcher`/
+  `utils/op_register` 의 **torch aten op → OP enum 매핑**이 있어야 한다(sin/cos 등 신규 OP 는
+  현재 매핑 미등록). conv_3d/conv_transpose 는 인자 시그니처 vision.cpp 빌드 시 정밀화 필요.
 
 ### C. 아키텍처 전용 — 해당 모델 컴파일 시에만 의미
 `rwkv_wkv6/7`, `ssm_conv`, `ssm_scan`, `gated_linear_attn`. RWKV/Mamba(SSM) 모델 지원 시 구현.

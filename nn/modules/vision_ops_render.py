@@ -133,6 +133,90 @@ render_softplus = _unary(_OP.SOFTPLUS, "ggml_softplus", "softplus")
 render_hsigmoid = _unary(_OP.HSIGMOID, "ggml_hardsigmoid", "hsig")
 render_hswish = _unary(_OP.HSWISH, "ggml_hardswish", "hsw")
 
+# B그룹 단일 unary math (ggml 빌더 직매핑)
+render_sin = _unary(_OP.SIN, "ggml_sin", "sin")
+render_cos = _unary(_OP.COS, "ggml_cos", "cos")
+render_abs = _unary(_OP.ABS, "ggml_abs", "abs")
+render_sign = _unary(_OP.SIGN, "ggml_sgn", "sgn")
+render_step = _unary(_OP.STEP, "ggml_step", "step")
+render_round = _unary(_OP.ROUND, "ggml_round", "round")
+render_square = _unary(_OP.SQUARE, "ggml_sqr", "sqr")
+render_expm1 = _unary(_OP.EXPM1, "ggml_expm1", "expm1")
+render_trunc = _unary(_OP.TRUNC, "ggml_trunc", "trunc")
+render_xielu = _unary(_OP.XIELU, "ggml_xielu", "xielu")
+
+
+# ------------------------------------------------------------- B그룹 구조적 op
+@_rr(_OP.SUM_ROWS)
+def render_sum_rows(node, ctx):
+    return ctx.out(node, f"ggml_sum_rows(m, {ctx.inp(node)})", hint="sumr")
+
+
+@_rr(_OP.CUMSUM)
+def render_cumsum(node, ctx):
+    return ctx.out(node, f"ggml_cumsum(m, {ctx.inp(node)}) /* TODO(ggml): dim 확인 */", hint="cumsum")
+
+
+@_rr(_OP.ARGSORT)
+def render_argsort(node, ctx):
+    order = "GGML_SORT_ORDER_DESC" if ctx.attr(node, "descending", False) else "GGML_SORT_ORDER_ASC"
+    return ctx.out(node, f"ggml_argsort(m, {ctx.inp(node)}, {order}) /* TODO(ggml): dim=마지막축 가정 */", hint="asort")
+
+
+def _pool1d(op, kind):
+    @_rr(op)
+    def _r(node, ctx, _k=kind):
+        k = ctx.scalar(ctx.attr(node, "kernel_size", [2]))
+        s = ctx.scalar(ctx.attr(node, "stride", [k]))
+        p = ctx.scalar(ctx.attr(node, "padding", [0]))
+        return ctx.out(node, f"ggml_pool_1d(m, {ctx.inp(node)}, {_k}, {k}, {s}, {p})", hint="pool1d")
+    return _r
+
+
+render_maxpool1d = _pool1d(_OP.MAX_POOL1D, "GGML_OP_POOL_MAX")
+render_avgpool1d = _pool1d(_OP.AVG_POOL1D, "GGML_OP_POOL_AVG")
+
+
+@_rr(_OP.CONV3D)
+def render_conv3d(node, ctx):
+    has_bias = bool(ctx.attr(node, "bias", False))
+    key = ctx.weight(node, ["weight"] + (["bias"] if has_bias else []))
+    s = ctx.scalar(ctx.attr(node, "stride", [1, 1, 1]))
+    p = ctx.scalar(ctx.attr(node, "padding", [0, 0, 0]))
+    d = ctx.scalar(ctx.attr(node, "dilation", [1, 1, 1]))
+    return ctx.out(
+        node,
+        f"ggml_conv_3d(m, {key}, {ctx.inp(node)}, {s}, {s}, {s}, {p}, {p}, {p}, {d}, {d}, {d})"
+        " /* TODO(ggml): conv_3d 인자 시그니처 확인 */",
+        hint="conv3d",
+    )
+
+
+def _conv_transpose(op, builder, ndim):
+    @_rr(op)
+    def _r(node, ctx, _b=builder):
+        has_bias = bool(ctx.attr(node, "bias", False))
+        key = ctx.weight(node, ["weight"] + (["bias"] if has_bias else []))
+        s = ctx.scalar(ctx.attr(node, "stride", [1]))
+        return ctx.out(
+            node,
+            f"{_b}(m, {key}, {ctx.inp(node)}, {s})"
+            " /* TODO(ggml): conv_transpose 인자(stride/pad) 확인 */",
+            hint="convT",
+        )
+    return _r
+
+
+render_convT1d = _conv_transpose(_OP.CONVTRANSPOSE1D, "ggml_conv_transpose_1d", 1)
+render_convT2d = _conv_transpose(_OP.CONVTRANSPOSE2D, "ggml_conv_transpose_2d_p0", 2)
+
+
+@_rr(_OP.PAD_REFLECT_1D)
+def render_pad_reflect_1d(node, ctx):
+    p = ctx.attr(node, "pad", ctx.attr(node, "padding", [0, 0])) or [0, 0]
+    p = [int(x) for x in p] + [0, 0]
+    return ctx.out(node, f"ggml_pad_reflect_1d(m, {ctx.inp(node)}, {p[0]}, {p[1]})", hint="padr")
+
 
 @_rr(_OP.ARGMAX)
 def render_argmax(node, ctx):
