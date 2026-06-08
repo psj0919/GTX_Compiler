@@ -110,3 +110,51 @@ def render_sum(node, ctx):
 def render_mean(node, ctx):
     # ggml_mean: ne0(행) 평균. torch dim 의미와 다르면 후처리 필요.
     return ctx.out(node, f"ggml_mean(m, {ctx.inp(node)})", hint="mean")
+
+
+# ------------------------------------------------------------- 추가 unary
+def _unary(op, fn, hint):
+    @_rr(op)
+    def _r(node, ctx, _fn=fn, _h=hint):
+        return ctx.out(node, f"{_fn}(m, {ctx.inp(node)})", hint=_h)
+    return _r
+
+
+render_exp = _unary(_OP.EXP, "ggml_exp", "exp")
+render_log = _unary(_OP.LOG, "ggml_log", "log")
+render_neg = _unary(_OP.NEG, "ggml_neg", "neg")
+render_floor = _unary(_OP.FLOOR, "ggml_floor", "floor")
+render_ceil = _unary(_OP.CEIL, "ggml_ceil", "ceil")
+render_elu = _unary(_OP.ELU, "ggml_elu", "elu")
+render_softplus = _unary(_OP.SOFTPLUS, "ggml_softplus", "softplus")
+render_hsigmoid = _unary(_OP.HSIGMOID, "ggml_hardsigmoid", "hsig")
+render_hswish = _unary(_OP.HSWISH, "ggml_hardswish", "hsw")
+
+
+@_rr(_OP.ARGMAX)
+def render_argmax(node, ctx):
+    return ctx.out(node, f"ggml_argmax(m, {ctx.inp(node)})", hint="amax")
+
+
+@_rr(_OP.PRELU)
+def render_prelu(node, ctx):
+    # PReLU(per-channel slope)을 ggml_leaky_relu(scalar)로 근사. 정확본은 mul/max 합성(TODO).
+    return ctx.out(
+        node,
+        f"ggml_leaky_relu(m, {ctx.inp(node)}, 0.25f, false)"
+        " /* TODO(ggml): PReLU per-channel slope → scalar 근사 */",
+        hint="prelu",
+    )
+
+
+@_rr(_OP.PAD)
+def render_pad(node, ctx):
+    # ggml_pad(a, p0,p1,p2,p3): 각 ne 축 뒤쪽 패딩. torch pad 리스트→ggml 축 매핑은 best-effort.
+    p = ctx.attr(node, "pad", ctx.attr(node, "padding", [0, 0, 0, 0])) or [0, 0, 0, 0]
+    p = [int(x) for x in p] + [0, 0, 0, 0]
+    return ctx.out(
+        node,
+        f"ggml_pad(m, {ctx.inp(node)}, {p[0]}, {p[1]}, {p[2]}, {p[3]})"
+        " /* TODO(ggml): torch pad order → ggml ne 축 확인 */",
+        hint="pad",
+    )
