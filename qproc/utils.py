@@ -272,24 +272,12 @@ def prepare_quantizable_module(
     # switch to specified device
     ScreenLogger().info(f"=>Quant Module is in '{device.type}'.")
 
-    if Option.fx_mode.value is True:
-        module, input_args.args = to_device(module, input_args.args, device)
-        from utils.jit_utils import set_training
-
-        with set_training(module, False):
-            if isinstance(module, torch.fx.GraphModule):
-                gm = module
-            else:
-                gm = torch.fx.symbolic_trace(module)
-            graph, quant_module = prepare_from_fx(gm, input_args.args)
-            quant_module = quant_module.to(device)
-    else:
-        # parse origin module to graph
-        ScreenLogger().info(f"=>Parsing {get_module_name(module)}...")
-        graph = parse_module(module, input_args)
-        ScreenLogger().info(f"=>Quantizable module is generated.({export_file})")
-        # recreate quantizable module from graph
-        quant_module = recreate_module(graph, True, export_file).to(device)
+    # parse origin module to graph (fx 경로는 fx 패키지 제거로 삭제됨)
+    ScreenLogger().info(f"=>Parsing {get_module_name(module)}...")
+    graph = parse_module(module, input_args)
+    ScreenLogger().info(f"=>Quantizable module is generated.({export_file})")
+    # recreate quantizable module from graph
+    quant_module = recreate_module(graph, True, export_file).to(device)
     quant_module.train(mode=module.training)
 
     # hook module with graph
@@ -305,53 +293,6 @@ def prepare_quantizable_module(
         set_input_dump_status(quant_module, True)
 
     return quant_module, graph
-
-
-def prepare_from_fx(gm: "GraphModule", example_inputs: List[torch.Tensor]):
-    """
-    convert gm to a quantizable gm and prepare graph
-    """
-    import copy
-    import types
-    from torch.fx.experimental.normalize import NormalizeArgs
-    from fx.optimization.overrides import fuse_conv_bn, QuantizeModule
-    from fx.optimization.normalize import normalize
-    from fx.fx_translator import GraphTranslator
-    from fx.meta_prop import collect_value_meta
-    from nn.modules.quant_model import QuantModel
-    from nn.modules.quant_model import forward_processor
-    from torch._subclasses import FakeTensorMode
-    from quantization.torchquantizer import TORCHQuantizer
-
-    # 1. fuse batchnorm
-    gm = fuse_conv_bn(gm)
-
-    # 2. inplace replace activation
-
-    # 3. convert "+" to torch.add
-    gm = normalize(gm)
-    # Make args and kwargs visible in fx graph
-
-    collect_value_meta(gm, example_inputs, mode=FakeTensorMode())
-    gm = NormalizeArgs(gm).transform()
-    graph_translator = GraphTranslator(gm, next(graph_counter))
-    graph_translator.build(*example_inputs)
-    quantizable_gm = QuantizeModule(gm, graph_translator.graph).transform()
-    quant_opt_graph = quant_optimize(graph_translator.graph)
-    #! MODIFIED
-    QuantModel.forward = forward_processor(quantizable_gm.__class__.forward)
-    quant_module = QuantModel()
-    quant_module.forward = types.MethodType(
-        forward_processor(quantizable_gm.__class__.forward), quant_module
-    )
-    ModuleHooker.hook_module_with_quantizer(quantizable_gm, None)
-    for k, v in quantizable_gm.__dict__.items():
-        # for partial graphs, quantizer always exists in quantizable module
-        quant_module.__dict__[k] = copy.deepcopy(v)
-    quant_opt_graph.assign_node_topological_name(
-        prefix=f"{quant_opt_graph.name}{TorchGraphSymbol.GRAPH_SCOPE_SYM}"
-    )
-    return quant_opt_graph, quant_module
 
 
 def replace_relu6_with_relu(module: torch.nn.Module):

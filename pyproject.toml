@@ -16,7 +16,7 @@ g2c = "shared.compile.pipeline:main"
 
 [tool.setuptools.packages.find]
 include = [
-    "shared*", "parse*", "qproc*", "quantization*", "utils*", "nn*", "fx*",
+    "shared*", "parse*", "qproc*", "quantization*", "utils*", "nn*",
 ]
 
 [build-system]
