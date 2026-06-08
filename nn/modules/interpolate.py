@@ -47,3 +47,22 @@ class Interpolate(torch.nn.Module):
 @py_utils.register_quant_op
 def interpolate(*args, **kwargs):
     return Interpolate(*args, **kwargs)
+
+
+# --- ggml/vision.cpp codegen (render) ---
+from shared.compile.render_api import register_render as _rr
+from shared.base import OP as _OP
+
+
+@_rr(_OP.RESIZE, _OP.INTERPOLATE)
+def render(node, ctx):
+    # YOLO neck 의 upsample 은 nearest, 정수배(보통 2x). ggml_upscale(nearest) 로 매핑.
+    s = ctx.scalar(ctx.attr(node, "scale", [2, 2]), 0, 2)
+    mode = str(ctx.attr(node, "mode", "nearest")).lower()
+    note = "" if "near" in mode else f" /* TODO(ggml): mode={mode} (upscale=nearest) */"
+    return ctx.out(
+        node,
+        f"ggml_upscale(m, {ctx.inp(node)}, {int(s)}, GGML_SCALE_MODE_NEAREST)"
+        f" /* TODO(ggml): verify ggml_upscale signature for this build */{note}",
+        hint="up",
+    )

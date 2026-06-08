@@ -231,3 +231,17 @@ def softmax(*args, **kwargs):
     if quant_mode == None:
         return torch.nn.Softmax(*args, **kwargs)
     return Softmax(*args, **kwargs)
+
+
+# --- ggml/vision.cpp codegen (render) ---
+from shared.compile.render_api import register_render as _rr
+from shared.base import OP as _OP
+
+
+@_rr(_OP.SOFTMAX)
+def render(node, ctx):
+    # ggml_soft_max 는 ne0(행) 축에 대해 정규화. torch dim=-1 (마지막 축)이면 ne0 와
+    # 일치하므로 정확. 다른 축이면 ggml_soft_max_ext / transpose 필요(TODO).
+    axis = ctx.attr(node, "dim", -1)
+    note = "" if int(axis) in (-1,) else f" /* TODO(ggml): softmax axis={axis} != last */"
+    return ctx.out(node, f"ggml_soft_max(m, {ctx.inp(node)}){note}", hint="sm")

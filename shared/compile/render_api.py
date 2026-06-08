@@ -63,6 +63,15 @@ _ATTR_ALIASES = {
     "groups": ("group", "groups"),
     "inplace": ("inplace",),
     "output_size": ("output_size", "out_size"),
+    # detection-head / meta op attrs (TorchParser 그래프 키)
+    "dim": ("dim", "axis"),          # concat/softmax/max 의 축
+    "order": ("order", "perm", "dims"),  # transpose/permute 의 축 순서
+    "scale": ("scale", "scale_factor"),  # resize 배율
+    "keep_dims": ("keep_dims", "keepdim"),
+    "negative_slope": ("negative_slope", "alpha", "slope"),  # leaky_relu
+    "min": ("min", "min_val", "clamp_min"),  # clamp
+    "max": ("max", "max_val", "clamp_max"),
+    "num_groups": ("num_groups", "groups", "group"),  # group_norm
 }
 
 
@@ -120,6 +129,29 @@ def scalarize(v, idx=0, default=1):
     return v if v is not None else default
 
 
+def out_shape(node, i=0):
+    """노드 i 번째 출력의 정적 torch shape (list[int]) 또는 None.
+
+    detection-head 의 reshape/unsqueeze/arange 등은 출력 shape 가 정적으로 확정되어
+    있어 (입력 해상도 고정), 동적 입력 텐서를 추적하지 않고도 ggml shape 를 산출할 수 있다.
+    """
+    outs = getattr(node, "out_tensors", None) or []
+    if i >= len(outs) or outs[i] is None:
+        return None
+    try:
+        return [int(d) for d in outs[i].shape]
+    except Exception:
+        return None
+
+
+def ggml_axis(torch_dim, ndim):
+    """torch 축 인덱스를 ggml ne 축으로 변환 (ggml ne 는 torch shape 의 역순)."""
+    d = int(torch_dim)
+    if d < 0:
+        d += ndim
+    return ndim - 1 - d
+
+
 class RenderContext:
     """render(node, ctx) 가 사용하는 상태/헬퍼. VispCodeGenerator 가 walk 하며 채운다."""
 
@@ -143,6 +175,16 @@ class RenderContext:
     def bind(self, node, var):
         if node.out_tensors:
             self._var[id(node.out_tensors[0])] = var
+
+    def bind_outputs(self, node, var):
+        """모든 출력 텐서를 같은 변수에 바인딩 (multi-output op: meshgrid/max/topk).
+
+        scaffold 단계에서 다중 출력을 단일 변수로 묶는다 — 2번째 출력(예: topk 인덱스)을
+        구분하지 않으므로 정확한 head 디코드에는 추가 작업이 필요하다(TODO).
+        """
+        for t in node.out_tensors or []:
+            if t is not None:
+                self._var[id(t)] = var
 
     def out(self, node, expr, hint=None):
         hint = hint or _HINT.get(op_value(node), "t")

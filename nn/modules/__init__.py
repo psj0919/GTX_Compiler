@@ -40,6 +40,8 @@ from .log_softmax import *
 from .layernorm import *
 from .embedding import *
 from .prelu import *
+from .head_render import *
+from .vision_ops_render import *
 
 # from .clamp import *
 from .sqrt import *
