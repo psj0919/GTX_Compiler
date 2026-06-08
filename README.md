@@ -146,26 +146,42 @@ Compiler/
 
 ## ggml operator 커버리지
 
-codegen render + 런타임 백엔드가 사용하는 ggml op(추론 전용; 학습 op 제외): conv_2d,
-mul_mat, pool_2d, add/sub/mul/div, relu/silu/sigmoid/gelu/tanh/leaky_relu/clamp,
-soft_max/log_softmax, norm/group_norm, concat/cont/transpose/permute/reshape/view,
-repeat/upscale/arange/top_k/argmax/get_rows, sqrt/sum/mean/scale. detection head 의
-meta op(strided_slice/gather/index/max/meshgrid/stack/full/const/floor_divide 등)도
-실제 ggml 그래프 op 으로 emit한다(passthrough 없음).
+ggml 정규 op 106개 중 codegen 대상은 **97개**(제외 9 = view/메타데이터 5 + 학습 3 + SWIGLU).
+검증: `uv run python tools/ggml_codegen_coverage.py` (단일 소스 `shared/compile/ggml_ops.py`).
+
+- **빌더 가용성 97/97** — 모든 대상 op 의 ggml 빌더가 라이브러리에 존재.
+- **render 와이어링 64/97** — codegen 이 실제 ggml 호출을 emit:
+  - 기본/활성화/정규화/math: conv_2d, mul_mat, pool_1d/2d, add/sub/mul/div, relu/silu/
+    sigmoid/gelu(+erf/quick)/tanh/leaky_relu/elu/clamp/relu6/softplus/hardsigmoid/hardswish,
+    soft_max/log_softmax, norm/group_norm, sin/cos/exp/log/neg/abs/sgn/step/round/sqr/floor/
+    ceil/sqrt/sum/sum_rows/mean/cumsum/scale, concat/cont/transpose/permute/reshape/view,
+    repeat/upscale/arange/top_k/argmax/argsort/get_rows/pad/pad_reflect_1d,
+    conv_3d/conv_transpose_1d/2d
+  - **detection head meta op**: strided_slice/gather/index/max/meshgrid/stack/full/const/
+    floor_divide 등도 실제 ggml 그래프 op 으로 emit (passthrough 없음)
+  - **op 시퀀스 융합(`shared/compile/ggml_fusion.py`)**: SwiGLU/GEGLU/REGLU, RMS_NORM, L2_NORM,
+    FLASH_ATTN — `shared/inspector` 의 서브그래프 패턴 매칭으로 단일 ggml op 융합
+- 미와이어링 33개 = 아키텍처 전용(rwkv/ssm/rope/flash 변형/rel_pos/timestep) + 메모리/내부 op
+  (acc/cpy/set/diag/win_part 등). 자세한 남은 작업: `shared/compile/TODO.md`.
 
 ## 프로젝트 상태
 
-### 완료
+### 완료 (검증됨)
 
-- PyTorch 모델 파싱 → Graph IR → visp/ggml arch C++ + GGUF 생성 (`g2c`)
-- ResNet18 / YOLO v8~v12 codegen: detection head 포함 **0 unhandled op**
-- ggml(libggml.so) 런타임 백엔드 검증: ResNet18 / YOLO v8~v12 vs PyTorch cosine 1.0
+- PyTorch 모델 → Graph IR → visp/ggml arch C++ + GGUF 생성 (`g2c` CLI)
+- **ResNet18 / YOLO v8~v12 codegen: detection head 포함 0 unhandled op**
+- **ggml(libggml.so) 런타임 실행 검증** (`python output/<model>/<Model>.py`):
+  ResNet18 `(1,1000)` · YOLO v8/v9/v11/v12 `(1,84,8400)` · YOLOv10 NMS-free `(1,300,6)`,
+  PyTorch 대비 cosine 1.0
+- ggml op 커버리지 97/97 가용 · 64/97 render 와이어링
 
 ### 진행 중 / 향후
 
+- **graph fusion & pattern matching 확장** (`shared/compile/TODO.md`): RoPE/FlashAttention/
+  RMSNorm 등 transformer 융합 패턴을 `shared/graph/graph_searcher.py`(네이티브 chain 매처)
+  기반으로 정밀화 — 실제 transformer 비전 모델 trace 로 검증 필요
 - 생성 .cpp 를 vision.cpp arch 로 빌드해 ggml 수치 검증 (현재 일부 head op 은 best-effort)
-- group_norm affine / strided_slice offset 등 best-effort render 정밀화
-- 추가 모델 지원 확대 (Transformer/세그멘테이션)
+- 추가 모델 지원 확대 (Transformer/세그멘테이션), parse-side torch→OP 매핑 보강
 
 ## 라이선스
 
