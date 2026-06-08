@@ -38,6 +38,10 @@ class Graph(object):
     def parents(self, n):
         return list(self._graph.predecessors(n))
 
+    def node(self, id):
+        """노드 id 의 원본 객체 ("node" 속성)를 반환. SubgraphMatcher 가 사용."""
+        return self._graph.nodes[id]["node"]
+
     def get_node_types(self, id):
         return self._graph.nodes[id]["node"].get_types()
 
