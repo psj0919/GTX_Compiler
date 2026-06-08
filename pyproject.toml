@@ -11,8 +11,13 @@ dependencies = [
     "ultralytics",
 ]
 
-[tool.setuptools]
-packages = ["shared", "parse", "qproc", "quantization", "utils", "nn", "fx"]
+[project.scripts]
+g2c = "shared.compile.pipeline:main"
+
+[tool.setuptools.packages.find]
+include = [
+    "shared*", "parse*", "qproc*", "quantization*", "utils*", "nn*", "fx*",
+]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
