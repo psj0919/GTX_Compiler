@@ -14,7 +14,7 @@
 
 import torch.nn as nn
 import torch.nn.functional as F
-from gtx_shared.utils import GtxOption
+from shared.utils import Option
 
 
 class QuantizedLinear(nn.Linear):
@@ -34,13 +34,13 @@ class QuantizedLinear(nn.Linear):
         self.qconfig = qconfig
 
         self.weight_quantizer = qconfig.get_weight_quantizer("weight")
-        if not GtxOption.gtx_gemm88.value:
+        if not Option.gemm88.value:
             if bias:
                 self.bias_quantizer = qconfig.get_weight_quantizer("bias")
 
     def forward(self, input):
         weight = self.weight_quantizer(self.weight)
-        if GtxOption.gtx_gemm88.value:
+        if Option.gemm88.value:
             bias = self.bias
         else:
             bias = self.bias_quantizer(self.bias) if self.bias is not None else None

@@ -18,11 +18,11 @@ import torch
 from torch.autograd import Variable
 import math
 
-from gtx_shared.utils import GtxOption, GtxScreenLogger
-from gtx_shared.quantization import maybe_get_quantizer
-from gtx_shared.quantization import quantize_tensors
+from shared.utils import Option, ScreenLogger
+from shared.quantization import maybe_get_quantizer
+from shared.quantization import quantize_tensors
 from .quant_noise import eval_qnoise
-import gtx_utils as py_utils
+import utils as py_utils
 
 __all__ = ["clamp"]
 
@@ -60,7 +60,7 @@ class Clamp(torch.nn.Module):
 
         # # quantize parameters
         # qweight = None
-        # inplace = (GtxOption.gtx_quant_off.value or
+        # inplace = (Option.quant_off.value or
         #     self.quantizer is not None and self.quantizer.inplace)
 
         # # quantize input tensor

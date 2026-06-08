@@ -21,21 +21,21 @@ from torch.autograd import Variable
 import math
 import numpy as np
 
-from gtx_shared.utils import GtxOption, GtxScreenLogger, create_work_dir
-from gtx_shared.quantization import maybe_get_quantizer
-from gtx_shared.quantization import quantize_tensors
+from shared.utils import Option, ScreenLogger, create_work_dir
+from shared.quantization import maybe_get_quantizer
+from shared.quantization import quantize_tensors
 from .quant_noise import eval_qnoise
 import importlib as _importlib
-_op_register_mod = _importlib.import_module('gtx_utils.op_register')
+_op_register_mod = _importlib.import_module('utils.op_register')
 
 class _PyUtilsProxy:
-    """gtx_utils.op_register 모듈 프록시 (이름 shadowing 우회)"""
+    """utils.op_register 모듈 프록시 (이름 shadowing 우회)"""
     def __getattr__(self, name):
         return getattr(_op_register_mod, name)
 
 py_utils = _PyUtilsProxy()
 import torch.nn.functional as F
-from gtx_utils.torch_utils import CmpFlag, compare_torch_version
+from utils.torch_utils import CmpFlag, compare_torch_version
 
 __all__ = ["gelu"]
 
@@ -66,20 +66,20 @@ class GELU(torch.nn.GELU):
         if (
             self.quant_mode <= 0
             or (not self.node.in_quant_part)
-            or GtxOption.gtx_gemm88.value
+            or Option.gemm88.value
         ):
             return super().forward(input)
 
         qinput = quantize_tensors([input], self.node, tensor_type="input")[0]
 
-        if GtxOption.gtx_quant_off.value or self.quantizer.exporting:
+        if Option.quant_off.value or self.quantizer.exporting:
             output = super().forward(qinput)
 
         else:
             # Method 1: Dynamic table look up with 8 bw
             if (
-                GtxOption.gtx_op_gelu_mode.value == "dynamic_table"
-                or GtxOption.gtx_ip_v70_bert.value
+                Option.op_gelu_mode.value == "dynamic_table"
+                or Option.ip_v70_bert.value
             ):
                 output = self.gelu(qinput)
 

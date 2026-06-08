@@ -1,7 +1,7 @@
 [project]
-name = "gtx_compiler"
+name = "compiler"
 version = "0.1.0"
-description = "GTX Compiler: PyTorch 모델 변환 및 최적화 툴킷"
+description = " Compiler: PyTorch 모델 변환 및 최적화 툴킷"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [tool.setuptools]
-packages = ["gtx_shared", "parse", "qproc", "quantization", "gtx_utils", "nn", "fx"]
+packages = ["shared", "parse", "qproc", "quantization", "utils", "nn", "fx"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

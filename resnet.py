@@ -6,8 +6,8 @@ from torchvision.models import resnet18
 # Ensure project root is on sys.path so local imports (parse, qproc, etc.) work
 from ultralytics import YOLO
 from parse.rich_in_out_helper import StandardInputData
-from gtx_utils.module_util import get_module_name
-from gtx_utils import TorchSymbol
+from utils.module_util import get_module_name
+from utils import TorchSymbol
 import traceback
 
 

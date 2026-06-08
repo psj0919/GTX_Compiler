@@ -17,8 +17,8 @@
 */
 
 
-#ifndef gtx_FIXNEURON_OP_H
-#define gtx_FIXNEURON_OP_H
+#ifndef FIXNEURON_OP_H
+#define FIXNEURON_OP_H
 
 using at::Tensor;
 void FixNeuronV2 (Tensor Tinput, 

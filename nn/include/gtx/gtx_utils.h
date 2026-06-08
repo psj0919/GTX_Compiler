@@ -1,5 +1,5 @@
-#ifndef GTX_UTILS_H
-#define GTX_UTILS_H
+#ifndef UTILS_H
+#define UTILS_H
 
 #include <stdint.h>
 #include <stddef.h>

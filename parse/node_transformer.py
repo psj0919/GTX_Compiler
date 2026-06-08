@@ -16,8 +16,8 @@
 
 import torch
 
-from gtx_shared.base import GTX_OP
-from gtx_shared.gtx_graph import Graph, Node, Tensor
+from shared.base import OP
+from shared.graph import Graph, Node, Tensor
 
 from .torch_op_def import *
 from .parse_utils import _GRAPH_SCOPE_SYM, get_full_name
@@ -148,7 +148,7 @@ class NodeTransformer(object):
                     bias_g.from_ndarray(bias_hi.data[2 * hidden_size : 3 * hidden_size])
                     bias_o.from_ndarray(bias_hi.data[3 * hidden_size : 4 * hidden_size])
 
-                op = TorchBaseOperation(GTX_OP.INPUT, GTX_OP.INPUT)
+                op = TorchBaseOperation(OP.INPUT, OP.INPUT)
                 op.set_config("input", "args[0]")
                 shape = [1, input_size]
                 node_creator(
@@ -158,7 +158,7 @@ class NodeTransformer(object):
                     num_out_tensors=1,
                     shape=shape,
                 )
-                op = TorchBaseOperation(GTX_OP.INPUT, GTX_OP.INPUT)
+                op = TorchBaseOperation(OP.INPUT, OP.INPUT)
                 op.set_config("input", "args[1]")
                 shape = [1, hidden_size]
                 node_creator(
@@ -168,7 +168,7 @@ class NodeTransformer(object):
                     num_out_tensors=1,
                     shape=shape,
                 )
-                op = TorchBaseOperation(GTX_OP.INPUT, GTX_OP.INPUT)
+                op = TorchBaseOperation(OP.INPUT, OP.INPUT)
                 op.set_config("input", "args[2]")
                 shape = [1, hidden_size]
                 node_creator(
@@ -426,7 +426,7 @@ class NodeTransformer(object):
                     ],
                 )
 
-                # op = Split(optype=GTX_OP.SPLIT)
+                # op = Split(optype=OP.SPLIT)
                 # op.set_attr(op.AttrName.INPUT, graph.node("combine_2_linearity").out_tensors[0])
                 # op.set_attr(op.AttrName.SPLIT_SIZE_OR_SECTIONS, hidden_size)
                 # op.set_attr(op.AttrName.AXIS, 1)
@@ -661,7 +661,7 @@ class NodeTransformer(object):
                         bias_hh.data[2 * hidden_size : 3 * hidden_size]
                     )
 
-                op = TorchBaseOperation(GTX_OP.INPUT, GTX_OP.INPUT)
+                op = TorchBaseOperation(OP.INPUT, OP.INPUT)
                 op.set_config("input", "args[0]")
                 shape = [1, input_size]
                 node_creator(
@@ -671,7 +671,7 @@ class NodeTransformer(object):
                     num_out_tensors=1,
                     shape=shape,
                 )
-                op = TorchBaseOperation(GTX_OP.INPUT, GTX_OP.INPUT)
+                op = TorchBaseOperation(OP.INPUT, OP.INPUT)
                 op.set_config("input", "args[1]")
                 shape = [1, hidden_size]
                 node_creator(
@@ -915,7 +915,7 @@ class NodeTransformer(object):
                     ],
                 )
 
-                # op = Split(optype=GTX_OP.SPLIT)
+                # op = Split(optype=OP.SPLIT)
                 # op.set_attr(op.AttrName.INPUT, graph.node("combine_2_linearity").out_tensors[0])
                 # op.set_attr(op.AttrName.SPLIT_SIZE_OR_SECTIONS, hidden_size)
                 # op.set_attr(op.AttrName.AXIS, 1)

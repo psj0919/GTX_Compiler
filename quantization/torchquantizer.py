@@ -34,38 +34,38 @@ from nn import fake_quantize_per_tensor
 from nn.modules.fix_ops import diffs_fix_pos
 from parse.parse_utils import ValueDeviceInfo
 from qproc.utils import quant_model_inferenced
-from gtx_shared.base import (
+from shared.base import (
     key_names,
-    gtx_KEYS,
-    gtx_DEBUG_LVL,
+    KEYS,
+    DEBUG_LVL,
     GLOBAL_MAP,
-    GTX_OP,
+    OP,
 )
-from gtx_shared.base.key_names import FrameworkType
-from gtx_shared.quantization import BaseQuantizer
+from shared.base.key_names import FrameworkType
+from shared.quantization import BaseQuantizer
 from quantization import QuantizerImpl
 from quantization import is_valid_tensor_for_quantizer, has_inf_nan
-from gtx_shared.utils.log import gtx_debug_print
-from gtx_shared.utils import (
-    GtxOption,
+from shared.utils.log import debug_print
+from shared.utils import (
+    Option,
     tensor_util,
-    GtxScreenLogger,
-    GtxDebugLogger,
+    ScreenLogger,
+    DebugLogger,
     QError,
     QWarning,
     QNote,
 )
 from quantization import (
-    TorchGtxQstrategy,
+    TorchQstrategy,
     TorchMPQstrategy,
     TorchGemm88Qstrategy,
 )
-from gtx_shared.quantization import TQTStrategy
-from gtx_shared.quantization import DPUQConfigImp
-from gtx_shared.quantization.fix_pos_adjust import FixPosChecker
+from shared.quantization import TQTStrategy
+from shared.quantization import DPUQConfigImp
+from shared.quantization.fix_pos_adjust import FixPosChecker
 
-import gtx_shared.utils as gtx_utils
-import gtx_shared.quantization as gtx_quant
+import shared.utils as utils
+import shared.quantization as quant
 
 global_snr_inv = 0.0
 
@@ -81,11 +81,11 @@ class TORCHQuantizer(BaseQuantizer, QuantizerImpl):
     ):
         BaseQuantizer.__init__(self, quant_mode, output_dir, quant_config, is_lstm)
         QuantizerImpl.__init__(self)
-        if GtxOption.gtx_param_corr.value > 0:
+        if Option.param_corr.value > 0:
             if self.quant_mode == 2:
                 path = pathlib.Path(self.bias_corr_file)
                 if not (path.exists() and path.is_file()):
-                    GtxScreenLogger().error2user(
+                    ScreenLogger().error2user(
                         QError.BIAS_CORRECTION,
                         f"Bias correction result file does not exist. \
 Please check calibration with bias correction is done or not.",
@@ -99,23 +99,23 @@ Please check calibration with bias correction is done or not.",
 
         mix_bit = quant_config["mix_bit"]
         self.quant_config_imp = DPUQConfigImp()
-        if GtxOption.gtx_gemm88.value is True:
+        if Option.gemm88.value is True:
             self.quant_strategy = TorchGemm88Qstrategy(
                 quant_config, self.quant_config_imp, is_lstm
             )
-        elif GtxOption.gtx_only_int_quant.value is False:
+        elif Option.only_int_quant.value is False:
             self.quant_strategy = TorchMPQstrategy(
                 quant_config, self.quant_config_imp, is_lstm
             )
         elif is_lstm:
-            self.quant_strategy = TorchGtxQstrategy(
+            self.quant_strategy = TorchQstrategy(
                 quant_config, self.quant_config_imp, is_lstm=True
             )
         else:
             if mix_bit:
                 self.quant_strategy = TQTStrategy(quant_config, self.quant_config_imp)
             else:
-                self.quant_strategy = TorchGtxQstrategy(
+                self.quant_strategy = TorchQstrategy(
                     quant_config, self.quant_config_imp, is_lstm=False
                 )
 
@@ -132,16 +132,16 @@ Please check calibration with bias correction is done or not.",
 
     def features_check(self):
         if self.fast_finetuned and not self._finetuned_para_loaded:
-            GtxScreenLogger().warning2user(
+            ScreenLogger().warning2user(
                 QWarning.FAST_FINETUNE,
                 f"Fast finetuned parameters are not loaded. \
 Call load_ft_param to load them.",
             )
         if self.bias_corrected and not self._bias_corr_loaded:
-            GtxScreenLogger().warning2user(
+            ScreenLogger().warning2user(
                 QWarning.BIAS_CORRECTION,
                 f'Bias correction file is not loaded. Set \
-command line option "--gtx_param_corr" to load it.',
+command line option "--param_corr" to load it.',
             )
 
     def calibrate_int(
@@ -160,7 +160,7 @@ command line option "--gtx_param_corr" to load it.',
 
         res_save = None
         if isinstance(res.values, torch.Tensor):
-            if GtxOption.gtx_quant_off.value or res.values.data.numel() == 0:
+            if Option.quant_off.value or res.values.data.numel() == 0:
                 if self.inplace:
                     return res
                 else:
@@ -168,7 +168,7 @@ command line option "--gtx_param_corr" to load it.',
             res_save = res
             res = res.values.data
         else:
-            if GtxOption.gtx_quant_off.value or res.data.numel() == 0:
+            if Option.quant_off.value or res.data.numel() == 0:
                 if self.inplace:
                     return res
                 else:
@@ -179,14 +179,14 @@ command line option "--gtx_param_corr" to load it.',
             and res.dtype != torch.double
             and res.dtype != torch.float16
         ):
-            GtxScreenLogger().warning2user_once(
+            ScreenLogger().warning2user_once(
                 QWarning.TENSOR_TYPE_NOT_QUANTIZABLE,
                 f"The tensor type of {node.name} is {str(res.dtype)}. Only support float32/double/float16 quantization.",
             )
             return res_save if res_save is not None else res
 
         if not is_valid_tensor_for_quantizer(res):
-            GtxScreenLogger().warning2user_once(
+            ScreenLogger().warning2user_once(
                 QWarning.TENSOR_VALUE_INVALID,
                 f'The tensor type of {node.name} have "inf" or "nan" value.The quantization for this tensor is ignored.Please check it.',
             )
@@ -204,11 +204,11 @@ command line option "--gtx_param_corr" to load it.',
             # hardware cut method
             mth = 4 if self.lstm else 2
 
-            if GtxOption.gtx_use_torch_quantizer.value is True:
+            if Option.use_torch_quantizer.value is True:
                 mth = -1
             elif tensor_type == "param":
                 mth = 3
-            elif self.lstm and GtxOption.gtx_ip_asr.value is True:
+            elif self.lstm and Option.ip_asr.value is True:
                 mth = 3
         # print(self.quant_strategy.__dict__)
         config = self.quant_strategy._quant_strategy_info
@@ -230,9 +230,9 @@ command line option "--gtx_param_corr" to load it.',
             elif config[config_type]["round_method"] == "half_even":
                 mth = 8
 
-        scope = 5 if GtxOption.gtx_diffs_mode.value == "mse" else 1
+        scope = 5 if Option.diffs_mode.value == "mse" else 1
         # set fix pos scanning scope to 1 for some type of tensors
-        if node.op.type in [GTX_OP.INPUT, GTX_OP.QUANT_STUB]:
+        if node.op.type in [OP.INPUT, OP.QUANT_STUB]:
             scope = 1
         if self.lstm and tensor_type == "input":
             scope = 1
@@ -251,14 +251,14 @@ command line option "--gtx_param_corr" to load it.',
             bnfp[1] = (int)(Tfixpos.item())
             # limit max fix pos to 12 if bit width <= 8, others limit to 15
             if bnfp[0] <= 8 or self.lstm:
-                max_fp = GtxOption.gtx_max_fix_position.value
+                max_fp = Option.max_fix_position.value
                 bnfp[1] = min(max_fp, bnfp[1])
             else:
                 bnfp[1] = min(15, bnfp[1])
             # record fix pos of activation
             if tensor_type != "param":
                 self.config_history[tensor_type][name][idx].append(bnfp[1])
-                if GtxOption.gtx_stat.value > 1:
+                if Option.stat.value > 1:
                     print(
                         f"---- fp history: {stats.mode(np.array(self.config_history[tensor_type][name][idx]))}"
                     )
@@ -266,7 +266,7 @@ command line option "--gtx_param_corr" to load it.',
                 bnfp[1] = stats.mode(data)[0][0]
                 bnfp[1] = bnfp[1].astype(np.int32).tolist()
             self.set_quant_config(name, bnfp, tensor_type, idx)
-            if GtxOption.gtx_stat.value > 1:
+            if Option.stat.value > 1:
                 print(
                     "---- quant %s tensor: %s with bw = %d and fp = %g"
                     % (tensor_type, name, bnfp[0], bnfp[1])
@@ -274,8 +274,8 @@ command line option "--gtx_param_corr" to load it.',
 
             # get 2^bit_width and 2^fracpos
             bnfp = self.get_quant_config(name, True, tensor_type, idx)
-            if GtxOption.gtx_stat.value > 2:
-                quant_data = gtx_quant.QuantizeData(name, res.cpu().detach().numpy())
+            if Option.stat.value > 2:
+                quant_data = quant.QuantizeData(name, res.cpu().detach().numpy())
 
             # do quantization for parameter or activation
             # support "narrow_range" True for flexml, and false for dpu device
@@ -292,7 +292,7 @@ command line option "--gtx_param_corr" to load it.',
                     res, bnfp[1], 0, -bnfp[0], bnfp[0] - 1, mth, self.inplace
                 )
 
-            if GtxOption.gtx_stat.value > 2:
+            if Option.stat.value > 2:
                 # quant_data.all_close(res.cpu().detach().numpy())
                 global global_snr_inv
                 quant_efficiency, sqnr = quant_data.quant_efficiency(
@@ -346,7 +346,7 @@ command line option "--gtx_param_corr" to load it.',
 
         blob_save = None
         if isinstance(blob.values, torch.Tensor):
-            if GtxOption.gtx_quant_off.value:
+            if Option.quant_off.value:
                 if self.inplace:
                     return blob
                 else:
@@ -354,7 +354,7 @@ command line option "--gtx_param_corr" to load it.',
             blob_save = blob
             blob = blob.values.data
         else:
-            if GtxOption.gtx_quant_off.value:
+            if Option.quant_off.value:
                 if self.inplace:
                     return blob
                 else:
@@ -365,27 +365,27 @@ command line option "--gtx_param_corr" to load it.',
             and blob.dtype != torch.double
             and blob.dtype != torch.float16
         ):
-            GtxScreenLogger().warning2user_once(
+            ScreenLogger().warning2user_once(
                 QWarning.TENSOR_TYPE_NOT_QUANTIZABLE,
                 f"The tensor type of {node.name} is {str(blob.dtype)}. Only support float32/double/float16 quantization.",
             )
             return blob_save if blob_save is not None else blob
 
         if not is_valid_tensor_for_quantizer(blob):
-            GtxScreenLogger().warning2user_once(
+            ScreenLogger().warning2user_once(
                 QWarning.TENSOR_VALUE_INVALID,
                 f'The tensor type of {node.name} have "inf" or "nan" value. The quantization is ignored. Please check it.',
             )
             return blob_save if blob_save is not None else blob
 
-        if GtxOption.gtx_stat.value > 2:
-            quant_data = gtx_quant.QuantizeData(name, blob.cpu().detach().numpy())
+        if Option.stat.value > 2:
+            quant_data = quant.QuantizeData(name, blob.cpu().detach().numpy())
         # quantize the tensor
         bnfp = self.get_quant_config(name, True, tensor_type, idx)
         if bnfp is None:
             return blob_save if blob_save is not None else blob
 
-        if GtxOption.gtx_stat.value > 1:
+        if Option.stat.value > 1:
             print(
                 "---- quant %s tensor: %s with 1/step = %g"
                 % (tensor_type, name, bnfp[1])
@@ -397,11 +397,11 @@ command line option "--gtx_param_corr" to load it.',
             # hardware cut method
             mth = 4 if self.lstm else 2
 
-            if GtxOption.gtx_use_torch_quantizer.value is True:
+            if Option.use_torch_quantizer.value is True:
                 mth = -1
             elif tensor_type == "param":
                 mth = 3
-            elif self.lstm and GtxOption.gtx_ip_asr.value is True:
+            elif self.lstm and Option.ip_asr.value is True:
                 mth = 3
 
         config = self.quant_strategy._quant_strategy_info
@@ -439,7 +439,7 @@ command line option "--gtx_param_corr" to load it.',
                 blob, bnfp[1], 0, -bnfp[0], bnfp[0] - 1, mth, self.inplace
             )
 
-        if GtxOption.gtx_stat.value > 2:
+        if Option.stat.value > 2:
             global global_snr_inv
             quant_efficiency, sqnr = quant_data.quant_efficiency(
                 res.cpu().detach().numpy(), 8
@@ -473,9 +473,9 @@ command line option "--gtx_param_corr" to load it.',
                         )
                     )
 
-        # update param to gtx graph
+        # update param to  graph
         if tensor_type == "param" and not self.exporting:
-            self.update_param_to_gtx(node, name, res.cpu().detach().numpy())
+            self.update_param_to_(node, name, res.cpu().detach().numpy())
 
         if tensor_type == "param":
             self.graph.param_tensor(name).device = (
@@ -506,13 +506,13 @@ command line option "--gtx_param_corr" to load it.',
 
         ret = True
         # Check node output tensors
-        for node in self.Gtxgraph.all_nodes():
+        for node in self.graph.all_nodes():
             if self.configer.is_node_quantizable(node, self.lstm):
                 qout = self.configer.quant_output(node.name).name
                 bnfp = self.get_quant_config(qout, False)
                 if bnfp and bnfp[1] is None:
-                    if node.op.type not in [GTX_OP.SIGMOID, GTX_OP.TANH]:
-                        GtxScreenLogger().warning2user(
+                    if node.op.type not in [OP.SIGMOID, OP.TANH]:
+                        ScreenLogger().warning2user(
                             QWarning.TENSOR_NOT_QUANTIZED,
                             f"Node ouptut tensor is not quantized: {node.name} type: {node.op.type}",
                         )
@@ -522,7 +522,7 @@ command line option "--gtx_param_corr" to load it.',
             for idx in range(self.get_quant_len(item, "input")):
                 bnfp = self.get_quant_config(item, False, "input", idx)
                 if bnfp and bnfp[1] is None:
-                    GtxScreenLogger().warning2user(
+                    ScreenLogger().warning2user(
                         QWarning.TENSOR_NOT_QUANTIZED,
                         f"Input tensor is not quantized: {item}",
                     )
@@ -532,7 +532,7 @@ command line option "--gtx_param_corr" to load it.',
             for idx in range(self.get_quant_len(item, "param")):
                 bnfp = self.get_quant_config(item, False, "param", idx)
                 if bnfp and bnfp[1] is None:
-                    GtxScreenLogger().warning2user(
+                    ScreenLogger().warning2user(
                         QWarning.TENSOR_NOT_QUANTIZED,
                         f"Parameter tensor is not quantized: {item}. \
 If this parameter is not a parameter embedded in torch operation, like weights of CONV, \
@@ -545,21 +545,21 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
     def _align_lstm_fix_pos_with_cell_output(self):
         if self.lstm:
             if self.rnn_front_end:
-                for node in self.Gtxgraph.all_nodes():
-                    nextNode = self.configer.Gtxgraph.get_node_by_idx(
+                for node in self.graph.all_nodes():
+                    nextNode = self.configer.graph.get_node_by_idx(
                         idx=node.idx + 1
                     )
                     # find the last node of every cell
                     if (
                         nextNode is not None
                         and nextNode.name.split("::")[-1] == "input_0"
-                        or node.idx == len(list(self.configer.Gtxgraph.nodes)) - 1
+                        or node.idx == len(list(self.configer.graph.nodes)) - 1
                     ):
                         # print('----find output h node %s' % node.name)
                         for nid in range(node.idx - 1, -1, -1):
-                            prevNode = self.configer.Gtxgraph.get_node_by_idx(idx=nid)
+                            prevNode = self.configer.graph.get_node_by_idx(idx=nid)
                             # fragpos of sigmoid and tanh keep 15
-                            if prevNode.op.type in [GTX_OP.SIGMOID, GTX_OP.TANH]:
+                            if prevNode.op.type in [OP.SIGMOID, OP.TANH]:
                                 bnfp = self.get_quant_config(prevNode.name, False)
                                 bnfp[1] = 15
                                 self.set_quant_config(prevNode.name, bnfp)
@@ -575,24 +575,24 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
                                 self.set_quant_config(target_name, bnfp)
             else:  # to handle dlrm
                 # fragpos of sigmoid and tanh keep 15
-                for node in self.Gtxgraph.all_nodes():
-                    if node.op.type in [GTX_OP.SIGMOID, GTX_OP.TANH]:
+                for node in self.graph.all_nodes():
+                    if node.op.type in [OP.SIGMOID, OP.TANH]:
                         bnfp = self.get_quant_config(node.name, False)
                         bnfp[1] = 15
                         self.set_quant_config(node.name, bnfp)
 
                 # find the last non-sigmoid/tanh node
-                node_num = len(list(self.configer.Gtxgraph.nodes))
+                node_num = len(list(self.configer.graph.nodes))
                 for idx in range(node_num - 1, -1, -1):
-                    last_node = self.configer.Gtxgraph.get_node_by_idx(idx)
-                    if last_node.op.type not in [GTX_OP.SIGMOID, GTX_OP.TANH]:
+                    last_node = self.configer.graph.get_node_by_idx(idx)
+                    if last_node.op.type not in [OP.SIGMOID, OP.TANH]:
                         break
                 last_bnfp = self.get_quant_config(last_node.name, False)
 
                 # back propagate last_node's bnfp to previous nodes which are non-sigmoid/tanh
                 for idx in range(last_node.idx - 1, -1, -1):
-                    node = self.configer.Gtxgraph.get_node_by_idx(idx)
-                    if node.op.type in [GTX_OP.SIGMOID, GTX_OP.TANH]:
+                    node = self.configer.graph.get_node_by_idx(idx)
+                    if node.op.type in [OP.SIGMOID, OP.TANH]:
                         continue
                     elif node.name.split("::")[-1] == "input_0":
                         break
@@ -600,7 +600,7 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
                         self.set_quant_config(node.name, last_bnfp)
 
     def _node_relative_fix_pos_check(self):
-        for node in self.Gtxgraph.all_nodes():
+        for node in self.graph.all_nodes():
             # shift_bias and shift_cut check
             if (
                 node.in_quant_part
@@ -615,7 +615,7 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
                     node.op.param["weights"].name, False, "param"
                 )
                 if fix_pos_i[-1] == None:
-                    GtxScreenLogger().warning2user(
+                    ScreenLogger().warning2user(
                         QWarning.TENSOR_NOT_QUANTIZED,
                         f"Output tensor of node {node.in_nodes[0]} is not quantized.",
                     )
@@ -625,7 +625,7 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
                 shift_cut_min = 0
                 shift_cut_max = 16
                 if shift_cut < shift_cut_min:
-                    GtxScreenLogger().warning2user(
+                    ScreenLogger().warning2user(
                         QWarning.SHIFT_CHECK,
                         "output {} value is too small, so adjust the fix position from {} to {}".format(
                             conv_quant_output,
@@ -636,7 +636,7 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
                     fix_pos_o[-1] = fix_pos_o[-1] + shift_cut - shift_cut_min
                     self.set_quant_config(conv_quant_output, fix_pos_o)
                 elif shift_cut > shift_cut_max:
-                    GtxScreenLogger().warning2user(
+                    ScreenLogger().warning2user(
                         QWarning.SHIFT_CHECK,
                         "weight {} value is too small, so adjust the fix position from {} to {}".format(
                             node.name,
@@ -658,7 +658,7 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
                     shift_bias_min = min(0, -(24 - (8 + shift_cut)))
                     shift_bias_max = 16
                     if shift_bias < shift_bias_min:
-                        GtxScreenLogger().warning2user(
+                        ScreenLogger().warning2user(
                             QWarning.SHIFT_CHECK,
                             "bias {} value is too small, so adjust the fix position from {} to {}".format(
                                 node.op.param["bias"].name,
@@ -671,7 +671,7 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
                             node.op.param["bias"].name, fix_pos_b, tensor_type="param"
                         )
                     elif shift_bias > shift_bias_max:
-                        GtxScreenLogger().warning2user(
+                        ScreenLogger().warning2user(
                             QWarning.SHIFT_CHECK,
                             "weight {} value is too small, so adjust the fix position from {} to {}".format(
                                 node.op.param["weights"].name,
@@ -687,28 +687,28 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
                         )
 
     def organize_quant_pos(self):
-        if GtxOption.gtx_quant_off.value:
+        if Option.quant_off.value:
             return
 
         # check quantization calibration is performed completely
         if not self._check_calibration_completion():
-            GtxScreenLogger().warning2user(
+            ScreenLogger().warning2user(
                 QWarning.TENSOR_NOT_QUANTIZED,
                 "Some tensors are not quantized, please check their particularity.",
             )
 
         fixpos_checker = QuantizeFixPosChecker(self)
-        fixpos_checker(self.Gtxgraph)
+        fixpos_checker(self.graph)
 
     def organize_quant_pos_bak(self):
         # Transfer inplace operation fragpos forward,
         # to replace configerComannder in future
-        if GtxOption.gtx_quant_off.value:
+        if Option.quant_off.value:
             return
 
         # check quantization calibration is performed completely
         if not self._check_calibration_completion():
-            GtxScreenLogger().warning2user(
+            ScreenLogger().warning2user(
                 QWarning.TENSOR_NOT_QUANTIZED,
                 "Some tensors are not quantized, please check their particularity.",
             )
@@ -717,12 +717,12 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
         # self._align_lstm_fix_pos_with_cell_output()
 
         # from tail to head for aligning with output OPs
-        for node in self.Gtxgraph.reverse_nodes:
+        for node in self.graph.reverse_nodes:
             # change concat input nodes fix point to be the same as concat output node
             if (
                 node.in_quant_part
-                and node.op.type == GTX_OP.CONCAT
-                and GtxOption.gtx_change_concat_input_fix.value
+                and node.op.type == OP.CONCAT
+                and Option.change_concat_input_fix.value
             ):
                 bnfp = self.get_quant_config(node, False)
                 for in_node in node.in_nodes:
@@ -731,8 +731,8 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
             # change add input nodes fix point to be the same as its output
             if (
                 node.in_quant_part
-                and node.op.type == GTX_OP.ADD
-                and GtxOption.gtx_change_add_input_fix.value
+                and node.op.type == OP.ADD
+                and Option.change_add_input_fix.value
             ):
                 bnfp = self.get_quant_config(node, False)
                 for in_node in node.in_nodes:
@@ -745,12 +745,12 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
                 node.in_quant_part
                 and node.op.type
                 in [
-                    GTX_OP.MAX_POOL,
-                    GTX_OP.MAX_POOL1D,
-                    GTX_OP.AVG_POOL,
-                    GTX_OP.ADAPTIVEAVGPOOL2D,
+                    OP.MAX_POOL,
+                    OP.MAX_POOL1D,
+                    OP.AVG_POOL,
+                    OP.ADAPTIVEAVGPOOL2D,
                 ]
-                and GtxOption.gtx_change_pool_input_fix.value
+                and Option.change_pool_input_fix.value
             ):
                 bnfp = self.get_quant_config(node, False)
                 for in_node in node.in_nodes:
@@ -759,18 +759,18 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
                     # print(f'After change : {self.get_quant_config(in_node, False)}')
 
         # from head to tail for aligning with input OPs
-        for node in self.Gtxgraph.all_nodes():
+        for node in self.graph.all_nodes():
             # align linear OP bias fix pos with output for lstm
             if not self.configer.is_node_quantizable(node, self.lstm):
                 continue
             if self.lstm:
-                if node.op.type == GTX_OP.DENSE:
+                if node.op.type == OP.DENSE:
                     if len(node.op.params.values()) > 1:
                         params = [v.name for v in node.op.params.values()]
                         bnfp = self.get_quant_config(node.name, False)
                         self.set_quant_config(params[1], bnfp, "param")
             # Strided_slice branches fix pos alignment
-            if node.in_quant_part and node.op.type == GTX_OP.STRIDED_SLICE:
+            if node.in_quant_part and node.op.type == OP.STRIDED_SLICE:
                 bnfp = None
                 src_name = self.configer.quant_output(node.in_nodes[0]).name
                 if self.need_quantize_tensor(src_name):
@@ -780,7 +780,7 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
                     #    node.name, src_name, bnfp[1]))
 
             # zero padding output fix pos align with input
-            if node.in_quant_part and node.op.type == GTX_OP.PAD:
+            if node.in_quant_part and node.op.type == OP.PAD:
                 out_name = self.configer.quant_output(node.name).name
                 bnfp = self.get_in_node_config(node, 0, False)
                 # print('---- set zero padding output %s fix pos to %s : %d' % (out_name, in_name, bnfp[1]))
@@ -788,18 +788,18 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
 
             if (
                 node.in_quant_part
-                and node.op.type == GTX_OP.RESIZE
+                and node.op.type == OP.RESIZE
                 and node.node_config("mode") == "'nearest'"
             ):
                 out_node = self.configer.quant_output(node.name)
                 out_name = out_node.name
-                if out_node.op.type != GTX_OP.CONCAT:
+                if out_node.op.type != OP.CONCAT:
                     bnfp = self.get_in_node_config(node, 0, False)
                     # print('---- set nearest upsampling output %s fix pos to %s : %d' % (out_name, in_name, bnfp[1]))
                     self.set_quant_config(out_name, bnfp)
 
             # limit hardsigmoid output fix pos to >= 7
-            if node.in_quant_part and node.op.type == GTX_OP.HSIGMOID:
+            if node.in_quant_part and node.op.type == OP.HSIGMOID:
                 out_name = self.configer.quant_output(node.name).name
                 bnfp = self.get_quant_config(out_name, False)
                 # print('checking {}: {}'.format(out_name, bnfp))
@@ -809,8 +809,8 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
 
             # clamp hsigmoid/hswish input node fix point to non-negative due to IP limitation
             if node.in_quant_part and node.op.type in [
-                GTX_OP.HSIGMOID,
-                GTX_OP.HSWISH,
+                OP.HSIGMOID,
+                OP.HSWISH,
             ]:
                 for idx, in_node in enumerate(node.in_nodes):
                     # print(f'Before change pool fix of {node.name} {node.op.type} : {self.get_quant_config(in_node, False)}')
@@ -821,7 +821,7 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
                     # print(f'After change : {self.get_quant_config(in_node, False)}')
 
             # hardswish input_fp + 7 >= output_fp
-            if node.in_quant_part and node.op.type == GTX_OP.HSWISH:
+            if node.in_quant_part and node.op.type == OP.HSWISH:
                 bnfp_o = self.get_quant_config(node, False)
                 bnfp_i = self.get_in_node_config(node, 0, False)
                 # print(f'Before change pool fix of {node.name} {node.op.type} : {self.get_quant_config(node, False)}')
@@ -831,7 +831,7 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
                 # print(f'After change : {self.get_quant_config(node, False)}')
 
         # shift_bias and shift_cut check and adjustment
-        if GtxOption.gtx_ip_asr.value is False:
+        if Option.ip_asr.value is False:
             self._node_relative_fix_pos_check()
 
     def export_quant_config(
@@ -839,22 +839,22 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
     ):
 
         if inference_check and quant_model_inferenced(self.quant_model) is False:
-            GtxScreenLogger().error2user(
+            ScreenLogger().error2user(
                 QError.NO_CALIBRATION,
-                "Quantization is not performed completely, check if module FORWARD function is called!\n    FORWARD function of torch_quantizer.quant_model needs to be called in user code explicitly.\n    Please refer to the example code at https://github.com/Supergate/GTX-Compiler.",
+                "Quantization is not performed completely, check if module FORWARD function is called!\n    FORWARD function of torch_quantizer.quant_model needs to be called in user code explicitly.\n    Please refer to the example code at https://github.com/Supergate/-Compiler.",
             )
             return
-        if GtxOption.gtx_param_corr.value > 0:
+        if Option.param_corr.value > 0:
             if self.quant_mode == 1:
                 # gather bias correction, how to get nn module objec?
-                for node in self.Gtxgraph.all_nodes():
+                for node in self.graph.all_nodes():
                     if node.op.type in [
-                        GTX_OP.CONV1D,
-                        GTX_OP.CONV2D,
-                        GTX_OP.CONVTRANSPOSE2D,
-                        GTX_OP.DEPTHWISE_CONV2D,
-                        GTX_OP.DENSE,
-                        GTX_OP.DEPTHWISE_CONVTRANSPOSE2D,
+                        OP.CONV1D,
+                        OP.CONV2D,
+                        OP.CONVTRANSPOSE2D,
+                        OP.DEPTHWISE_CONV2D,
+                        OP.DENSE,
+                        OP.DEPTHWISE_CONVTRANSPOSE2D,
                     ]:
                         if node.module.bias is not None:
                             self.set_bias_corr(
@@ -867,23 +867,23 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
 
         # export quant steps
         # self.version = __version__
-        self.graph_md5 = self.Gtxgraph.get_md5()
+        self.graph_md5 = self.graph.get_md5()
         file_name = export_file or self.export_file
         if isinstance(file_name, str):
-            GtxScreenLogger().info(f"=>Exporting quant config.({file_name})")
+            ScreenLogger().info(f"=>Exporting quant config.({file_name})")
             if (
                 adjust_pos
-                and (GtxOption.gtx_only_int_quant.value is True)
-                and (not GtxOption.gtx_gemm88.value)
+                and (Option.only_int_quant.value is True)
+                and (not Option.gemm88.value)
             ):
                 self.organize_quant_pos()
             export_quant_config = self.normalized_quant_config()
-            if GtxOption.gtx_only_int_quant.value is False:
+            if Option.only_int_quant.value is False:
                 export_quant_config = self.add_quant_info_for_export(
                     "dtype", self.normalized_quant_dtype(), export_quant_config
                 )
             with open(file_name, "w") as f:
-                f.write(gtx_utils.to_jsonstr(export_quant_config))
+                f.write(utils.to_jsonstr(export_quant_config))
 
     def export_param(self):
         if self.quant_mode == 1:
@@ -893,13 +893,13 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
             ):
                 for i in range(len(self.quant_model)):
                     param_file = self.param_file + str(i) + ".pth"
-                    GtxScreenLogger().info(
+                    ScreenLogger().info(
                         f"=>Exporting quant model parameters.({param_file})"
                     )
                     torch.save(self.quant_model[i].state_dict(), param_file)
             else:
                 param_file = self.param_file + ".pth"
-                GtxScreenLogger().info(
+                ScreenLogger().info(
                     f"=>Exporting quant model parameters.({param_file})"
                 )
                 torch.save(self.quant_model.state_dict(), param_file)
@@ -913,7 +913,7 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
             ):
                 for i in range(len(self.quant_model)):
                     param_file = self.param_file + str(i) + ".pth"
-                    GtxScreenLogger().info(
+                    ScreenLogger().info(
                         f"=>Loading quant model parameters.({param_file})"
                     )
                     path = pathlib.Path(param_file)
@@ -921,7 +921,7 @@ this kind of parameter will not be quantized. Please embed the parameter into CO
                         not (path.exists() and path.is_file())
                         or not self.fast_finetuned
                     ):
-                        GtxScreenLogger().error2user(
+                        ScreenLogger().error2user(
                             QError.FAST_FINETINE,
                             f"Fast finetuned parameter file does not exist. \
 Please check calibration with fast finetune is done or not.",
@@ -930,12 +930,12 @@ Please check calibration with fast finetune is done or not.",
                     self.quant_model[i].load_state_dict(torch.load(param_file))
             else:
                 param_file = self.param_file + ".pth"
-                GtxScreenLogger().info(
+                ScreenLogger().info(
                     f"=>Loading quant model parameters.({param_file})"
                 )
                 path = pathlib.Path(param_file)
                 if not (path.exists() and path.is_file()) or not self.fast_finetuned:
-                    GtxScreenLogger().error2user(
+                    ScreenLogger().error2user(
                         QError.FAST_FINETINE,
                         f"Fast finetuned parameter file does not exist. \
 Please check calibration with fast finetune is done or not.",
@@ -955,14 +955,14 @@ Please check calibration with fast finetune is done or not.",
                 for i in range(len(self.quant_model)):
                     module_name = self.quant_model[i]._get_name()
                     param_file = self.float_param_path + "/" + module_name + ".pth"
-                    GtxScreenLogger().info(
+                    ScreenLogger().info(
                         f"=>Exporting float model parameters.({param_file})"
                     )
                     torch.save(self.quant_model[i].state_dict(), param_file)
             else:
                 module_name = self.quant_model._get_name()
                 param_file = self.float_param_path + "/" + module_name + ".pth"
-                GtxScreenLogger().info(
+                ScreenLogger().info(
                     f"=>Exporting float model parameters.({param_file})"
                 )
                 torch.save(self.quant_model.state_dict(), param_file)
@@ -973,12 +973,12 @@ Please check calibration with fast finetune is done or not.",
             for i in range(len(self.quant_model)):
                 module_name = self.quant_model[i]._get_name()
                 param_file = self.float_param_path + "/" + module_name + ".pth"
-                GtxScreenLogger().info(
+                ScreenLogger().info(
                     f"=>Loading float model parameters.({param_file})"
                 )
                 path = pathlib.Path(param_file)
                 if not (path.exists() and path.is_file()):
-                    GtxScreenLogger().error(
+                    ScreenLogger().error(
                         f"Float model parameter file does not exist."
                     )
                     exit(2)
@@ -986,10 +986,10 @@ Please check calibration with fast finetune is done or not.",
         else:
             module_name = self.quant_model._get_name()
             param_file = self.float_param_path + "/" + module_name + ".pth"
-            GtxScreenLogger().info(f"=>Loading float model parameters.({param_file})")
+            ScreenLogger().info(f"=>Loading float model parameters.({param_file})")
             path = pathlib.Path(param_file)
             if not (path.exists() and path.is_file()):
-                GtxScreenLogger().error(f"Float model parameter file does not exist.")
+                ScreenLogger().error(f"Float model parameter file does not exist.")
                 exit(2)
             self.quant_model.load_state_dict(torch.load(param_file))
 
@@ -1002,26 +1002,26 @@ class QuantizeFixPosChecker(FixPosChecker):
         super().__init__(ctx)
         pool_like_fn = (
             self.align_inputs_to_output,
-            lambda *args: GtxOption.gtx_change_pool_input_fix.value,
+            lambda *args: Option.change_pool_input_fix.value,
         )
 
         self.align_inputs_to_output_fn_map_with_filter = {
-            GTX_OP.CONCAT: [
+            OP.CONCAT: [
                 (
                     self.align_inputs_to_output,
-                    lambda *args: GtxOption.gtx_change_concat_input_fix.value,
+                    lambda *args: Option.change_concat_input_fix.value,
                 )
             ],
-            GTX_OP.ADD: [
+            OP.ADD: [
                 (
                     self.align_inputs_to_output,
-                    lambda *args: GtxOption.gtx_change_add_input_fix.value,
+                    lambda *args: Option.change_add_input_fix.value,
                 )
             ],
-            GTX_OP.MAX_POOL: [pool_like_fn],
-            GTX_OP.MAX_POOL1D: [pool_like_fn],
-            GTX_OP.AVG_POOL: [pool_like_fn],
-            GTX_OP.ADAPTIVEAVGPOOL2D: [pool_like_fn],
+            OP.MAX_POOL: [pool_like_fn],
+            OP.MAX_POOL1D: [pool_like_fn],
+            OP.AVG_POOL: [pool_like_fn],
+            OP.ADAPTIVEAVGPOOL2D: [pool_like_fn],
         }
 
         # forward iter graph nodes
@@ -1029,7 +1029,7 @@ class QuantizeFixPosChecker(FixPosChecker):
 
         # aligning with input OPs
         align_output_to_input_fn_map_with_filter = {
-            GTX_OP.STRIDED_SLICE: [
+            OP.STRIDED_SLICE: [
                 (
                     self.align_output_to_input,
                     lambda ctx, node: ctx.need_quantize_tensor(
@@ -1037,14 +1037,14 @@ class QuantizeFixPosChecker(FixPosChecker):
                     ),
                 )
             ],
-            GTX_OP.PAD: [(self.align_output_to_input, lambda *args: True)],
-            GTX_OP.RESIZE: [
+            OP.PAD: [(self.align_output_to_input, lambda *args: True)],
+            OP.RESIZE: [
                 (
                     self.align_output_to_input,
                     lambda ctx, node: node.node_attr(node.op.AttrName.MODE) == "NEAREST"
                     and (
                         self.ctx.configer.quant_output(node.name).op.type
-                        != GTX_OP.CONCAT
+                        != OP.CONCAT
                     ),
                 )
             ],
@@ -1052,7 +1052,7 @@ class QuantizeFixPosChecker(FixPosChecker):
         self.update_forward_fn(align_output_to_input_fn_map_with_filter)
 
         align_bias_to_output_fn_map_with_filter = {
-            GTX_OP.DENSE: [
+            OP.DENSE: [
                 (
                     self.align_dense_bias_to_output,
                     lambda ctx, node: ctx.lstm and len(node.op.params.values()) > 1,
@@ -1062,13 +1062,13 @@ class QuantizeFixPosChecker(FixPosChecker):
         self.update_forward_fn(align_bias_to_output_fn_map_with_filter)
 
         adjust_rel_and_abs_fn_map_with_filter = defaultdict(list)
-        filter_fn = lambda *args: GtxOption.gtx_ip_asr.value is False
+        filter_fn = lambda *args: Option.ip_asr.value is False
         for op_type, fn_lst in self.adjust_relative_and_absolute_fn_map.items():
             to_adjust = True
-            if op_type == GTX_OP.LAYER_NORM:  # LayerNorm only effective  for v70 bert
+            if op_type == OP.LAYER_NORM:  # LayerNorm only effective  for v70 bert
                 if not (
-                    GtxOption.gtx_op_layernorm_mode.value == "bert_8bw"
-                    or GtxOption.gtx_ip_v70_bert.value
+                    Option.op_layernorm_mode.value == "bert_8bw"
+                    or Option.ip_v70_bert.value
                 ):
                     to_adjust = False
             if to_adjust:

@@ -21,8 +21,8 @@ import os
 import numpy as np
 import torch
 
-import gtx_shared.utils as gtx_utils
-from gtx_shared.quantization import quantize_data2int
+import shared.utils as utils
+from shared.quantization import quantize_data2int
 import parse.torch_op_def as torch_op_def
 import utils.tensor_util as py_tensor_util
 from utils.module_util import (
@@ -30,12 +30,12 @@ from utils.module_util import (
     collect_input_devices,
     get_flattened_input_args,
 )
-from gtx_shared.base import GTX_OP, GLOBAL_MAP, gtx_KEYS
-from gtx_shared.gtx_graph import Graph
+from shared.base import OP, GLOBAL_MAP, KEYS
+from shared.graph import Graph
 
-from gtx_shared.utils import (
-    GtxScreenLogger,
-    GtxOption,
+from shared.utils import (
+    ScreenLogger,
+    Option,
     permute_data,
     permute_axes,
     QError,
@@ -202,7 +202,7 @@ class ModuleHooker(object):
                 if (
                     isinstance(op.__outputs__, TimeStepData)
                     or (op.__outputs__ is None)
-                    or (GtxOption.gtx_record_slow_mode.value is True)
+                    or (Option.record_slow_mode.value is True)
                 ):
 
                     output_data = get_outputs_value(outputs)
@@ -245,19 +245,19 @@ class ModuleHooker(object):
                     f"Length of inputs should be the same as length of inputs name."
                 )
 
-            quantizer = GLOBAL_MAP.get_ele(gtx_KEYS.QUANTIZER)
+            quantizer = GLOBAL_MAP.get_ele(KEYS.QUANTIZER)
             dir_name = os.path.join(quantizer.output_dir, "deploy_check_data")
             input_path = os.path.join(dir_name, "input")
 
             if module.__input_called_times_ == 0:
-                gtx_utils.create_work_dir(dir_name)
-                gtx_utils.create_work_dir(os.path.join(dir_name, "input"))
+                utils.create_work_dir(dir_name)
+                utils.create_work_dir(os.path.join(dir_name, "input"))
 
             for name, tensor in zip(input_tensor_name, inputs_list):
                 name = name.replace("/", "_")
                 current_input_path = os.path.join(input_path, name)
                 if module.__input_called_times_ == 0:
-                    gtx_utils.create_work_dir(current_input_path)
+                    utils.create_work_dir(current_input_path)
                     shape_file_name = os.path.join(current_input_path, "shape.txt")
                     np.array(tensor.shape).tofile(shape_file_name, sep=" ")
 
@@ -301,9 +301,9 @@ class ModuleHooker(object):
                 params_path = os.path.join(dir_name, "params")
                 output_path = os.path.join(dir_name, "output")
                 if op.__called_times_ == 0:
-                    gtx_utils.create_work_dir(dir_name)
-                    gtx_utils.create_work_dir(os.path.join(dir_name, "params"))
-                    gtx_utils.create_work_dir(os.path.join(dir_name, "output"))
+                    utils.create_work_dir(dir_name)
+                    utils.create_work_dir(os.path.join(dir_name, "params"))
+                    utils.create_work_dir(os.path.join(dir_name, "output"))
                     shape_file_name = os.path.join(dir_name, "shape.txt")
 
                     # dump params
@@ -357,7 +357,7 @@ class ModuleHooker(object):
                                     output_path, node_name + "_fix_i" + index_str
                                 )
                         if op.__called_times_ == 0:
-                            gtx_utils.create_work_dir(current_output_path)
+                            utils.create_work_dir(current_output_path)
                             shape_file_name = os.path.join(
                                 current_output_path, "shape.txt"
                             )
@@ -447,7 +447,7 @@ class ModuleHooker(object):
     # @classmethod
     # def hook_module_with_quantizer(cls, module, quantizer):
     #   if not _is_module_hooked(module):
-    #     cls.hook_module_with_node(module, quantizer.Gtxgraph)
+    #     cls.hook_module_with_node(module, quantizer.graph)
 
     @classmethod
     def update_parameters(cls, module, graph, graph2module):
@@ -460,13 +460,13 @@ class ModuleHooker(object):
             node = getattr(op, "node", None)
             for param_type, tensor in node.op.params.items():
                 if (
-                    node.has_bound_params() and node.op.type != GTX_OP.LAYER_NORM
+                    node.has_bound_params() and node.op.type != OP.LAYER_NORM
                 ):  # LayerNorm weight, bias not change format
                     py_tensor_util.param_to_torch_format(tensor)
 
                 data = np.copy(tensor.data)
                 if (
-                    node.op.type in [GTX_OP.CONVTRANSPOSE2D, GTX_OP.CONVTRANSPOSE3D]
+                    node.op.type in [OP.CONVTRANSPOSE2D, OP.CONVTRANSPOSE3D]
                     and param_type == node.op.ParamName.WEIGHTS
                 ):
                     # data = data.transpose(1, 0, 2, 3)
@@ -475,7 +475,7 @@ class ModuleHooker(object):
 
                 if (
                     node.op.type
-                    in [GTX_OP.DEPTHWISE_CONV2D, GTX_OP.DEPTHWISE_CONV3D]
+                    in [OP.DEPTHWISE_CONV2D, OP.DEPTHWISE_CONV3D]
                     and param_type == node.op.ParamName.WEIGHTS
                 ):
                     out_channels = node.node_config("out_channels")
@@ -485,8 +485,8 @@ class ModuleHooker(object):
                 if (
                     node.op.type
                     in [
-                        GTX_OP.DEPTHWISE_CONVTRANSPOSE2D,
-                        GTX_OP.DEPTHWISE_CONVTRANSPOSE3D,
+                        OP.DEPTHWISE_CONVTRANSPOSE2D,
+                        OP.DEPTHWISE_CONVTRANSPOSE3D,
                     ]
                     and param_type == node.op.ParamName.WEIGHTS
                 ):
@@ -517,7 +517,7 @@ class ModuleHooker(object):
                                 torch_tensor, tensor.requires_grad
                             )
                     else:
-                        GtxScreenLogger().warning(
+                        ScreenLogger().warning(
                             f"new parameter: '{param_name}' is registered in {node.name}"
                         )
                         op.register_parameter(
@@ -526,15 +526,15 @@ class ModuleHooker(object):
                         )
                 else:
                     torch_tensor = torch_tensor.to(
-                        device=GLOBAL_MAP.get_ele(gtx_KEYS.QUANT_DEVICE)
+                        device=GLOBAL_MAP.get_ele(KEYS.QUANT_DEVICE)
                     )
                     module.register_parameter(
                         param_name,
                         safe_torch_nn_Parameter(torch_tensor, tensor.requires_grad),
                     )
 
-                if node.has_bound_params() and node.op.type != GTX_OP.LAYER_NORM:
-                    py_tensor_util.param_to_gtx_format(tensor)
+                if node.has_bound_params() and node.op.type != OP.LAYER_NORM:
+                    py_tensor_util.param_to_format(tensor)
 
         # No one will call it and will be removed later.
         def _module2graph(op):
@@ -552,14 +552,14 @@ class ModuleHooker(object):
                     torch_tensor_data = np.copy(torch_tensor.detach().cpu().numpy())
 
                     if (
-                        node.op.type == GTX_OP.CONVTRANSPOSE2D
+                        node.op.type == OP.CONVTRANSPOSE2D
                         and param_name == node.op.ParamName.WEIGHTS
                     ):
                         torch_tensor_data = torch_tensor_data.transpose(1, 0, 2, 3)
                         torch_tensor_data = np.ascontiguousarray(torch_tensor_data)
 
                     if (
-                        node.op.type == GTX_OP.DEPTHWISE_CONV2D
+                        node.op.type == OP.DEPTHWISE_CONV2D
                         and param_name == node.op.ParamName.WEIGHTS
                     ):
                         in_channels = node.node_config("in_channels")
@@ -571,7 +571,7 @@ class ModuleHooker(object):
                         )
 
                     tensor.from_ndarray(torch_tensor_data)
-                    py_tensor_util.param_to_gtx_format(tensor)
+                    py_tensor_util.param_to_format(tensor)
 
         if not _is_module_hooked(module):
             cls.hook_module_with_node(module, graph)
@@ -588,7 +588,7 @@ class ModuleHooker(object):
             # output_data = outptus.cpu().detach().numpy()
             output_data = outptus.numpy()
         except AttributeError:
-            GtxScreenLogger().warning(f"{outptus_name} is not tensor.")
+            ScreenLogger().warning(f"{outptus_name} is not tensor.")
             output_data = outptus
         return output_data
 
@@ -597,7 +597,7 @@ class ModuleHooker(object):
         try:
             output_shape = list(outputs.size())
         except AttributeError:
-            GtxScreenLogger().warning(
+            ScreenLogger().warning(
                 f"{outputs_name} is not tensor. It's shape is ignored."
             )
             return None
@@ -608,19 +608,19 @@ class ModuleHooker(object):
     def update_blobs_once(
         cls, module, graph=None, time_step=None, update_shape_only=False
     ):
-        def _updata_tensor_data(node, gtx_tensor, torch_tensor):
-            output_data = cls._get_output_data(torch_tensor, gtx_tensor.name)
+        def _updata_tensor_data(node, tensor, torch_tensor):
+            output_data = cls._get_output_data(torch_tensor, tensor.name)
             if output_data is not None and isinstance(output_data, np.ndarray):
                 output_data = permute_data(output_data, node.transpose_out_order)
-                gtx_tensor.from_ndarray(output_data)
+                tensor.from_ndarray(output_data)
             else:
-                gtx_tensor.data = output_data
+                tensor.data = output_data
 
-        def _updata_tensor_shape(node, gtx_tensor, torch_tensor):
-            output_shape = cls._get_output_shape(torch_tensor, gtx_tensor.name)
+        def _updata_tensor_shape(node, tensor, torch_tensor):
+            output_shape = cls._get_output_shape(torch_tensor, tensor.name)
             if output_shape is not None:
                 output_shape = permute_axes(output_shape, node.transpose_out_order)
-                gtx_tensor.shape = output_shape
+                tensor.shape = output_shape
 
         def _update_node_outputs(op):
             if hasattr(op, "node") and op.node is not None:
@@ -660,7 +660,7 @@ class ModuleHooker(object):
 
     @classmethod
     def clone_quant_module(cls, quant_module, quant_graph):
-        quantizer = GLOBAL_MAP.get_ele(gtx_KEYS.QUANTIZER)
+        quantizer = GLOBAL_MAP.get_ele(KEYS.QUANTIZER)
 
         if _is_module_hooked(quant_module):
             cls.detach_node_from_module(quant_module)
@@ -692,11 +692,11 @@ class ModuleHooker(object):
     def hook_module_with_input_device_checker(cls, module, module_gen_from_script):
 
         def _check_input_args(op, input):
-            op.gtx_inferenced = True
-            quant_device = GLOBAL_MAP.get_ele(gtx_KEYS.QUANT_DEVICE)
+            op.inferenced = True
+            quant_device = GLOBAL_MAP.get_ele(KEYS.QUANT_DEVICE)
             input_devices = collect_input_devices(input)
             if any([device != quant_device.type for device in input_devices]):
-                GtxScreenLogger().warning2user_once(
+                ScreenLogger().warning2user_once(
                     QWarning.DEVICE_MISMATCH,
                     f"The Device of input args mismatch with quantizer device type({quant_device.type}).",
                 )
@@ -710,7 +710,7 @@ class ModuleHooker(object):
 
     @classmethod
     def register_tensor_dtype_and_shape_hook(cls, module):
-        torch2gtx_dtype_mapper = lambda torch_dtype: {
+        torch2dtype_mapper = lambda torch_dtype: {
             torch.float64: "float64",
             torch.float32: "float32",
             torch.float16: "float16",
@@ -723,18 +723,18 @@ class ModuleHooker(object):
         def _record_dtype_and_shape(op, inputs, outputs):
             def _get_output_dtype_and_shape(output):
                 if isinstance(output, torch.Tensor):
-                    return torch2gtx_dtype_mapper(output.dtype), tuple(output.shape)
+                    return torch2dtype_mapper(output.dtype), tuple(output.shape)
                 else:
                     return type(output), None
 
-            quantizer = GLOBAL_MAP.get_ele(gtx_KEYS.QUANTIZER)
+            quantizer = GLOBAL_MAP.get_ele(KEYS.QUANTIZER)
             if hasattr(op, "node"):
                 node = op.node
                 if not isinstance(outputs, (list, tuple)):
                     outputs = [outputs]
-                for gtx_tensor, output in zip(node.out_tensors, outputs):
+                for tensor, output in zip(node.out_tensors, outputs):
                     dtype, tensor_shape = _get_output_dtype_and_shape(output)
-                    gtx_tensor.from_des(tensor_shape, dtype)
+                    tensor.from_des(tensor_shape, dtype)
 
         def _hooker(op, record_func):
             handlers.append(op.register_forward_hook(record_func))

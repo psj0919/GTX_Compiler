@@ -19,11 +19,11 @@ import numpy as np
 import torch
 import copy
 import math
-import gtx_shared.utils as gtx_utils
-from gtx_shared.base import GLOBAL_MAP, gtx_KEYS, GTX_OP
-from gtx_shared.utils import (
-    GtxOption,
-    GtxScreenLogger,
+import shared.utils as utils
+from shared.base import GLOBAL_MAP, KEYS, OP
+from shared.utils import (
+    Option,
+    ScreenLogger,
     set_option_value,
     QError,
     QWarning,
@@ -34,8 +34,8 @@ from collections import defaultdict
 import torch.nn.functional as F
 from tqdm import tqdm
 import nn as py_nn
-from gtx_shared.gtx_graph import GraphSearcher
-from gtx_shared.utils import PatternType
+from shared.graph import GraphSearcher
+from shared.utils import PatternType
 from utils import TorchSymbol
 from utils.module_util import to_device
 from .ModuleHooker import ModuleHooker
@@ -46,8 +46,8 @@ from .utils import (
     prepare_quantizable_module,
     register_output_hook,
     set_outputs_recorder_status,
-    update_gtx_blob_data,
-    update_gtx_parameters,
+    update_blob_data,
+    update_parameters,
     get_deploy_graph_list,
 )
 
@@ -126,10 +126,10 @@ class AverageMeter(object):
 
 class NoQuant(object):
     def __enter__(self):
-        set_option_value("gtx_quant_off", True)
+        set_option_value("quant_off", True)
 
     def __exit__(self, *args):
-        set_option_value("gtx_quant_off", False)
+        set_option_value("quant_off", False)
 
 
 class AdaQuant(object):
@@ -138,13 +138,13 @@ class AdaQuant(object):
         self._processor = processor
 
     def __enter__(self):
-        self._param_corr = GtxOption.gtx_param_corr.value
-        set_option_value("gtx_param_corr", 0)
-        if GtxOption.gtx_calib_before_finetune.value is True:
+        self._param_corr = Option.param_corr.value
+        set_option_value("param_corr", 0)
+        if Option.calib_before_finetune.value is True:
             self._processor.set_keep_fp(True)
 
     def __exit__(self, *args):
-        set_option_value("gtx_param_corr", self._param_corr)
+        set_option_value("param_corr", self._param_corr)
         for node in self._processor.graph.nodes:
             for _, config_history in self._processor.quantizer.config_history.items():
                 if node.name in config_history:
@@ -159,7 +159,7 @@ class AdaQuant(object):
 
         self._processor.setup_calib()
         # don't change tensors' quantization step in re-calibration after fast finetune
-        if GtxOption.gtx_calib_before_finetune.value is False:
+        if Option.calib_before_finetune.value is False:
             self._processor.set_keep_fp(True)
 
 
@@ -196,7 +196,7 @@ class AdvancedQuantProcessor(torch.nn.Module):
         self._cached_outputs = defaultdict(list)
         self._cached_output = defaultdict(list)
         self._mem_count = defaultdict(float)
-        # self._net_input_nodes = [node for node in self._graph.nodes if node.op.type == GTX_OP.INPUT]
+        # self._net_input_nodes = [node for node in self._graph.nodes if node.op.type == OP.INPUT]
         self._net_input_nodes = self._graph.get_input_nodes()
         self._float_weights = defaultdict(list)
 
@@ -225,7 +225,7 @@ class AdvancedQuantProcessor(torch.nn.Module):
         if hook_type == "multiple":
 
             def hook(module, input, output):
-                if module.node.op.type == GTX_OP.TUPLE_INPUT:
+                if module.node.op.type == OP.TUPLE_INPUT:
                     self._cached_outputs[module].append(
                         [out.detach().cpu() for out in output]
                     )
@@ -244,7 +244,7 @@ class AdvancedQuantProcessor(torch.nn.Module):
             def hook(module, input, output):
                 self._cached_output[module] = output
                 if monitor_mem is True:
-                    if module.node.op.type == GTX_OP.TUPLE_INPUT:
+                    if module.node.op.type == OP.TUPLE_INPUT:
                         for out in output:
                             self._mem_count[module] += tensor_size(out)
                     else:
@@ -268,7 +268,7 @@ class AdvancedQuantProcessor(torch.nn.Module):
 
     def hook_batch_size(self, hook_mods):
         def hook(module, input, output):
-            if module.node.op.type == GTX_OP.DENSE:
+            if module.node.op.type == OP.DENSE:
                 if isinstance(output, torch.Tensor) and output.ndim >= 2:
                     self._batch_size = output.size()[0]
             else:
@@ -367,7 +367,7 @@ class AdvancedQuantProcessor(torch.nn.Module):
         sqnr = 10 * np.log10(np.square(float_data).mean() / q_noise)
         quantize_efficiency = sqnr / 8.0
 
-        lr_factor = GtxOption.gtx_finetune_lr_factor.value
+        lr_factor = Option.finetune_lr_factor.value
         lr_factor = lr_factor * batch_factor
         if quantize_efficiency > 4.5:
             lr_factor = 0.1 * lr_factor * batch_factor
@@ -423,18 +423,18 @@ class AdvancedQuantProcessor(torch.nn.Module):
                     q_act_layer.inplace = False
                     qout = q_act_layer(qout)
                     q_act_layer.inplace = inplace
-                    if act_node.op.type == GTX_OP.RELU:
+                    if act_node.op.type == OP.RELU:
                         train_output = F.relu(train_output)
-                    elif act_node.op.type == GTX_OP.RELU6:
+                    elif act_node.op.type == OP.RELU6:
                         train_output = F.relu6(train_output)
-                    elif act_node.op.type == GTX_OP.HSIGMOID:
+                    elif act_node.op.type == OP.HSIGMOID:
                         train_output = F.hardsigmoid(train_output)
-                    elif act_node.op.type == GTX_OP.HSWISH:
+                    elif act_node.op.type == OP.HSWISH:
                         train_output = F.hardswish(train_output)
                     else:
                         raise NotImplementedError()
 
-                if GtxOption.gtx_quant_opt.value > 0:
+                if Option.quant_opt.value > 0:
                     loss = F.mse_loss(qout, train_output) + F.mse_loss(
                         layer.weight, float_layer.weight.detach().to(device)
                     )
@@ -519,12 +519,12 @@ class AdvancedQuantProcessor(torch.nn.Module):
 
     def finetune(self, run_fn, run_args):
         if self.quantizer.quant_mode == 2:
-            GtxScreenLogger().warning2user(
+            ScreenLogger().warning2user(
                 QWarning.FINETUNE_IGNORED,
                 f"Finetune function will be ignored in test mode!",
             )
             return
-        GtxScreenLogger().info(
+        ScreenLogger().info(
             f"=>Preparing data for fast finetuning module parameters ..."
         )
 
@@ -535,16 +535,16 @@ class AdvancedQuantProcessor(torch.nn.Module):
                 map(int, os.popen("free -t -m").readlines()[1].split()[1:]),
             )
         )
-        GtxScreenLogger().info(
+        ScreenLogger().info(
             f"Mem status(total mem: {total_m:.2f}G, available mem: {available_m:.2f}G)."
         )
 
-        GtxScreenLogger().info(
+        ScreenLogger().info(
             f"=>Preparing data for fast finetuning module parameters ..."
         )
         # backup option value
-        opt_bak_param_corr = GtxOption.gtx_param_corr.value
-        set_option_value("gtx_param_corr", 0)
+        opt_bak_param_corr = Option.param_corr.value
+        set_option_value("param_corr", 0)
 
         # cache input and output
         # print("**** cache input and output")
@@ -553,14 +553,14 @@ class AdvancedQuantProcessor(torch.nn.Module):
             cache_layers = []
             monitor_layers = []
             for node in self.graph.nodes:
-                if node.op.type == GTX_OP.INPUT or node in last_quant_nodes:
+                if node.op.type == OP.INPUT or node in last_quant_nodes:
                     cache_layers.append(node.module)
                 elif self.quantizer.configer.is_conv_like(node):
                     monitor_layers.append(node.module)
 
             monitor_handlers = self.hook_memory_monitor(monitor_layers)
             cache_handlers = self.hook_cache_output(cache_layers, monitor_mem=True)
-            set_option_value("gtx_quant_off", True)
+            set_option_value("quant_off", True)
             run_fn(*run_args)
             # memory statistics
             total_memory_cost = 0.0
@@ -572,11 +572,11 @@ class AdvancedQuantProcessor(torch.nn.Module):
 
             self.clean_hooks(monitor_handlers + cache_handlers)
 
-        GtxScreenLogger().info(
+        ScreenLogger().info(
             f"Mem cost by fast finetuning: {total_memory_cost:.2f}G."
         )
         if total_memory_cost > 0.8 * available_m:
-            GtxScreenLogger().warning2user(
+            ScreenLogger().warning2user(
                 QWarning.MEMORY_SHORTAGE,
                 f"There is not enought memory for fast finetuning and this process will be ignored!.Try to use a smaller calibration dataset.",
             )
@@ -588,42 +588,42 @@ class AdvancedQuantProcessor(torch.nn.Module):
                 setattr(mod, "param_quantized", False)
 
         # evaluation to get float model tensors
-        set_option_value("gtx_quant_off", False)
+        set_option_value("quant_off", False)
         with torch.no_grad():
             run_fn(*run_args)
 
         # print("****Parameter finetuning")
-        GtxScreenLogger().info(
+        ScreenLogger().info(
             f"=>Fast finetuning module parameters for better quantization accuracy..."
         )
-        device = GLOBAL_MAP.get_ele(gtx_KEYS.QUANT_DEVICE)
+        device = GLOBAL_MAP.get_ele(KEYS.QUANT_DEVICE)
         graph_searcher = GraphSearcher(self.graph)
         node_sets = graph_searcher.find_nodes_from_type(
             [
-                PatternType(pattern=[GTX_OP.CONV2D, GTX_OP.HSWISH]),
-                PatternType(pattern=[GTX_OP.CONV2D, GTX_OP.HSIGMOID]),
-                PatternType(pattern=[GTX_OP.CONV2D, GTX_OP.RELU]),
-                PatternType(pattern=[GTX_OP.CONV2D, GTX_OP.RELU6]),
-                PatternType(pattern=[GTX_OP.DEPTHWISE_CONV2D, GTX_OP.HSWISH]),
-                PatternType(pattern=[GTX_OP.DEPTHWISE_CONV2D, GTX_OP.HSIGMOID]),
-                PatternType(pattern=[GTX_OP.DEPTHWISE_CONV2D, GTX_OP.RELU]),
-                PatternType(pattern=[GTX_OP.DEPTHWISE_CONV2D, GTX_OP.RELU6]),
-                PatternType(pattern=[GTX_OP.CONVTRANSPOSE2D, GTX_OP.HSWISH]),
-                PatternType(pattern=[GTX_OP.CONVTRANSPOSE2D, GTX_OP.HSIGMOID]),
-                PatternType(pattern=[GTX_OP.CONVTRANSPOSE2D, GTX_OP.RELU]),
-                PatternType(pattern=[GTX_OP.CONVTRANSPOSE2D, GTX_OP.RELU6]),
-                PatternType(pattern=[GTX_OP.CONV3D, GTX_OP.HSWISH]),
-                PatternType(pattern=[GTX_OP.CONV3D, GTX_OP.HSIGMOID]),
-                PatternType(pattern=[GTX_OP.CONV3D, GTX_OP.RELU]),
-                PatternType(pattern=[GTX_OP.CONV3D, GTX_OP.RELU6]),
-                PatternType(pattern=[GTX_OP.DEPTHWISE_CONV3D, GTX_OP.HSWISH]),
-                PatternType(pattern=[GTX_OP.DEPTHWISE_CONV3D, GTX_OP.HSIGMOID]),
-                PatternType(pattern=[GTX_OP.DEPTHWISE_CONV3D, GTX_OP.RELU]),
-                PatternType(pattern=[GTX_OP.DEPTHWISE_CONV3D, GTX_OP.RELU6]),
-                PatternType(pattern=[GTX_OP.CONVTRANSPOSE3D, GTX_OP.HSWISH]),
-                PatternType(pattern=[GTX_OP.CONVTRANSPOSE3D, GTX_OP.HSIGMOID]),
-                PatternType(pattern=[GTX_OP.CONVTRANSPOSE3D, GTX_OP.RELU]),
-                PatternType(pattern=[GTX_OP.CONVTRANSPOSE3D, GTX_OP.RELU6]),
+                PatternType(pattern=[OP.CONV2D, OP.HSWISH]),
+                PatternType(pattern=[OP.CONV2D, OP.HSIGMOID]),
+                PatternType(pattern=[OP.CONV2D, OP.RELU]),
+                PatternType(pattern=[OP.CONV2D, OP.RELU6]),
+                PatternType(pattern=[OP.DEPTHWISE_CONV2D, OP.HSWISH]),
+                PatternType(pattern=[OP.DEPTHWISE_CONV2D, OP.HSIGMOID]),
+                PatternType(pattern=[OP.DEPTHWISE_CONV2D, OP.RELU]),
+                PatternType(pattern=[OP.DEPTHWISE_CONV2D, OP.RELU6]),
+                PatternType(pattern=[OP.CONVTRANSPOSE2D, OP.HSWISH]),
+                PatternType(pattern=[OP.CONVTRANSPOSE2D, OP.HSIGMOID]),
+                PatternType(pattern=[OP.CONVTRANSPOSE2D, OP.RELU]),
+                PatternType(pattern=[OP.CONVTRANSPOSE2D, OP.RELU6]),
+                PatternType(pattern=[OP.CONV3D, OP.HSWISH]),
+                PatternType(pattern=[OP.CONV3D, OP.HSIGMOID]),
+                PatternType(pattern=[OP.CONV3D, OP.RELU]),
+                PatternType(pattern=[OP.CONV3D, OP.RELU6]),
+                PatternType(pattern=[OP.DEPTHWISE_CONV3D, OP.HSWISH]),
+                PatternType(pattern=[OP.DEPTHWISE_CONV3D, OP.HSIGMOID]),
+                PatternType(pattern=[OP.DEPTHWISE_CONV3D, OP.RELU]),
+                PatternType(pattern=[OP.DEPTHWISE_CONV3D, OP.RELU6]),
+                PatternType(pattern=[OP.CONVTRANSPOSE3D, OP.HSWISH]),
+                PatternType(pattern=[OP.CONVTRANSPOSE3D, OP.HSIGMOID]),
+                PatternType(pattern=[OP.CONVTRANSPOSE3D, OP.RELU]),
+                PatternType(pattern=[OP.CONVTRANSPOSE3D, OP.RELU6]),
             ]
         )
 
@@ -719,9 +719,9 @@ class AdvancedQuantProcessor(torch.nn.Module):
             if hasattr(mod, "param_saved"):
                 setattr(mod, "param_saved", False)
         self.quantizer.quant_mode = 1
-        set_option_value("gtx_param_corr", opt_bak_param_corr)
+        set_option_value("param_corr", opt_bak_param_corr)
 
-        GtxScreenLogger().info(f"=>Export fast finetuned parameters ...")
+        ScreenLogger().info(f"=>Export fast finetuned parameters ...")
         # export finetuned parameters
         self.quantizer.export_param()
 
@@ -732,7 +732,7 @@ class AdvancedQuantProcessor(torch.nn.Module):
                 map(int, os.popen("free -t -m").readlines()[1].split()[1:]),
             )
         )
-        GtxScreenLogger().info(
+        ScreenLogger().info(
             f"Mem status(total mem: {total_m:.2f}G, available mem: {available_m:.2f}G)."
         )
         cache_layers = []
@@ -740,10 +740,10 @@ class AdvancedQuantProcessor(torch.nn.Module):
         batch_layers = []
 
         for node in self.graph.nodes:
-            # if node.op.type == GTX_OP.INPUT or node in end_nodes:
+            # if node.op.type == OP.INPUT or node in end_nodes:
             if (
-                node.op.type == GTX_OP.INPUT
-                or node.op.type == GTX_OP.TUPLE_INPUT
+                node.op.type == OP.INPUT
+                or node.op.type == OP.TUPLE_INPUT
                 or node in self._last_quant_nodes
             ):
                 cache_layers.append(node.module)
@@ -764,11 +764,11 @@ class AdvancedQuantProcessor(torch.nn.Module):
             total_memory_cost += self._mem_count[layer]
             del self._mem_count[layer]
 
-        GtxScreenLogger().info(
+        ScreenLogger().info(
             f"Memory cost by fast finetuning is {total_memory_cost:.2f} G."
         )
         if total_memory_cost > 0.8 * available_m:
-            GtxScreenLogger().warning2user(
+            ScreenLogger().warning2user(
                 QWarning.MEMORY_SHORTAGE,
                 f"There is not enought memory for fast finetuning and this process will be ignored!.Try to use a smaller calibration dataset.",
             )
@@ -801,24 +801,24 @@ class AdvancedQuantProcessor(torch.nn.Module):
         graph_searcher = GraphSearcher(self.graph)
         patterns = []
 
-        if GtxOption.gtx_ip_asr.value:
-            tuning_ops = [GTX_OP.CONV2D, GTX_OP.DENSE]
-            # tail_act_ops = [GTX_OP.ADD, GTX_OP.RESHAPE, GTX_OP.LAYER_NORM, GTX_OP.RELU]
-            tail_act_ops = [GTX_OP.RELU]
+        if Option.ip_asr.value:
+            tuning_ops = [OP.CONV2D, OP.DENSE]
+            # tail_act_ops = [OP.ADD, OP.RESHAPE, OP.LAYER_NORM, OP.RELU]
+            tail_act_ops = [OP.RELU]
         else:
             tuning_ops = [
-                GTX_OP.CONV2D,
-                GTX_OP.DEPTHWISE_CONV2D,
-                GTX_OP.CONVTRANSPOSE2D,
-                GTX_OP.CONV3D,
-                GTX_OP.DEPTHWISE_CONV3D,
-                GTX_OP.CONVTRANSPOSE3D,
+                OP.CONV2D,
+                OP.DEPTHWISE_CONV2D,
+                OP.CONVTRANSPOSE2D,
+                OP.CONV3D,
+                OP.DEPTHWISE_CONV3D,
+                OP.CONVTRANSPOSE3D,
             ]
             tail_act_ops = [
-                GTX_OP.RELU,
-                GTX_OP.RELU6,
-                GTX_OP.HSWISH,
-                GTX_OP.HSIGMOID,
+                OP.RELU,
+                OP.RELU6,
+                OP.HSWISH,
+                OP.HSIGMOID,
             ]
         for tuning_op in tuning_ops:
             for act_op in tail_act_ops:
@@ -867,7 +867,7 @@ class AdvancedQuantProcessor(torch.nn.Module):
     def finetune_v2(self, run_fn, run_args):
         # check status
         if self.quantizer.quant_mode == 2:
-            GtxScreenLogger().warning2user(
+            ScreenLogger().warning2user(
                 QWarning.FINETUNE_IGNORED,
                 f"Finetune function will be ignored in test mode!",
             )
@@ -879,22 +879,22 @@ class AdvancedQuantProcessor(torch.nn.Module):
         # ipdb.set_trace()
         with AdaQuant(processor=self):
             # calibration to get a set of quantization steps
-            GtxScreenLogger().info(
+            ScreenLogger().info(
                 f"=>Preparing data for fast finetuning module parameters ..."
             )
             with NoQuant():
                 net_inputs, net_outputs = self.cache_net_inpouts(run_fn, run_args)
 
-            GtxScreenLogger().info(
+            ScreenLogger().info(
                 f"=>Find initial quantization steps for fast finetuning..."
             )
             self.calibrate(run_fn, run_args)
 
-            GtxScreenLogger().info(
+            ScreenLogger().info(
                 f"=>Fast finetuning module parameters for better quantization accuracy..."
             )
             self.setup_test()
-            device = GLOBAL_MAP.get_ele(gtx_KEYS.QUANT_DEVICE)
+            device = GLOBAL_MAP.get_ele(KEYS.QUANT_DEVICE)
 
             intial_net_loss = self.calc_net_loss(net_inputs, net_outputs, device)
 
@@ -935,7 +935,7 @@ class AdvancedQuantProcessor(torch.nn.Module):
 
             # print(f"{qnode.name}({need_cache}):{net_loss}")
 
-        # GtxScreenLogger().info(f"=>Export fast finetuned parameters ...")
+        # ScreenLogger().info(f"=>Export fast finetuned parameters ...")
         # export finetuned parameters
         # self.quantizer.export_param()
 
@@ -990,7 +990,7 @@ class AdvancedQuantProcessor(torch.nn.Module):
             weight_grad = False
             layer.weight.requires_grad_(requires_grad=True)
 
-        lr_factor = GtxOption.gtx_finetune_lr_factor.value
+        lr_factor = Option.finetune_lr_factor.value
         lr_factor = lr_factor * batch_factor
         if quantize_efficiency > 4.5:
             lr_factor = 0.1 * lr_factor * batch_factor
@@ -1013,14 +1013,14 @@ class AdvancedQuantProcessor(torch.nn.Module):
             opt_bias = torch.optim.Adam([layer.bias], lr=lr_b)
 
         in_shape = layer.weight.shape
-        if layer.node.op.type == GTX_OP.DENSE:
+        if layer.node.op.type == OP.DENSE:
             fake_in = torch.rand(1, layer.in_features, device=layer.weight.device)
         else:
             fake_in = torch.rand(
                 1, layer.in_channels, *in_shape[2:], device=layer.weight.device
             )
         if layer(fake_in).grad_fn is None:
-            GtxScreenLogger().error(
+            ScreenLogger().error(
                 f'Layer to do fast finetune does not contain grad_fn attribute, \
 please remove it if there is "torch.no_grad()" in forward process'
             )
@@ -1028,7 +1028,7 @@ please remove it if there is "torch.no_grad()" in forward process'
 
         # print(f"learning rate: lr_w={lr_w}, lr_b={lr_b}")
         # print(f"pre quant efficiency:{quantize_efficiency}")
-        if GtxOption.gtx_ip_asr.value:
+        if Option.ip_asr.value:
             iters = 25
         else:
             iters = 100
@@ -1037,15 +1037,15 @@ please remove it if there is "torch.no_grad()" in forward process'
         # torch version >= 1.6
         if compare_torch_version("1.6.0", CmpFlag.GREATER_EQUAL):
             act_func_map = {
-                GTX_OP.RELU: F.relu,
-                GTX_OP.RELU6: F.relu6,
-                GTX_OP.HSIGMOID: F.hardsigmoid,
-                GTX_OP.HSWISH: F.hardswish,
+                OP.RELU: F.relu,
+                OP.RELU6: F.relu6,
+                OP.HSIGMOID: F.hardsigmoid,
+                OP.HSWISH: F.hardswish,
             }
         else:
             act_func_map = {
-                GTX_OP.RELU: F.relu,
-                GTX_OP.RELU6: F.relu6,
+                OP.RELU: F.relu,
+                OP.RELU6: F.relu6,
             }
 
         prev_loss = AverageMeter("loss", size=len(net_loss))
@@ -1094,7 +1094,7 @@ please remove it if there is "torch.no_grad()" in forward process'
                         q_act_layer.inplace = inplace
                         fout = act_func_map[act_node.op.type](fout)
 
-                    if GtxOption.gtx_quant_opt.value > 0:
+                    if Option.quant_opt.value > 0:
                         loss = F.mse_loss(qout, fout) + F.mse_loss(
                             layer.weight, float_layer.weight.detach()
                         )
@@ -1134,7 +1134,7 @@ please remove it if there is "torch.no_grad()" in forward process'
                 ) * 10000
                 # print(f"loss_diff_ratio :{loss_diff_ratio}", flush=True)
 
-                if GtxOption.gtx_ip_asr.value:
+                if Option.ip_asr.value:
                     loss_ratio_threshold = 5.0
                 else:
                     loss_ratio_threshold = 0.0
@@ -1204,7 +1204,7 @@ please remove it if there is "torch.no_grad()" in forward process'
                         q_act_layer.inplace = inplace
                         fout = act_func_map[act_node.op.type](fout)
 
-                    if GtxOption.gtx_quant_opt.value > 0:
+                    if Option.quant_opt.value > 0:
                         loss = F.mse_loss(qout, fout) + F.mse_loss(
                             layer.weight, float_layer.weight.detach().to(device)
                         )
@@ -1247,7 +1247,7 @@ please remove it if there is "torch.no_grad()" in forward process'
                 ) * 10000
                 # print(f"loss_diff_ratio :{loss_diff_ratio}", flush=True)
 
-                if GtxOption.gtx_ip_asr.value:
+                if Option.ip_asr.value:
                     loss_ratio_threshold = 5.0
                 else:
                     loss_ratio_threshold = 0.0
@@ -1286,7 +1286,7 @@ please remove it if there is "torch.no_grad()" in forward process'
         return net_loss
 
     def _get_possible_last_quant_nodes(self):
-        device = GLOBAL_MAP.get_ele(gtx_KEYS.QUANT_DEVICE)
+        device = GLOBAL_MAP.get_ele(KEYS.QUANT_DEVICE)
         f_model, input_args = to_device(self._float_model, self._example_inputs, device)
         handlers = ModuleHooker.register_tensor_dtype_and_shape_hook(f_model)
         f_model.eval()

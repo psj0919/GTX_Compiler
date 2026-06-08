@@ -18,10 +18,10 @@
 import torch
 from torch.autograd import Variable
 
-from gtx_shared.quantization import maybe_get_quantizer
-from gtx_shared.utils import GtxOption
-from gtx_shared.quantization import quantize_tensors
-import gtx_utils as py_utils
+from shared.quantization import maybe_get_quantizer
+from shared.utils import Option
+from shared.quantization import quantize_tensors
+import utils as py_utils
 
 __all__ = ["maxPool2d"]
 
@@ -47,3 +47,20 @@ def maxPool2d(*args, **kwargs):
     if quant_mode == None:
         return torch.nn.MaxPool2d(*args, **kwargs)
     return MaxPool2d(*args, **kwargs)
+
+
+# --- ggml/vision.cpp codegen (render) ---
+from shared.compile.render_api import register_render as _register_render
+from shared.base import OP as _OP
+
+
+@_register_render(_OP.MAX_POOL)
+def render(node, ctx):
+    k = ctx.scalar(ctx.attr(node, "kernel_size", [2, 2]))
+    s = ctx.scalar(ctx.attr(node, "stride", [k, k]))
+    p = ctx.scalar(ctx.attr(node, "padding", [0, 0]))
+    return ctx.out(
+        node,
+        f"ggml_pool_2d(m, {ctx.inp(node)}, GGML_OP_POOL_MAX, {k}, {k}, {s}, {s}, {p}, {p})"
+        " /* TODO(ggml): verify pool params/layout */",
+    )

@@ -14,11 +14,11 @@
 # limitations under the License.
 #:
 import torch
-from gtx_shared.quantization import maybe_get_quantizer
-from gtx_shared.quantization import quantize_tensors
-from gtx_shared.utils import GtxOption
-import gtx_utils as py_utils
-from gtx_shared.utils import calculate_op_scale
+from shared.quantization import maybe_get_quantizer
+from shared.quantization import quantize_tensors
+from shared.utils import Option
+import utils as py_utils
+from shared.utils import calculate_op_scale
 
 __all__ = ["mean"]
 
@@ -35,7 +35,7 @@ class Mean(torch.nn.Module):
         if (
             self.quantizer is None
             or self.quant_mode is None
-            or GtxOption.gtx_quant_off.value
+            or Option.quant_off.value
         ):
             return self._fp32_forward(input, dim, keepdim)
         else:

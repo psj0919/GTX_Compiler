@@ -18,11 +18,11 @@ import torch
 from torch.autograd import Variable
 import math
 
-from gtx_shared.utils import GtxOption, GtxScreenLogger
-from gtx_shared.quantization import maybe_get_quantizer
-from gtx_shared.quantization import quantize_tensors
+from shared.utils import Option, ScreenLogger
+from shared.quantization import maybe_get_quantizer
+from shared.quantization import quantize_tensors
 from .quant_noise import eval_qnoise
-import gtx_utils as py_utils
+import utils as py_utils
 import torch.nn.functional as F
 
 __all__ = ["prelu"]
@@ -43,7 +43,7 @@ class PReLU(torch.nn.PReLU):
         # quantize parameters
         qweight = None
         inplace = (
-            GtxOption.gtx_quant_off.value
+            Option.quant_off.value
             or self.quantizer is not None
             and self.quantizer.inplace
         )
@@ -63,7 +63,7 @@ class PReLU(torch.nn.PReLU):
                     tensor_names=[self.params_name[0]],
                     tensor_type="param",
                 )[0]
-            if not GtxOption.gtx_quant_off.value:
+            if not Option.quant_off.value:
                 self.param_quantized = True
         else:
             qweight = self.weight

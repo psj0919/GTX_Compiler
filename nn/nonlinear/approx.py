@@ -7,7 +7,7 @@ from .coefficient import (
     get_gelu_tanh_poly_coeffcients,
     get_tanh_positive_poly_coeffcients,
 )
-from gtx_utils.hw_dtype import is_subnormal, is_normal
+from utils.hw_dtype import is_subnormal, is_normal
 
 
 def mult_add(a_bf16, b_bf16, c_fp32):
@@ -110,7 +110,7 @@ _AMD_FLOOR = np.floor
 _AMD_FLOOR = torch.floor
 _AMD_ROUND = torch.round
 
-from gtx_utils.torch_utils import CmpFlag, compare_torch_version
+from utils.torch_utils import CmpFlag, compare_torch_version
 
 # torch do not have good support for bfloat16 operations prior to 1.8
 _is_torch_ge_180 = compare_torch_version(CmpFlag.GREATER_EQUAL, "1.8.0")

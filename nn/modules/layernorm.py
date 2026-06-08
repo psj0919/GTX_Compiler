@@ -15,14 +15,14 @@
 #
 
 import torch
-from gtx_shared.quantization import maybe_get_quantizer
-from gtx_shared.utils import GtxOption
-from gtx_shared.quantization import kernel_need_quant
-from gtx_shared.quantization import quantize_tensors
-import gtx_utils as py_utils
+from shared.quantization import maybe_get_quantizer
+from shared.utils import Option
+from shared.quantization import kernel_need_quant
+from shared.quantization import quantize_tensors
+import utils as py_utils
 import numpy as np
-from gtx_utils import Const
-from .fix_ops import GtxISqrt, GtxAIEISqrt
+from utils import Const
+from .fix_ops import ISqrt, AIEISqrt
 
 __all__ = ["layerNorm"]
 
@@ -39,7 +39,7 @@ class LayerNorm(torch.nn.LayerNorm):
     def forward(self, input):
         if (
             not kernel_need_quant(self.quantizer, self.node)
-            or GtxOption.gtx_gemm88.value
+            or Option.gemm88.value
         ):
             output = super().forward(input)
             output = quantize_tensors([output], self.node)[0]
@@ -52,7 +52,7 @@ class LayerNorm(torch.nn.LayerNorm):
         qweight = None
         qbias = None
         inplace = (
-            GtxOption.gtx_quant_off.value
+            Option.quant_off.value
             or self.quantizer is not None
             and self.quantizer.inplace
         )
@@ -87,18 +87,18 @@ class LayerNorm(torch.nn.LayerNorm):
                         tensor_names=[self.params_name[1]],
                         tensor_type="param",
                     )[0]
-            if not GtxOption.gtx_quant_off.value:
+            if not Option.quant_off.value:
                 self.param_quantized = True
         else:
             qweight = self.weight
             qbias = self.bias
 
         if (
-            GtxOption.gtx_quant_off.value
+            Option.quant_off.value
             or self.quantizer is None
             or self.quantizer.exporting
             or self.quantizer.configer.will_merge_with_table(
-                self.node, (not GtxOption.gtx_cv_app.value)
+                self.node, (not Option.cv_app.value)
             )
             or (
                 not self.quantizer.configer.is_node_quantizable(
@@ -114,14 +114,14 @@ class LayerNorm(torch.nn.LayerNorm):
 
         # quantization configure
         input_name = self.node.in_nodes[0]
-        input_node = self.quantizer.configer.get_Gtxnode(input_name)
+        input_node = self.quantizer.configer.get_node(input_name)
         if not self.quantizer.configer.node_output_quantizable(input_node):
             input_name = input_node.in_nodes[0]
 
         # quantization method
         if (
-            GtxOption.gtx_op_layernorm_mode.value == "aie2_16bw"
-            or GtxOption.gtx_ip_asr.value
+            Option.op_layernorm_mode.value == "aie2_16bw"
+            or Option.ip_asr.value
         ):
             fragpos = self.quantizer.get_quant_config(input_name, False)[1]
             wfp, bfp = None, None
@@ -151,8 +151,8 @@ class LayerNorm(torch.nn.LayerNorm):
             )
             output = quantize_tensors([output], self.node, method=4)[0]
         elif (
-            GtxOption.gtx_op_layernorm_mode.value == "bert_8bw"
-            or GtxOption.gtx_ip_v70_bert.value
+            Option.op_layernorm_mode.value == "bert_8bw"
+            or Option.ip_v70_bert.value
         ):
             fragpos = self.quantizer.get_quant_config(input_name, False)[1]
             wfp, bfp = None, None
@@ -236,7 +236,7 @@ class LayerNorm(torch.nn.LayerNorm):
 
         # isqrt: 1/sqrt(var)
         isqrt = torch.empty_like(var)
-        GtxISqrt(var, isqrt)  # CUDA/CPU: float32
+        ISqrt(var, isqrt)  # CUDA/CPU: float32
         isqrt = isqrt.to(torch.bfloat16).to(torch.float32)
 
         # mul: (x-mu)*(1/sigma)
@@ -305,7 +305,7 @@ class LayerNorm(torch.nn.LayerNorm):
 
         # isqrt: 1/sqrt(var)
         isqrt = torch.empty_like(var)
-        GtxAIEISqrt(var, isqrt)  # CUDA/CPU: float32
+        AIEISqrt(var, isqrt)  # CUDA/CPU: float32
         isqrt = isqrt.to(torch.bfloat16).to(torch.float32)  # float32
 
         # mul: (x-mu)*(1/sigma)

@@ -30,7 +30,7 @@ class FakeQuantizer(nn.Module):
     x_out = (clamp(round(x / scale + zero_point), quant_min, quant_max) - zero_point) * scale
     See https://arxiv.org/pdf/1903.08066.pdf
 
-    In gtx, we use symmetric quantization and power-of-2 scaling. That is,
+    In , we use symmetric quantization and power-of-2 scaling. That is,
       zero_point = 0,
       quant_min = -2^(bitwidth - 1),
       quant_max = 2^(bitwidth - 1) - 1
@@ -302,12 +302,12 @@ class TQTQuantizer(FakeQuantizer):
         """Export trained threshold to TorchQuantizer's quant info [bitwidth, fp].
 
         (1) TQT: qx = clip(round(fx / scale)) * scale, scale = 2^ceil(log2t) / 2^(b-1)
-        (2) GtxFixNeron: qx = clip(round(fx * scale)) * (1 / scale), scale = 2^fp
+        (2) FixNeron: qx = clip(round(fx * scale)) * (1 / scale), scale = 2^fp
         Let (1) equals (2), we can get
         (3): 2^(b-1) / 2^ceil(log2t) = 2^fp
          => fp = b - 1 - ceil(log2t)
 
-        For more details, see gtx/include/cuda/gtx_fix_kernels.cuh::_fix_neuron_v2_device
+        For more details, see /include/cuda/fix_kernels.cuh::_fix_neuron_v2_device
         """
         bitwidth = self.bitwidth.item()
         ceil_log2t = torch.ceil(self.log_threshold).item()

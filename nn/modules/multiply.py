@@ -15,9 +15,9 @@
 #
 
 import torch
-from gtx_shared.quantization import maybe_get_quantizer
-from gtx_shared.quantization import quantize_tensors
-import gtx_utils as py_utils
+from shared.quantization import maybe_get_quantizer
+from shared.quantization import quantize_tensors
+import utils as py_utils
 
 __all__ = ["mul"]
 
@@ -41,3 +41,18 @@ class Mul(torch.nn.Module):
 @py_utils.register_quant_op
 def mul(*args, **kwargs):
     return Mul(*args, **kwargs)
+
+
+# --- ggml/vision.cpp codegen (render) ---
+from shared.compile.render_api import register_render as _rr
+from shared.base import OP as _OP
+
+
+@_rr(_OP.MULTIPLY)
+def render(node, ctx):
+    return ctx.out(node, f"ggml_mul(m, {ctx.inp(node, 0)}, {ctx.inp(node, 1)})")
+
+
+@_rr(_OP.DIV)
+def render_div(node, ctx):
+    return ctx.out(node, f"ggml_div(m, {ctx.inp(node, 0)}, {ctx.inp(node, 1)})")

@@ -15,7 +15,7 @@
 
 import torch
 
-from gtx_utils.hw_dtype import fp32
+from utils.hw_dtype import fp32
 from nn.quantization.ops import quantize_ops
 
 

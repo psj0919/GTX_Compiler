@@ -1,7 +1,7 @@
 //==================================================================
 // Copyright   : (C) Supergate - All Rights Reserved
 // Project     : GSF / VTS
-// Description : GTX intrinsic definition (level 3)
+// Description :  intrinsic definition (level 3)
 //				 complex operation intrinsic consisting of compound instructions
 // Author      : mh.kim ( NPU Div - NPU Core Team )
 // Last Update : 2026/01/23

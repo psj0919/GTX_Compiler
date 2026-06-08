@@ -20,7 +20,7 @@ from .parse_utils import *
 
 def change_addmm_to_linear(raw_graph):
     for node in raw_graph.nodes:
-        if node.op.type in [GTX_OP.ADDMM]:
+        if node.op.type in [OP.ADDMM]:
             weight = node.op.get_config("mat2")
             bias = node.op.get_config("input")
             if (weight and weight.node == None) and (bias and bias.node == None):

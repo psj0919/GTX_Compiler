@@ -18,12 +18,12 @@ import torch
 from torch.autograd import Variable
 import torch.nn.functional as F
 
-from gtx_shared.quantization import maybe_get_quantizer
-from gtx_shared.quantization import quantize_tensors
-from gtx_shared.utils import GtxOption
-import gtx_utils as py_utils
+from shared.quantization import maybe_get_quantizer
+from shared.quantization import quantize_tensors
+from shared.utils import Option
+import utils as py_utils
 from .fix_ops import fake_quantize_per_tensor
-from gtx_shared.utils import gtx_KEYS, GLOBAL_MAP
+from shared.utils import KEYS, GLOBAL_MAP
 
 __all__ = ["hardswish"]
 
@@ -38,8 +38,8 @@ class Hardswish(torch.nn.Module):
         self.inplace = inplace
 
     def forward(self, input):
-        quant_config = GLOBAL_MAP.get_ele(gtx_KEYS.QUANT_CONFIG)
-        if self.quant_mode is None or GtxOption.gtx_quant_off.value:
+        quant_config = GLOBAL_MAP.get_ele(KEYS.QUANT_CONFIG)
+        if self.quant_mode is None or Option.quant_off.value:
             return torch.mul(input, torch.div(F.relu6(torch.add(input, 3.0)), 6.0))
         elif quant_config["target_device"] == "FLEXML":
             qinput = quantize_tensors([input], self.node, tensor_type="input")[0]

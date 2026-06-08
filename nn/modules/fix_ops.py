@@ -19,13 +19,13 @@
 import sys
 import torch
 
-# from ..load_kernels import gtx_kernels
+# from ..load_kernels import kernels
 from ..load_kernels import *
 import copy
 import numpy as np
-from gtx_shared.utils import GtxOption, GtxScreenLogger
+from shared.utils import Option, ScreenLogger
 from nn.utils.decorator import pre_and_post_process_f16_tensor
-from gtx_utils.torch_utils import CmpFlag, compare_torch_version
+from utils.torch_utils import CmpFlag, compare_torch_version
 
 # from torch.utils.cpp_extension import load
 __all__ = [
@@ -33,29 +33,29 @@ __all__ = [
     "Round",
     "DiffsFixPos",
     "DiffsFixPosChannel",
-    "GtxSigmoidTableLookup",
-    "GtxSigmoidTableLookupAIE2",
-    "GtxSigmoidSimulation",
-    "GtxTanhTableLookup",
-    "GtxTanhTableLookupAIE2",
-    "GtxTanhSimulation",
+    "SigmoidTableLookup",
+    "SigmoidTableLookupAIE2",
+    "SigmoidSimulation",
+    "TanhTableLookup",
+    "TanhTableLookupAIE2",
+    "TanhSimulation",
     "FixNeuronWithBackward",
     "fake_quantize_per_tensor",
-    "GtxSoftmaxExpApproximate",
-    "GtxSoftmaxLOD",
-    "GtxSoftmaxSimulationPart1",
-    "GtxSoftmaxSimulationPart2",
+    "SoftmaxExpApproximate",
+    "SoftmaxLOD",
+    "SoftmaxSimulationPart1",
+    "SoftmaxSimulationPart2",
     "fake_quantize_per_channel",
     "fake_quantize_per_tensor_tensorrt",
     "fake_quantize_per_channel_tensorrt",
-    "GtxExpApprAIE2",
-    "GtxInverseAIE2",
-    "GtxLogSoftmaxFastLn",
-    "GtxLogSoftmaxSub",
-    "GtxAIESqrt",
-    "GtxAIEISqrt",
-    "GtxISqrt",
-    "GtxLayernormInvSqrt",
+    "ExpApprAIE2",
+    "InverseAIE2",
+    "LogSoftmaxFastLn",
+    "LogSoftmaxSub",
+    "AIESqrt",
+    "AIEISqrt",
+    "ISqrt",
+    "LayernormInvSqrt",
 ]
 
 
@@ -123,14 +123,14 @@ def FixNeuron(Tinput, Toutput, maxamp, method=2):
             Tinput, valmin, valmax, valamp, 0, method, device_id, 1
         )
     else:
-        gtx_kernels.FixNeuronV2(
+        kernels.FixNeuronV2(
             Tinput, Toutput, valmin, valmax, valamp, 0, method, device_id
         )
     return Toutput
     '''
   if Tinput.device == torch.device("cpu"):
     output = Tinput.clone()
-    gtx_kernels.FixNeuronV2(output, output, valmax,
+    kernels.FixNeuronV2(output, output, valmax,
                               valamp, method)
     Tinput.copy_(output.cpu())
     return Tinput
@@ -160,7 +160,7 @@ def FixNeuron(Tinput, Toutput, maxamp, method=2):
     # return Tinput
     """
   else:
-    gtx_kernels.FixNeuronV2(Tinput, Toutput, valmax,
+    kernels.FixNeuronV2(Tinput, Toutput, valmax,
                               valamp, method)
   return Toutput
   '''
@@ -175,8 +175,8 @@ def DiffsFixPos(Tinput, Tbuffer, Tfixpos, bit_width=8, range=5, method=2):
             Tinput, Tbuffer, Tfixpos, bit_width, range, method, device_id
         )
     else:
-        #! TODO: gtx_kernels is not defined
-        gtx_kernels.DiffsFixPos(
+        #! TODO: kernels is not defined
+        kernels.DiffsFixPos(
             Tinput, Tbuffer, Tfixpos, bit_width, range, method, device_id
         )
 
@@ -202,7 +202,7 @@ def DiffsFixPosChannel(
             )
     else:
         for i in range(len(input_split)):
-            gtx_kernels.DiffsFixPos(
+            kernels.DiffsFixPos(
                 input_split[i],
                 buffer_split[i],
                 Tfixpos[i],
@@ -214,17 +214,17 @@ def DiffsFixPosChannel(
 
 
 @pre_and_post_process_f16_tensor
-def GtxSigmoidTableLookup(Tinput, Ttable, Toutput, fragpos):
+def SigmoidTableLookup(Tinput, Ttable, Toutput, fragpos):
     device_id = 1  # CPU-only
     Tinput = clone_view_tensor(Tinput)
     if support_onnx_export():
         torch.ops.vai.SigmoidTableLookup(Tinput, Ttable, Toutput, fragpos, device_id)
     else:
-        gtx_kernels.SigmoidTableLookup(Tinput, Ttable, Toutput, fragpos, device_id)
+        kernels.SigmoidTableLookup(Tinput, Ttable, Toutput, fragpos, device_id)
 
 
 @pre_and_post_process_f16_tensor
-def GtxSigmoidSimulation(Tinput, Toutput, fragpos):
+def SigmoidSimulation(Tinput, Toutput, fragpos):
     device_id = 1  # CPU-only
     Tinput = clone_view_tensor(Tinput)
     if device_id == 1:
@@ -233,21 +233,21 @@ def GtxSigmoidSimulation(Tinput, Toutput, fragpos):
         if support_onnx_export():
             torch.ops.vai.SigmoidSimulation(Tinput, Toutput, fragpos, device_id)
         else:
-            gtx_kernels.SigmoidSimulation(Tinput, Toutput, fragpos, device_id)
+            kernels.SigmoidSimulation(Tinput, Toutput, fragpos, device_id)
 
 
 @pre_and_post_process_f16_tensor
-def GtxTanhTableLookup(Tinput, Ttable, Toutput, fragpos):
+def TanhTableLookup(Tinput, Ttable, Toutput, fragpos):
     device_id = 1  # CPU-only
     Tinput = clone_view_tensor(Tinput)
     if support_onnx_export():
         torch.ops.vai.TanhTableLookup(Tinput, Ttable, Toutput, fragpos, device_id)
     else:
-        gtx_kernels.TanhTableLookup(Tinput, Ttable, Toutput, fragpos, device_id)
+        kernels.TanhTableLookup(Tinput, Ttable, Toutput, fragpos, device_id)
 
 
 @pre_and_post_process_f16_tensor
-def GtxTanhSimulation(Tinput, Toutput, fragpos):
+def TanhSimulation(Tinput, Toutput, fragpos):
     device_id = 1  # CPU-only
     Tinput = clone_view_tensor(Tinput)
     if device_id == 1:
@@ -256,11 +256,11 @@ def GtxTanhSimulation(Tinput, Toutput, fragpos):
         if support_onnx_export():
             torch.ops.vai.TanhSimulation(Tinput, Toutput, fragpos, device_id)
         else:
-            gtx_kernels.TanhSimulation(Tinput, Toutput, fragpos, device_id)
+            kernels.TanhSimulation(Tinput, Toutput, fragpos, device_id)
 
 
 @pre_and_post_process_f16_tensor
-def GtxSoftmaxExpApproximate(Tinput, Toutput):
+def SoftmaxExpApproximate(Tinput, Toutput):
     device_id = 1  # CPU-only
     Tinput = clone_view_tensor(Tinput)
     if device_id == 1:
@@ -269,11 +269,11 @@ def GtxSoftmaxExpApproximate(Tinput, Toutput):
         if support_onnx_export():
             torch.ops.vai.SoftmaxExpApproximate(Tinput, Toutput, device_id)
         else:
-            gtx_kernels.SoftmaxExpApproximate(Tinput, Toutput, device_id)
+            kernels.SoftmaxExpApproximate(Tinput, Toutput, device_id)
 
 
 @pre_and_post_process_f16_tensor
-def GtxSoftmaxLOD(Tinput, Toutput):
+def SoftmaxLOD(Tinput, Toutput):
     device_id = 1  # CPU-only
     Tinput = clone_view_tensor(Tinput)
     if device_id == 1:
@@ -282,11 +282,11 @@ def GtxSoftmaxLOD(Tinput, Toutput):
         if support_onnx_export():
             torch.ops.vai.SoftmaxLOD(Tinput, Toutput, device_id)
         else:
-            gtx_kernels.SoftmaxLOD(Tinput, Toutput, device_id)
+            kernels.SoftmaxLOD(Tinput, Toutput, device_id)
 
 
 @pre_and_post_process_f16_tensor
-def GtxSoftmaxSimulationPart1(Tinput, Toutput):
+def SoftmaxSimulationPart1(Tinput, Toutput):
     device_id = 1  # CPU-only
     Tinput = clone_view_tensor(Tinput)
     if device_id == 1:
@@ -295,11 +295,11 @@ def GtxSoftmaxSimulationPart1(Tinput, Toutput):
         if support_onnx_export():
             torch.ops.vai.SoftmaxSimulationPart1(Tinput, Toutput, device_id)
         else:
-            gtx_kernels.SoftmaxSimulationPart1(Tinput, Toutput, device_id)
+            kernels.SoftmaxSimulationPart1(Tinput, Toutput, device_id)
 
 
 @pre_and_post_process_f16_tensor
-def GtxSoftmaxSimulationPart2(sum, Toutput):
+def SoftmaxSimulationPart2(sum, Toutput):
     device_id = 1  # CPU-only
     sum = clone_view_tensor(sum)
     if device_id == 1:
@@ -308,7 +308,7 @@ def GtxSoftmaxSimulationPart2(sum, Toutput):
         if support_onnx_export():
             torch.ops.vai.SoftmaxSimulationPart2(sum, Toutput, device_id)
         else:
-            gtx_kernels.SoftmaxSimulationPart2(sum, Toutput, device_id)
+            kernels.SoftmaxSimulationPart2(sum, Toutput, device_id)
 
 
 @pre_and_post_process_f16_tensor
@@ -340,7 +340,7 @@ def fake_quantize_per_tensor(
             return output
         else:
             output = input.clone() if inplace == 0 else input
-            gtx_kernels.FixNeuronV2(
+            kernels.FixNeuronV2(
                 input,
                 output,
                 quant_min,
@@ -395,7 +395,7 @@ def fake_quantize_per_channel(
                 output_split = (
                     input_split[i].clone() if inplace == 0 else input_split[i]
                 )
-                gtx_kernels.FixNeuronV2(
+                kernels.FixNeuronV2(
                     input_split[i],
                     output_split,
                     quant_min,
@@ -533,21 +533,21 @@ def fake_quantize_per_tensor_tensorrt(inputs, amax, min_bound, max_bound):
 
 
 @pre_and_post_process_f16_tensor
-def GtxSigmoidTableLookupAIE2(Tinput, Toutput, fragpos):
+def SigmoidTableLookupAIE2(Tinput, Toutput, fragpos):
     Tinput = clone_view_tensor(Tinput)
     device_id = 1  # CPU-only
     torch.ops.vai.SigmoidTableLookupAIE2(Tinput, Toutput, fragpos, device_id)
 
 
 @pre_and_post_process_f16_tensor
-def GtxTanhTableLookupAIE2(Tinput, Toutput, fragpos):
+def TanhTableLookupAIE2(Tinput, Toutput, fragpos):
     Tinput = clone_view_tensor(Tinput)
     device_id = 1  # CPU-only
     torch.ops.vai.TanhTableLookupAIE2(Tinput, Toutput, fragpos, device_id)
 
 
 @pre_and_post_process_f16_tensor
-def GtxExpApprAIE2(Tinput, Toutput, bit_width):
+def ExpApprAIE2(Tinput, Toutput, bit_width):
     Tinput = clone_view_tensor(Tinput)
     device_id = 1  # CPU-only
     if device_id == 1:
@@ -557,7 +557,7 @@ def GtxExpApprAIE2(Tinput, Toutput, bit_width):
 
 
 @pre_and_post_process_f16_tensor
-def GtxLogSoftmaxFastLn(Tinput, Toutput):
+def LogSoftmaxFastLn(Tinput, Toutput):
     Tinput = clone_view_tensor(Tinput)
     device_id = 1  # CPU-only
     if device_id == 1:
@@ -567,7 +567,7 @@ def GtxLogSoftmaxFastLn(Tinput, Toutput):
 
 
 @pre_and_post_process_f16_tensor
-def GtxLogSoftmaxSub(Tinput, Toutput, Tsum):
+def LogSoftmaxSub(Tinput, Toutput, Tsum):
     Tinput = clone_view_tensor(Tinput)
     device_id = 1  # CPU-only
     if device_id == 1:
@@ -577,28 +577,28 @@ def GtxLogSoftmaxSub(Tinput, Toutput, Tsum):
 
 
 @pre_and_post_process_f16_tensor
-def GtxAIESqrt(Tinput, Toutput):
+def AIESqrt(Tinput, Toutput):
     Tinput = clone_view_tensor(Tinput)
     device_id = 1  # CPU-only
     torch.ops.vai.AIESqrt(Tinput, Toutput, device_id)
 
 
 @pre_and_post_process_f16_tensor
-def GtxAIEISqrt(Tinput, Toutput):
+def AIEISqrt(Tinput, Toutput):
     Tinput = clone_view_tensor(Tinput)
     device_id = 1  # CPU-only
     torch.ops.vai.AIEISqrt(Tinput, Toutput, device_id)
 
 
 @pre_and_post_process_f16_tensor
-def GtxISqrt(Tinput, Toutput):
+def ISqrt(Tinput, Toutput):
     Tinput = clone_view_tensor(Tinput)
     device_id = 1  # CPU-only
     torch.ops.vai.LayernormISqrt(Tinput, Toutput, device_id)
 
 
 @pre_and_post_process_f16_tensor
-def GtxLayernormInvSqrt(Tinput, Toutput):
+def LayernormInvSqrt(Tinput, Toutput):
     Tinput = clone_view_tensor(Tinput)
     device_id = 1  # CPU-only
     if device_id == 1:
@@ -608,7 +608,7 @@ def GtxLayernormInvSqrt(Tinput, Toutput):
 
 
 @pre_and_post_process_f16_tensor
-def GtxInverseAIE2(Tinput, Toutput):
+def InverseAIE2(Tinput, Toutput):
     Tinput = clone_view_tensor(Tinput)
     device_id = 1  # CPU-only
     if device_id == 1:

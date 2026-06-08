@@ -17,13 +17,13 @@
 */
 
 
-#ifndef _gtx_CU_KERNELS_ANSI_H_
-#define _gtx_CU_KERNELS_ANSI_H_
+#ifndef _CU_KERNELS_ANSI_H_
+#define _CU_KERNELS_ANSI_H_
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-//implemented in gtx_math_kernels.cu
+//implemented in math_kernels.cu
 void cudaF_partial_sort(float* host_in,int dim,float* host_out);
 
 void cudaI_test_op(const int N,const int* input,int* out);
@@ -133,7 +133,7 @@ void cudaI_add_vec_cols_inplace(const int alpha, const int* vec, const int beta,
 void cudaI_add_vec_rows_inplace_dimi(const int alpha, const int* vec, const int beta, 
   int* mat, int row,int col,int stride,float multiplier);
 
-//implemented in gtx_fixpoint_kernels.h
+//implemented in fixpoint_kernels.h
 void cudaF_scale_T2int_mat(int row,int col,int* out_data,
   const float* in_data,int in_stride,int out_stride,float m);
 void cudaD_scale_T2int_mat(int row,int col,int* out_data,
@@ -173,7 +173,7 @@ void cudaF_fix_neuron_v2_int(const int N,const float* src,
 void cudaD_fix_neuron_v2_int(const int N,const double* src,
   int* dst,int bitwidth,int fragpos,int method);
 
-//implemented in gtx_prune_kernels.h
+//implemented in prune_kernels.h
 void cudaF_transpose_by_pe(int row,int col,int dst_col,
   const float* src,float* dst,int pe_num);
 void cudaD_transpose_by_pe(int row,int col,int dst_col,
@@ -184,7 +184,7 @@ void cudaF_fill_by_sorted_pe(int row,int col,int sort_col,
 void cudaD_fill_by_sorted_pe(int row,int col,int sort_col,
   double* src,const double* sort,int pe_num,int key_idx);
 
-//implemented in gtx_conv_kernels.cu
+//implemented in conv_kernels.cu
 void cudaF_im2col(const int row,const int col,const float* data_im, 
   const int batch_size,const int channels,const int height, const int width,
   const int kernel_h, const int kernel_w,
@@ -236,7 +236,7 @@ void cudaF_col2im_fast(const int row,const int col,float* data_im,
   const int height_col, const int width_col,
   const double* data_buf,const int g_start,const int batch_first);*/
 
-//implemented in gtx_batchnorm_kernels.cu
+//implemented in batchnorm_kernels.cu
 void cudaF_batch_norm_inference(int row,int col,float eps,
   const float* input,const float* gamma,const float* beta,
   const float* mean,const float* var,float* out);
@@ -287,7 +287,7 @@ void cudaD_batch_norm_back(int row,int col,float eps,int renorm,
   const double* mean,const double* var,const double* divar,
   double* in_grad,double* grad_buff);
 
-//implemented in gtx_lstm_kernels.cu
+//implemented in lstm_kernels.cu
 void cudaF_lstm_cell(const int N,const int num_cell,const int stride,
   const float* y_c_prev,float* y_g,float* y_i,float* y_f,float* y_o,
   float* y_c,float* y_h,float cell_clip);
@@ -337,4 +337,4 @@ void cudaD_diff_S(const int N, const double* src, double* buffer, double* output
 #ifdef __cplusplus
 } //extern "C"
 #endif
-#endif //_gtx_CU_KERNELS_ANSI_H_
+#endif //_CU_KERNELS_ANSI_H_

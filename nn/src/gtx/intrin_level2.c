@@ -1,7 +1,7 @@
 //==================================================================
 // Copyright   : (C) Supergate - All Rights Reserved
 // Project     : GSF / VTS
-// Description : GTX intrinsic function description (level 2)
+// Description :  intrinsic function description (level 2)
 // 				 convenience intrinsic function for programming
 // Author      : mh.kim ( NPU Div - NPU Core Team )    
 // Last Update : 2026/01/23
@@ -12,7 +12,7 @@
 
 #include "intrin_level1.h"
 #include "intrin_level2.h"
-#include "gtx_csr.h"
+#include "csr.h"
 
 
 //=================================
@@ -243,7 +243,7 @@ __attribute__((noinline)) void __dot_product_acc(uint16_t col_A_size, uint8_t re
 
 
 //=================================
-// Usable function (not consisting of GTX-ISA)
+// Usable function (not consisting of -ISA)
 //=================================
 // [int16_to_fp16] 
 // integer 16 format convert to floating point 16 format (RNE role)

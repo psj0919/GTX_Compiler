@@ -1,11 +1,11 @@
 from collections import defaultdict
 from typing import Dict, List
-from gtx_shared.gtx_graph import GraphSearcher
-from gtx_shared.utils import GtxDebugLogger, GtxOption, PatternType
+from shared.graph import GraphSearcher
+from shared.utils import DebugLogger, Option, PatternType
 
 from .opt_pass import OptPass
 from .torch_graph import *
-from gtx_utils.jit_utils import *
+from utils.jit_utils import *
 import torch
 
 
@@ -14,7 +14,7 @@ class TorchScriptModuleHandler(object):
         self._extra_node_input_args = defaultdict(list)
 
     def build_torch_graph(self, graph_name, script_module, *args):
-        # if GtxOption.gtx_jit_script_mode == "rnn":
+        # if Option.jit_script_mode == "rnn":
         def rename_graph_inputs(graph):
             for i, inp in enumerate(list(graph.inputs())[1:]):
                 set_unique_name(inp, "input_" + str(i))

@@ -18,9 +18,9 @@
 
 #include <ATen/ATen.h>
 #include "c10/util/ArrayRef.h"
-#include "../../include/gtx_math.h"
-#include  "../../../../../include/cpu/gtx_cpu_math.h"
-#include  "../../../../../include/cpu/gtx_fix_kernels_cpu.h"
+#include "../../include/math.h"
+#include  "../../../../../include/cpu/cpu_math.h"
+#include  "../../../../../include/cpu/fix_kernels_cpu.h"
 
 template <typename Dtype>
 void _Scale(Tensor Tinput, Dtype scale, int device_id) 

@@ -136,7 +136,7 @@ class NodeMatch(object):
 
 
 class NodePattern(object):
-    """Defines a tree sub-graph pattern of nodes to match in a gtx graph.
+    """Defines a tree sub-graph pattern of nodes to match in a  graph.
 
     Examples:
       Matches a Conv+BN+ReLU6 and DepthwiseConv+BN+ReLU6 pattern.

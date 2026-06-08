@@ -1,13 +1,13 @@
 //==================================================================
 // Copyright   : (C) Supergate - All Rights Reserved
 // Project     : GSF / VTS
-// Description : GTX architecture CSR definition
+// Description :  architecture CSR definition
 // Author      : mh.kim ( NPU Div - NPU Core Team )
 // Last Update : 2025/12/15
 //==================================================================
 
-#ifndef GTX_CSR_H
-#define GTX_CSR_H
+#ifndef CSR_H
+#define CSR_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -15,7 +15,7 @@ extern "C" {
 
 
 //=================================
-// Global (GSPR, GTX) / 000-3FF (Nest관련)
+// Global (GSPR, ) / 000-3FF (Nest관련)
 //=================================
 // Run
 #define RUN                 0x000

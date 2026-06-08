@@ -34,7 +34,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from gtx_utils.torch_utils import CmpFlag, compare_torch_version
+from utils.torch_utils import CmpFlag, compare_torch_version
 
 from torch.nn import init
 from torch.nn.modules.utils import _pair
@@ -197,7 +197,7 @@ class _ConvBnNd(nn.modules.conv._ConvNd):
 
     def merge_bn_to_conv(self):
         with torch.no_grad():
-            # Use the same implementation in gtx_shared/optimzation/fuse_conv_bn.py
+            # Use the same implementation in shared/optimzation/fuse_conv_bn.py
             # to make sure the test accruacy is same as the deployable model.
             gamma = self.bn.weight.detach().cpu().numpy()
             beta = self.bn.bias.detach().cpu().numpy()

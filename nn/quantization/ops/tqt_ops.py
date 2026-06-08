@@ -37,7 +37,7 @@ class TQTQuantize(torch.autograd.Function):
         ctx.save_for_backward(x, scale, quant_max, quant_min, logt)
 
         x = x.clone()
-        return fix_ops.GtxFixNeuron(x, x, (domain, 1 / scale), method)
+        return fix_ops.FixNeuron(x, x, (domain, 1 / scale), method)
         # return torch.clamp(torch.round(x/scale), quant_min.item(), quant_max.item()) * scale
 
     @staticmethod
@@ -46,9 +46,9 @@ class TQTQuantize(torch.autograd.Function):
 
         scaled_x = x / scale
 
-        # Python equivalent to GtxFixNeuron rounding implementation which is
+        # Python equivalent to FixNeuron rounding implementation which is
         # consistent with hardware runtime.
-        # See gtx/include/cuda/gtx_fix_kernels.cuh::_fix_neuron_v2_device
+        # See /include/cuda/fix_kernels.cuh::_fix_neuron_v2_device
         # Round -1.5 to -1 instead of -2.
         rounded_scaled_x = torch.where(
             (scaled_x < 0) & (scaled_x - torch.floor(scaled_x) == 0.5),

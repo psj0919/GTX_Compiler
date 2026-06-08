@@ -18,10 +18,10 @@ import torch
 from torch.autograd import Variable
 import math
 
-from gtx_shared.utils import GtxOption
-from gtx_shared.quantization import quantize_tensors
-from gtx_shared.quantization import maybe_get_quantizer
-import gtx_utils as py_utils
+from shared.utils import Option
+from shared.quantization import quantize_tensors
+from shared.quantization import maybe_get_quantizer
+import utils as py_utils
 import torch.nn.functional as F
 
 __all__ = ["batchNorm"]
@@ -46,7 +46,7 @@ class BatchNorm(torch.nn.modules.batchnorm._BatchNorm):
 
         if not self.param_quantized:
             inplace = (
-                GtxOption.gtx_quant_off.value
+                Option.quant_off.value
                 or self.quantizer is not None
                 and self.quantizer.inplace
             )
@@ -60,7 +60,7 @@ class BatchNorm(torch.nn.modules.batchnorm._BatchNorm):
                 qparams = quantize_tensors(
                     params, self.node, tensor_names=param_names, tensor_type="param"
                 )
-            if not GtxOption.gtx_quant_off.value:
+            if not Option.quant_off.value:
                 self.param_quantized = True
         else:
             qparams = [p for p in params]
@@ -123,3 +123,14 @@ def batchNorm(*args, **kwargs):
         nn._check_input_dim = types.MethodType(_check_input_dim, nn)
         return nn
     return BatchNorm(*args, **kwargs)
+
+
+# --- ggml/vision.cpp codegen (render) ---
+from shared.compile.render_api import register_render as _register_render
+from shared.base import OP as _OP
+
+
+@_register_render(_OP.BATCH_NORM)
+def render(node, ctx):
+    key = ctx.weight(node, ["weight", "bias", "running_mean", "running_var"])
+    return ctx.out(node, f"batch_norm_2d({key}, {ctx.inp(node)})")

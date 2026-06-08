@@ -16,13 +16,13 @@
 
 import torch
 import numpy as np
-from gtx_shared.quantization import maybe_get_quantizer
-from gtx_shared.quantization import quantize_tensors
-from gtx_shared.utils import GtxOption
-from gtx_shared.base import GLOBAL_MAP, gtx_KEYS
+from shared.quantization import maybe_get_quantizer
+from shared.quantization import quantize_tensors
+from shared.utils import Option
+from shared.base import GLOBAL_MAP, KEYS
 from .tanh_table import *
-from .fix_ops import GtxTanhTableLookup, GtxTanhSimulation, GtxTanhTableLookupAIE2
-import gtx_utils as py_utils
+from .fix_ops import TanhTableLookup, TanhSimulation, TanhTableLookupAIE2
+import utils as py_utils
 
 __all__ = ["tanh"]
 
@@ -44,11 +44,11 @@ class Tanh(torch.nn.modules.Tanh):
         qinput = quantize_tensors([input], self.node, tensor_type="input")[0]
 
         if (
-            GtxOption.gtx_quant_off.value
+            Option.quant_off.value
             or self.quantizer is None
             or self.quantizer.exporting
-            or GtxOption.gtx_cv_app.value
-            or GtxOption.gtx_only_int_quant is False
+            or Option.cv_app.value
+            or Option.only_int_quant is False
         ):
             # Method 0: quant input and output (for CV)
             output = super().forward(qinput)
@@ -57,28 +57,28 @@ class Tanh(torch.nn.modules.Tanh):
         else:
             output = torch.empty_like(qinput)
             input_name = self.node.in_nodes[0]
-            input_node = self.quantizer.configer.get_Gtxnode(input_name)
+            input_node = self.quantizer.configer.get_node(input_name)
             if not self.quantizer.configer.node_output_quantizable(input_node):
                 input_name = input_node.in_nodes[0]
 
             fragpos = self.quantizer.get_quant_config(input_name, False)[1]
             # Method 1: Simulation AIE with 16 bw (for RNNT)
-            if GtxOption.gtx_op_tanh_sigmoid_mode.value == "simulation":
-                GtxTanhSimulation(input, output, fragpos)
+            if Option.op_tanh_sigmoid_mode.value == "simulation":
+                TanhSimulation(input, output, fragpos)
                 output = quantize_tensors([output], self.node)[0]
             # Method 2: Table Look up for AIE2 with 16 bw (based on LUT)
             elif (
-                GtxOption.gtx_op_tanh_sigmoid_mode.value == "aie2_lut_16bw"
-                or GtxOption.gtx_ip_asr.value
+                Option.op_tanh_sigmoid_mode.value == "aie2_lut_16bw"
+                or Option.ip_asr.value
             ):
-                GtxTanhTableLookupAIE2(qinput, output, fragpos)
+                TanhTableLookupAIE2(qinput, output, fragpos)
                 output = quantize_tensors([output], self.node)[0]
             # Method 3: Table Look up for FPGA with 16 bw
             else:
                 quant_device = qinput.device
                 Ttable = TANH_TABLE.table.to(qinput.dtype).to(quant_device)
                 output = output.to(quant_device)
-                GtxTanhTableLookup(input, Ttable, output, fragpos)
+                TanhTableLookup(input, Ttable, output, fragpos)
                 bnfp = self.quantizer.get_quant_config(input_name, False)
                 bnfp[1] = 15
                 self.quantizer.set_quant_config(self.node.name, bnfp)

@@ -18,9 +18,9 @@ from torch import nn
 from torch import Tensor
 from typing import Any, NoReturn, Optional, Sequence, Tuple, Union, List
 
-from gtx_shared.base import GTX_OP as OpTypes
-from gtx_shared.optimization.commander import OptimizeCommander
-from gtx_shared.utils import registry
+from shared.base import OP as OpTypes
+from shared.optimization.commander import OptimizeCommander
+from shared.utils import registry
 
 import parse
 from nn import quantization as nnq

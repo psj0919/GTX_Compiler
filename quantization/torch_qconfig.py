@@ -15,10 +15,10 @@
 #
 
 import copy
-from gtx_shared.quantization import QConfigBase
-from gtx_shared.utils import GtxScreenLogger, QError, QWarning, QNote
+from shared.quantization import QConfigBase
+from shared.utils import ScreenLogger, QError, QWarning, QNote
 
-# from .utils.gtx2torch_op_map import get_gtx_op_type
+# from .utils.2torch_op_map import get_op_type
 
 
 class TorchQConfig(QConfigBase):
@@ -29,7 +29,7 @@ class TorchQConfig(QConfigBase):
         if isinstance(config_value, int) and (config_value >= 0 and config_value <= 32):
             config_use[key] = config_value
         else:
-            GtxScreenLogger().error2user(
+            ScreenLogger().error2user(
                 QError.ILLEGAL_BITWIDTH,
                 f"The {key} type of {name} should be int, and in range of [0,32].",
             )
@@ -55,7 +55,7 @@ class RNNTorchQConfig(QConfigBase):
                 config_use[key] = config_value
             else:
                 bitwidth_legels = self._legal_qconfigs[name][key]
-                GtxScreenLogger().error2user(
+                ScreenLogger().error2user(
                     QError.ILLEGAL_BITWIDTH,
                     f"The {key} configuration of {name} should be in the list {bitwidth_legels}.",
                 )
@@ -66,7 +66,7 @@ class RNNTorchQConfig(QConfigBase):
             ):
                 config_use[key] = config_value
             else:
-                GtxScreenLogger().error2user(
+                ScreenLogger().error2user(
                     QError.ILLEGAL_BITWIDTH,
                     f"The {key} configuration of {name} type should be int, and in range of [0, 32].",
                 )

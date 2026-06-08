@@ -17,11 +17,11 @@
 import math
 import torch
 
-from gtx_shared.quantization import maybe_get_quantizer
-from gtx_shared.quantization import quantize_tensors
-from gtx_shared.utils import GtxOption
-from .fix_ops import GtxExpApprAIE2, GtxLogSoftmaxFastLn, GtxLogSoftmaxSub
-import gtx_utils as py_utils
+from shared.quantization import maybe_get_quantizer
+from shared.quantization import quantize_tensors
+from shared.utils import Option
+from .fix_ops import ExpApprAIE2, LogSoftmaxFastLn, LogSoftmaxSub
+import utils as py_utils
 
 __all__ = ["logSoftmax"]
 
@@ -42,7 +42,7 @@ class LogSoftmax(torch.nn.modules.LogSoftmax):
         qinput = quantize_tensors([input], self.node, tensor_type="input")[0]
 
         if (
-            GtxOption.gtx_quant_off.value
+            Option.quant_off.value
             or self.quantizer is None
             or self.quantizer.exporting
         ):
@@ -52,9 +52,9 @@ class LogSoftmax(torch.nn.modules.LogSoftmax):
 
         else:
             # Method: Table Look up for AIE2 (based on LUT) with 16 bw
-            if GtxOption.gtx_op_softmax_mode.value == "aie2_lut_16bw":
+            if Option.op_softmax_mode.value == "aie2_lut_16bw":
                 input_name = self.node.in_nodes[0]
-                input_node = self.quantizer.configer.get_Gtxnode(input_name)
+                input_node = self.quantizer.configer.get_node(input_name)
                 if not self.quantizer.configer.node_output_quantizable(input_node):
                     input_name = input_node.in_nodes[0]
 
@@ -77,13 +77,13 @@ class LogSoftmax(torch.nn.modules.LogSoftmax):
                         qinput -= 32
 
                 qinput_exp = torch.empty_like(input)
-                GtxExpApprAIE2(qinput, qinput_exp, bw)
+                ExpApprAIE2(qinput, qinput_exp, bw)
 
                 exp_sum = torch.sum(qinput_exp, dim=self.dim, keepdim=True)
                 ln_sum = torch.empty_like(exp_sum)
-                GtxLogSoftmaxFastLn(exp_sum, ln_sum)
+                LogSoftmaxFastLn(exp_sum, ln_sum)
                 output = torch.empty_like(input)
-                GtxLogSoftmaxSub(qinput, output, ln_sum)
+                LogSoftmaxSub(qinput, output, ln_sum)
                 output = quantize_tensors([output], self.node)[0]
             else:
                 output = super().forward(qinput)

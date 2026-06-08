@@ -18,8 +18,8 @@
 
 #include <ATen/ATen.h>
 #include "c10/util/ArrayRef.h"
-#include "../../include/gtx_fixneuron_op.h"
-#include "../../../../../include/cpu/gtx_fix_kernels_cpu.h"
+#include "../../include/fixneuron_op.h"
+#include "../../../../../include/cpu/fix_kernels_cpu.h"
 
 template <typename Dtype>
 void _Round(Tensor Tinput, Tensor Toutput, int64_t method){

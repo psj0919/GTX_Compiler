@@ -17,8 +17,8 @@
 */
 
 
-#ifndef gtx_MATH_GPU_H
-#define gtx_MATH_GPU_H
+#ifndef MATH_GPU_H
+#define MATH_GPU_H
 
 using at::Tensor;
 

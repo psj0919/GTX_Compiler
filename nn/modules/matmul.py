@@ -15,9 +15,9 @@
 #
 
 import torch
-from gtx_shared.quantization.utils import maybe_get_quantizer
-from gtx_shared.quantization import quantize_tensors
-import gtx_utils as py_utils
+from shared.quantization.utils import maybe_get_quantizer
+from shared.quantization import quantize_tensors
+import utils as py_utils
 
 __all__ = ["matmul"]
 
@@ -41,3 +41,18 @@ class Matmul(torch.nn.Module):
 @py_utils.register_quant_op
 def matmul(*args, **kwargs):
     return Matmul(*args, **kwargs)
+
+
+# --- ggml/vision.cpp codegen (render) ---
+from shared.compile.render_api import register_render as _register_render
+from shared.base import OP as _OP
+
+
+@_register_render(_OP.MATMUL)
+def render(node, ctx):
+    return ctx.out(
+        node,
+        f"ggml_mul_mat(m, {ctx.inp(node, 0)}, {ctx.inp(node, 1)})"
+        " /* TODO(ggml): confirm operand order/transpose */",
+        hint="mm",
+    )

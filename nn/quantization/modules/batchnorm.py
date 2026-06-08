@@ -21,7 +21,7 @@ from torch.nn.modules import batchnorm
 
 from nn.nonlinear import approx
 from nn.nonlinear import mode
-from gtx_shared.utils import GtxOption
+from shared.utils import Option
 
 
 # Adopted from https://github.com/pytorch/pytorch/blob/v1.13.1/torch/nn/modules/batchnorm.py#L121

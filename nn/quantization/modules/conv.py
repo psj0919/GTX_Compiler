@@ -17,7 +17,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import warnings
 
-from gtx_utils.torch_utils import CmpFlag, compare_torch_version
+from utils.torch_utils import CmpFlag, compare_torch_version
 
 from typing import Optional, List, Tuple, Union
 

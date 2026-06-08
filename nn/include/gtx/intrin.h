@@ -1,7 +1,7 @@
 //==================================================================
 // Copyright   : (C) Supergate - All Rights Reserved
 // Project     : GSF / VTS
-// Description : GTX intrinsic include header file
+// Description :  intrinsic include header file
 // 				 level 1: base instruction intrinsic
 // 				 level 2: convenience intrinsic for programming
 // 				 level 3: complex operation intrinsic consisting of compound instructions

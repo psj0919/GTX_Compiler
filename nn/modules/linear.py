@@ -16,11 +16,11 @@
 
 import torch
 import math
-from gtx_shared.utils import GtxOption, GtxScreenLogger, QError, QWarning
-from gtx_shared.quantization import maybe_get_quantizer
-from gtx_shared.quantization import quantize_tensors
+from shared.utils import Option, ScreenLogger, QError, QWarning
+from shared.quantization import maybe_get_quantizer
+from shared.quantization import quantize_tensors
 from .quant_noise import eval_qnoise
-import gtx_utils as py_utils
+import utils as py_utils
 from .add import Add
 from .multiply import Mul
 
@@ -42,12 +42,12 @@ class Linear(torch.nn.modules.linear.Linear):
         self.weight_bak = None  # backup of float bias for bias correction
         self.bias_bak = None  # backup of float bias for bias correction
         self.stop = False
-        self.rate = GtxOption.gtx_param_corr_rate.value
+        self.rate = Option.param_corr_rate.value
         self.efficency = 0.0
         self.deviation = 0.0
 
     def forward(self, input):
-        if self.quantizer is None or GtxOption.gtx_quant_off.value is True:
+        if self.quantizer is None or Option.quant_off.value is True:
             return self.fp32_forward(input)
         else:
             return self.fake_quantize_forward(input)
@@ -58,7 +58,7 @@ class Linear(torch.nn.modules.linear.Linear):
     def fake_quantize_forward(self, input):
         # backup bias for bias correction feature
         if not self.param_saved:
-            if GtxOption.gtx_param_corr.value > 0:
+            if Option.param_corr.value > 0:
                 # backup orignal float parameters
                 if self.quant_mode == 1:
                     self.weight_bak = self.weight.detach().clone()
@@ -67,7 +67,7 @@ class Linear(torch.nn.modules.linear.Linear):
                 # adjust bias
                 if self.quant_mode == 2 and self.bias is not None:
                     if not self.quantizer.has_bias_corr(self.node):
-                        GtxScreenLogger().error2user(
+                        ScreenLogger().error2user(
                             QError.BIAS_CORRECTION,
                             f"Bias correction file in quantization result directory does not match current model.",
                         )
@@ -86,7 +86,7 @@ class Linear(torch.nn.modules.linear.Linear):
         qweight = None
         qbias = None
         inplace = (
-            GtxOption.gtx_quant_off.value
+            Option.quant_off.value
             or self.quantizer is not None
             and self.quantizer.inplace
         )
@@ -121,7 +121,7 @@ class Linear(torch.nn.modules.linear.Linear):
                         tensor_names=[self.params_name[1]],
                         tensor_type="param",
                     )[0]
-            if not GtxOption.gtx_quant_off.value:
+            if not Option.quant_off.value:
                 self.param_quantized = True
         else:
             qweight = self.weight
@@ -134,7 +134,7 @@ class Linear(torch.nn.modules.linear.Linear):
             # i * w
             output = torch.matmul(qinput, torch.transpose(qweight, 0, 1))
             datatype = "int"
-            if GtxOption.gtx_only_int_quant.value is False:
+            if Option.only_int_quant.value is False:
                 datatype = self.quantizer.get_quant_dtype(
                     self.node.name, tensor_type="output"
                 )
@@ -152,8 +152,8 @@ class Linear(torch.nn.modules.linear.Linear):
             output = torch.nn.functional.linear(qinput, qweight, qbias)
         output = quantize_tensors([output], self.node)[0]
 
-        if GtxOption.gtx_param_corr.value > 0:
-            # rate = GtxOption.gtx_param_corr_rate.value
+        if Option.param_corr.value > 0:
+            # rate = Option.param_corr_rate.value
             # statistic of quantization error
             if self.quant_mode == 1 and not self.stop:
                 res_f = torch.matmul(input, torch.transpose(self.weight_bak, 0, 1))
@@ -183,3 +183,18 @@ def linear(*args, **kwargs):
     if quant_mode == None:
         return torch.nn.Linear(*args, **kwargs)
     return Linear(*args, **kwargs)
+
+
+# --- ggml/vision.cpp codegen (render) ---
+from shared.compile.render_api import register_render as _register_render
+from shared.base import OP as _OP
+
+
+@_register_render(_OP.DENSE)
+def render(node, ctx):
+    # visp::linear = ggml_mul_mat(weight, x): x 의 ne[0] 가 in_features 여야 한다.
+    # PyTorch Linear.weight[out,in] 를 그대로 GGUF 에 쓰면 ggml ne=[in,out] 이 되어
+    # mul_mat 결과가 [out, N] 으로 정합한다 (앞단 flatten 이 [in, N] 을 만든다).
+    has_bias = bool(ctx.attr(node, "bias", True))
+    key = ctx.weight(node, ["weight"] + (["bias"] if has_bias else []))
+    return ctx.out(node, f"linear({key}, {ctx.inp(node)})", hint="fc")

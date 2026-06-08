@@ -18,9 +18,9 @@
 
 
 #include <torch/extension.h>
-#include "../../include/gtx_fixneuron_op.h"
-#include "../../include/gtx_diffs_op.h"
-#include "../../include/gtx_math.h"
+#include "../../include/fixneuron_op.h"
+#include "../../include/diffs_op.h"
+#include "../../include/math.h"
 #include "../../include/bfp.h"
 
 // For registration in torch script

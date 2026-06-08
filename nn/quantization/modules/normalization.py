@@ -4,8 +4,8 @@ from torch import nn
 
 from nn.nonlinear import approx
 from nn.nonlinear import mode
-from gtx_shared.utils import GtxOption
-from gtx_shared.utils import GtxScreenLogger, QWarning
+from shared.utils import Option
+from shared.utils import ScreenLogger, QWarning
 
 
 class LayerNorm(nn.LayerNorm):
@@ -81,7 +81,7 @@ class LayerNorm(nn.LayerNorm):
         if rt_spec.config:
             approx_mode = rt_spec.config.approx_mode
         else:
-            GtxScreenLogger().warning2user(
+            ScreenLogger().warning2user(
                 QWarning.QAT_ACTIVATION_APPROX_MODE,
                 f"There is no approx_mode in config file for layernorm, we set it to quant_input_output as defaut.",
             )

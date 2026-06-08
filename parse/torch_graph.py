@@ -22,9 +22,9 @@ from typing import Union
 
 import torch
 
-from gtx_shared.gtx_graph import GraphBase, NodeBase
-from gtx_utils import TorchGraphSymbol
-from gtx_utils.jit_utils import *
+from shared.graph import GraphBase, NodeBase
+from utils import TorchGraphSymbol
+from utils.jit_utils import *
 from .parse_utils import ValueDeviceInfo
 
 
@@ -43,7 +43,7 @@ class TorchGraph(object):
 
     @classmethod
     def new_graph(cls, graph_name):
-        name = graph_name if graph_name else f"GtxGraph{TorchGraph._graph_id}"
+        name = graph_name if graph_name else f"Graph{TorchGraph._graph_id}"
         TorchGraph._graph_id += 1
         return cls(name)
 
@@ -380,7 +380,7 @@ class TorchNode(NodeBase):
                 self._kind = node.kind().split("::")[-1]
             else:
                 self._kind = node.pyname()
-                import gtx_shared.nn.modules.function as fn
+                import shared.nn.modules.function as fn
                 import inspect
 
                 native_fn = [

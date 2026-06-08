@@ -7,8 +7,8 @@ try:
 except ImportError:
     load = None
     _import_module_from_library = None
-from gtx_shared.utils import create_work_dir, GtxScreenLogger, QError, QWarning
-from gtx_utils.torch_utils import CmpFlag, compare_torch_version
+from shared.utils import create_work_dir, ScreenLogger, QError, QWarning
+from utils.torch_utils import CmpFlag, compare_torch_version
 
 _cur_dir = os.path.dirname(os.path.realpath(__file__))
 _aot = False
@@ -24,19 +24,19 @@ if _aot:
     try:
         if not new_kernel:
             from nn import _kernels
-            gtx_kernels = None
+            kernels = None
         else:
             file_ext = ".so"
-            gtx_kernel_lib = [
+            kernel_lib = [
                 _ for _ in os.listdir(_cur_dir) if _.endswith(file_ext)
             ][0]
-            lib_abspath = os.path.join(_cur_dir, gtx_kernel_lib)
+            lib_abspath = os.path.join(_cur_dir, kernel_lib)
             torch.ops.load_library(lib_abspath)
     except ImportError as e:
-        GtxScreenLogger().error2user(QError.IMPORT_KERNEL, f"{str(e)}")
+        ScreenLogger().error2user(QError.IMPORT_KERNEL, f"{str(e)}")
         sys.exit(1)
     else:
-        GtxScreenLogger().info("Loading SuperGate GTX kernels...")
+        ScreenLogger().info("Loading SuperGate  kernels...")
 
 else:
     if os.path.exists(os.path.join(_cur_dir, "kernel")):
@@ -70,8 +70,8 @@ else:
 
         is_python_module = False if new_kernel else True
         if source_files:
-            gtx_kernels = load(
-                name="gtx_kernels",
+            kernels = load(
+                name="kernels",
                 sources=source_files,
                 verbose=False,
                 build_directory=lib_path,
@@ -81,10 +81,10 @@ else:
                 is_python_module=is_python_module,
             )
         else:
-            gtx_kernels = None
+            kernels = None
 
     except ImportError as e:
-        GtxScreenLogger().error2user(QError.IMPORT_KERNEL, f"{str(e)}")
+        ScreenLogger().error2user(QError.IMPORT_KERNEL, f"{str(e)}")
         sys.exit(1)
     else:
-        GtxScreenLogger().info(f"Loading SuperGate GTX kernels...")
+        ScreenLogger().info(f"Loading SuperGate  kernels...")

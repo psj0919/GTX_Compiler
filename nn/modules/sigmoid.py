@@ -16,17 +16,17 @@
 
 import torch
 import numpy as np
-from gtx_shared.quantization import maybe_get_quantizer
-from gtx_shared.quantization import quantize_tensors
-from gtx_shared.utils import GtxOption
-from gtx_shared.base import GLOBAL_MAP, gtx_KEYS
+from shared.quantization import maybe_get_quantizer
+from shared.quantization import quantize_tensors
+from shared.utils import Option
+from shared.base import GLOBAL_MAP, KEYS
 from .sigmoid_table import *
 from .fix_ops import (
-    GtxSigmoidTableLookup,
-    GtxSigmoidSimulation,
-    GtxSigmoidTableLookupAIE2,
+    SigmoidTableLookup,
+    SigmoidSimulation,
+    SigmoidTableLookupAIE2,
 )
-import gtx_utils as py_utils
+import utils as py_utils
 
 __all__ = ["sigmoid"]
 
@@ -48,11 +48,11 @@ class Sigmoid(torch.nn.modules.Sigmoid):
         qinput = quantize_tensors([input], self.node, tensor_type="input")[0]
 
         if (
-            GtxOption.gtx_quant_off.value
+            Option.quant_off.value
             or self.quantizer is None
             or self.quantizer.exporting
-            or GtxOption.gtx_cv_app.value
-            or GtxOption.gtx_only_int_quant is False
+            or Option.cv_app.value
+            or Option.only_int_quant is False
         ):
             # Method 0: quant input and output (for CV)
             output = super().forward(qinput)
@@ -61,11 +61,11 @@ class Sigmoid(torch.nn.modules.Sigmoid):
         else:
             output = torch.empty_like(qinput)
             input_name = self.node.in_nodes[0]
-            input_node = self.quantizer.configer.get_Gtxnode(input_name)
+            input_node = self.quantizer.configer.get_node(input_name)
             if not self.quantizer.configer.node_output_quantizable(input_node):
                 input_name = input_node.in_nodes[0]
             elif self.quantizer.configer.will_merge_with_table(
-                input_node, (not GtxOption.gtx_cv_app.value)
+                input_node, (not Option.cv_app.value)
             ):
                 output = super().forward(qinput)
                 bnfp = self.quantizer.get_quant_config(input_name, False)
@@ -76,22 +76,22 @@ class Sigmoid(torch.nn.modules.Sigmoid):
             bw = self.quantizer.get_quant_config(self.node.name, False)[0]
             fragpos = self.quantizer.get_quant_config(input_name, False)[1]
             # Method 1: Simulation AIE with 16 bw (for RNNT)
-            if GtxOption.gtx_op_tanh_sigmoid_mode.value == "simulation":
-                GtxSigmoidSimulation(qinput, output, fragpos)
+            if Option.op_tanh_sigmoid_mode.value == "simulation":
+                SigmoidSimulation(qinput, output, fragpos)
                 output = quantize_tensors([output], self.node)[0]
             # Method 2: Table Look up for AIE2 with 16 bw (based on LUT)
             elif (
-                GtxOption.gtx_op_tanh_sigmoid_mode.value == "aie2_lut_16bw"
-                or GtxOption.gtx_ip_asr.value
+                Option.op_tanh_sigmoid_mode.value == "aie2_lut_16bw"
+                or Option.ip_asr.value
             ):
-                GtxSigmoidTableLookupAIE2(qinput, output, fragpos)
+                SigmoidTableLookupAIE2(qinput, output, fragpos)
                 output = quantize_tensors([output], self.node)[0]
             # Method 3: Table Look up for FPGA with 16 bw
             else:
                 quant_device = qinput.device
                 Ttable = SIGMOID_TABLE.table.to(qinput.dtype).to(quant_device)
                 output = output.to(quant_device)
-                GtxSigmoidTableLookup(input, Ttable, output, fragpos)
+                SigmoidTableLookup(input, Ttable, output, fragpos)
                 bnfp = self.quantizer.get_quant_config(input_name, False)
                 bnfp[1] = 15
                 self.quantizer.set_quant_config(self.node.name, bnfp)
@@ -105,3 +105,13 @@ def sigmoid(*args, **kwargs):
     if quant_mode is None:
         return torch.nn.Sigmoid(*args, **kwargs)
     return Sigmoid(*args, **kwargs)
+
+
+# --- ggml/vision.cpp codegen (render) ---
+from shared.compile.render_api import register_render as _rr
+from shared.base import OP as _OP
+
+
+@_rr(_OP.SIGMOID)
+def render(node, ctx):
+    return ctx.out(node, f"ggml_sigmoid(m, {ctx.inp(node)})")

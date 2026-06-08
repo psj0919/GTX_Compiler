@@ -20,23 +20,23 @@ from enum import Enum
 from tqdm import tqdm
 import torch
 
-from gtx_shared.base.key_names import FrameworkType
-from gtx_shared.gtx_graph import (
+from shared.base.key_names import FrameworkType
+from shared.graph import (
     Graph,
     Tensor,
     Block,
     Node,
     reorder_multi_subgraph_nodes,
 )
-from gtx_shared.utils import (
-    GtxDebugLogger,
-    GtxOption,
-    GtxScreenLogger,
+from shared.utils import (
+    DebugLogger,
+    Option,
+    ScreenLogger,
     QError,
     QWarning,
     QNote,
 )
-from gtx_utils import build_aten_torch_ops_table, TorchGraphSymbol
+from utils import build_aten_torch_ops_table, TorchGraphSymbol
 
 from .op_dispatcher import *
 from .parse_utils import *
@@ -56,16 +56,16 @@ def unknown_op_type_check(graph: Graph):
         elif node.has_custom_op():
             custom_ops.add(node.op.type)
     for op in custom_ops:
-        GtxScreenLogger().warning2user(
+        ScreenLogger().warning2user(
             QWarning.FLOAT_OP,
             f"The quantizer recognize new op `{op}` as a float operator by default.",
         )
 
     #   if custom_ops:
-    #     GtxScreenLogger().info(f"You can make these new ops quantizable by add them to custom_quant_ops, \
+    #     ScreenLogger().info(f"You can make these new ops quantizable by add them to custom_quant_ops, \
     # e.g. quantizer= torch_quantizer(..., custom_quant_ops=['{list(custom_ops)[0]}',...])")
 
-    GtxScreenLogger().check2user(
+    ScreenLogger().check2user(
         QError.UNSUPPORTED_OPS, f"Unsupported Ops: {unkown_ops}.", len(unkown_ops) == 0
     )
 
@@ -94,17 +94,17 @@ class TorchParser(object):
         
         
         GLOBAL_MAP.set_map(
-            gtx_KEYS.DEVICE, self._get_device_info(module, flatten_input)
+            KEYS.DEVICE, self._get_device_info(module, flatten_input)
         )
-        GtxScreenLogger().info("Processing ops...")
-        gtx_graph = self._convert_graph(raw_graph)
-        unknown_op_type_check(gtx_graph)
-        self._convert_blob_tensor_type(gtx_graph)
-        self._load_data(gtx_graph, module)
-        self.parser_post_porcess(gtx_graph)
-        if GtxOption.gtx_parse_debug.value >= 2:
-            GtxDebugLogger.write(f"gtx raw graph:\n{gtx_graph}")
-        return gtx_graph
+        ScreenLogger().info("Processing ops...")
+        graph = self._convert_graph(raw_graph)
+        unknown_op_type_check(graph)
+        self._convert_blob_tensor_type(graph)
+        self._load_data(graph, module)
+        self.parser_post_porcess(graph)
+        if Option.parse_debug.value >= 2:
+            DebugLogger.write(f" raw graph:\n{graph}")
+        return graph
 
     def parser_post_porcess(self, raw_graph):
         change_addmm_to_linear(raw_graph)
@@ -115,7 +115,7 @@ class TorchParser(object):
             self.cur_graph.add_param_name(param_tensor.name)
             self.cur_graph.add_tensor(param_tensor)
 
-    def _bind_free_params(self, gtx_node):
+    def _bind_free_params(self, node):
         def unpack_op_params(params):
             unpacked_params = []
             for param in params:
@@ -125,22 +125,22 @@ class TorchParser(object):
                     unpacked_params.append(param)
             return unpacked_params
 
-        for param_tensor in self.node_params[gtx_node]:
+        for param_tensor in self.node_params[node]:
             if param_tensor not in unpack_op_params(
-                list(gtx_node.op.params.values())
+                list(node.op.params.values())
             ):
                 param_name = get_formal_name(param_tensor.name)
                 param_type = Enum(param_name, [(param_name, param_name)])
-                gtx_node.op.set_param(param_type[param_name], param_tensor)
+                node.op.set_param(param_type[param_name], param_tensor)
 
     def _convert_graph(self, raw_graph):
-        gtx_graph = Graph(graph_name=raw_graph.name)
-        self.cur_graph = gtx_graph
+        graph = Graph(graph_name=raw_graph.name)
+        self.cur_graph = graph
         graph_input = self._convert_node(raw_graph.head_node)
         graph_return = self._convert_node(raw_graph.return_node)
-        top_block = Block(gtx_graph, None, graph_input, graph_return)
+        top_block = Block(graph, None, graph_input, graph_return)
         self.cur_block = top_block
-        gtx_graph.set_top_block(top_block)
+        graph.set_top_block(top_block)
 
         self._convert_params(raw_graph)
 
@@ -150,40 +150,40 @@ class TorchParser(object):
                 f"OpInfo: name = {raw_node.name}, type = {raw_node.kind}"
             )
             pbar.update()
-            gtx_node = self._convert_node(raw_node)
-            if not gtx_node.in_node_list():
-                gtx_graph.append_node(gtx_node)
+            node = self._convert_node(raw_node)
+            if not node.in_node_list():
+                graph.append_node(node)
 
             for sub_block in raw_node.blocks:
                 cur_block = self.cur_block
                 self.cur_block = None
-                node_block = self._convert_block(gtx_graph, gtx_node, sub_block)
+                node_block = self._convert_block(graph, node, sub_block)
                 self.cur_block = cur_block
-                gtx_node.add_block(node_block)
-            self._bind_free_params(gtx_node)
+                node.add_block(node_block)
+            self._bind_free_params(node)
 
-        # for node in gtx_graph.nodes:
+        # for node in graph.nodes:
         #   print(node.name, node.in_nodes, node.out_nodes, node.topo_position)
-        return gtx_graph
+        return graph
 
-    def _convert_block(self, gtx_graph, gtx_block_node, raw_block):
-        block_input = self._convert_node(raw_block.head_node, gtx_graph.name)
-        block_return = self._convert_node(raw_block.return_node, gtx_graph.name)
-        gtx_block = Block(gtx_graph, gtx_block_node, block_input, block_return)
-        self.cur_block = gtx_block
+    def _convert_block(self, graph, block_node, raw_block):
+        block_input = self._convert_node(raw_block.head_node, graph.name)
+        block_return = self._convert_node(raw_block.return_node, graph.name)
+        block = Block(graph, block_node, block_input, block_return)
+        self.cur_block = block
         for raw_node in raw_block.nodes:
-            gtx_node = self._convert_node(raw_node)
-            if not gtx_node.in_node_list():
-                gtx_block.append_node(gtx_node)
+            node = self._convert_node(raw_node)
+            if not node.in_node_list():
+                block.append_node(node)
             for raw_block in raw_node.blocks:
                 cur_block = self.cur_block
                 self.cur_block = None
-                node_block = self._convert_block(gtx_graph, gtx_node, raw_block)
+                node_block = self._convert_block(graph, node, raw_block)
                 self.cur_block = cur_block
-                gtx_node.add_block(node_block)
-            self._bind_free_params(gtx_node)
+                node.add_block(node_block)
+            self._bind_free_params(node)
 
-        return gtx_block
+        return block
 
     def _convert_node(self, raw_node, scope=None):
         if scope is None:
@@ -192,53 +192,53 @@ class TorchParser(object):
         else:
             node_scope = scope
 
-        gtx_node = Node(
+        node = Node(
             name=get_full_name(node_scope, raw_node.name),
             dtype=self.convert_dtype(raw_node.dtype),
         )
-        gtx_node.source_range = raw_node.source_range
-        gtx_node.scope_name = raw_node.scope_name
-        if gtx_node.name in self.cur_graph:
-            return self.cur_graph.node(gtx_node.name)
+        node.source_range = raw_node.source_range
+        node.scope_name = raw_node.scope_name
+        if node.name in self.cur_graph:
+            return self.cur_graph.node(node.name)
 
-        # gtx_node.raw_kind = raw_node.kind
+        # node.raw_kind = raw_node.kind
         # self.converted_node.add(raw_node)
-        gtx_node.schema = raw_node.schema
-        gtx_node.is_custom_extension = raw_node.is_custom_pyop
-        gtx_node.caller = raw_node.pyobj
-        gtx_node.owning_block = self.cur_block
-        gtx_node.owning_graph = self.cur_graph
+        node.schema = raw_node.schema
+        node.is_custom_extension = raw_node.is_custom_pyop
+        node.caller = raw_node.pyobj
+        node.owning_block = self.cur_block
+        node.owning_graph = self.cur_graph
         for out in raw_node.outputs:
             full_name = get_full_name(node_scope, out.name)
             if self.cur_graph and self.cur_graph.is_tensor_in_graph(full_name):
-                gtx_node.add_out_tensor(self.cur_graph.tensor(full_name))
+                node.add_out_tensor(self.cur_graph.tensor(full_name))
             else:
-                gtx_tensor = self._convert_tensor(out, node_scope)
-                gtx_node.add_out_tensor(gtx_tensor)
+                tensor = self._convert_tensor(out, node_scope)
+                node.add_out_tensor(tensor)
 
         for ip in raw_node.flatten_inputs:
             if ip.name is None:
                 continue
             full_name = get_full_name(node_scope, ip.name)
             if self.cur_graph and self.cur_graph.is_tensor_in_graph(full_name):
-                gtx_node.add_in_tensor(self.cur_graph.tensor(full_name))
+                node.add_in_tensor(self.cur_graph.tensor(full_name))
             elif not raw_node.outputs:
                 # For Return node
-                gtx_tensor = self._convert_tensor(ip, node_scope)
-                gtx_node.add_in_tensor(gtx_tensor)
+                tensor = self._convert_tensor(ip, node_scope)
+                node.add_in_tensor(tensor)
 
             if self.cur_graph and full_name in self.cur_graph.param_names():
-                self.node_params[gtx_node].append(self.cur_graph.tensor(full_name))
+                self.node_params[node].append(self.cur_graph.tensor(full_name))
 
         node_input_args = []
         if not raw_node.inputs:
-            node_input_args.extend([self.get_gtx_value(i) for i in raw_node.outputs])
+            node_input_args.extend([self.get_value(i) for i in raw_node.outputs])
         else:
-            node_input_args.extend([self.get_gtx_value(i) for i in raw_node.inputs])
+            node_input_args.extend([self.get_value(i) for i in raw_node.inputs])
 
-        gtx_node.op = self._create_op(raw_node.kind, gtx_node, node_input_args)
+        node.op = self._create_op(raw_node.kind, node, node_input_args)
 
-        return gtx_node
+        return node
 
     def _convert_tensor(self, value, scope=None):
         if scope is None:
@@ -248,7 +248,7 @@ class TorchParser(object):
             value_scope = scope
 
         if isinstance(value.data, torch.Tensor):
-            gtx_tensor = Tensor(
+            tensor = Tensor(
                 name=get_full_name(value_scope, value.name),
                 shape=value.shape,
                 dtype=value.dtype,
@@ -258,7 +258,7 @@ class TorchParser(object):
                 requires_grad=value.requires_grad,
             )
         else:
-            gtx_tensor = Tensor(
+            tensor = Tensor(
                 name=get_full_name(value_scope, value.name),
                 shape=value.shape,
                 dtype=value.dtype,
@@ -267,30 +267,30 @@ class TorchParser(object):
                 device=value.device,
                 requires_grad=value.requires_grad,
             )
-        return gtx_tensor
+        return tensor
 
     @staticmethod
-    def _create_op(node_kind, gtx_node, node_input_args):
+    def _create_op(node_kind, node, node_input_args):
         op_creator = OpCreator()
-        op_creator.cur_node = gtx_node
+        op_creator.cur_node = node
         op_type = op_creator.op_convert_map.get(node_kind, node_kind)
         try:
             if hasattr(op_creator, op_type):
                 op = getattr(op_creator, op_type)(*node_input_args)
-            elif gtx_node.is_custom_extension:
-                op = op_creator.custom_op(gtx_node, op_type, *node_input_args)
+            elif node.is_custom_extension:
+                op = op_creator.custom_op(node, op_type, *node_input_args)
             else:
-                op = op_creator.default(gtx_node, op_type, *node_input_args)
+                op = op_creator.default(node, op_type, *node_input_args)
         except Exception as e:
-            GtxScreenLogger().warning(
+            ScreenLogger().warning(
                 f"The op `{node_kind}` parse error.\nException:`{str(e)}`"
             )
-            op = op_creator.default(gtx_node, op_type, *node_input_args)
+            op = op_creator.default(node, op_type, *node_input_args)
         return op
 
     @staticmethod
     def convert_dtype(dtype):
-        r"""convert torch dtype to gtx dtype"""
+        r"""convert torch dtype to  dtype"""
         return {
             "torch.float": "float32",
             "torch.double": "float64",
@@ -299,11 +299,11 @@ class TorchParser(object):
         }.get(dtype, dtype)
 
     def _convert_blob_tensor_type(self, graph):
-        r"""convert torch tensor info to gtx tensor info"""
+        r"""convert torch tensor info to  tensor info"""
         for blob_tensor in graph.tensors:
             # tensor_util.convert_blob_tensor_format(blob_tensor,
             #                                        tensor_util.FrameworkType.TORCH,
-            #                                        tensor_util.FrameworkType.GTX)
+            #                                        tensor_util.FrameworkType.)
             blob_tensor.dtype = self.convert_dtype(blob_tensor.dtype)
 
     @staticmethod
@@ -320,17 +320,17 @@ class TorchParser(object):
     @classmethod
     def _load_data(cls, graph, module):
         for node in graph.nodes:
-            if node.op.type in [GTX_OP.BASIC_LSTM, GTX_OP.BASIC_GRU]:
-                for gtx_param, param_tensors in node.op.params.items():
+            if node.op.type in [OP.BASIC_LSTM, OP.BASIC_GRU]:
+                for param, param_tensors in node.op.params.items():
                     for tensor in param_tensors:
                         data = cls._get_tensor_data_from_module(module, tensor)
                         tensor.from_ndarray(data)
                         tensor = tensor_util.convert_parameter_tensor_format(
-                            tensor, FrameworkType.TORCH, FrameworkType.GTX
+                            tensor, FrameworkType.TORCH, FrameworkType.BRIDGE
                         )
                 # combine bias_ih and bias_hh item
 
-                if node.op.type == GTX_OP.BASIC_LSTM:
+                if node.op.type == OP.BASIC_LSTM:
                     for bias_term in [
                         node.op.ParamName.BIAS,
                         node.op.ParamName.BIAS_REVERSE,
@@ -359,7 +359,7 @@ class TorchParser(object):
                                 i = i + 2
                             node.op.set_param(bias_term, bias_list)
 
-            elif node.op.type in [GTX_OP.CONVTRANSPOSE2D, GTX_OP.CONVTRANSPOSE3D]:
+            elif node.op.type in [OP.CONVTRANSPOSE2D, OP.CONVTRANSPOSE3D]:
                 for param_name, tensor in node.op.params.items():
                     data = cls._get_tensor_data_from_module(module, tensor)
                     if param_name == node.op.ParamName.WEIGHTS:
@@ -368,10 +368,10 @@ class TorchParser(object):
 
                     tensor.from_ndarray(data)
                     tensor = tensor_util.convert_parameter_tensor_format(
-                        tensor, FrameworkType.TORCH, FrameworkType.GTX
+                        tensor, FrameworkType.TORCH, FrameworkType.BRIDGE
                     )
 
-            elif node.op.type in [GTX_OP.DEPTHWISE_CONV2D, GTX_OP.DEPTHWISE_CONV3D]:
+            elif node.op.type in [OP.DEPTHWISE_CONV2D, OP.DEPTHWISE_CONV3D]:
                 for param_name, tensor in node.op.params.items():
                     data = cls._get_tensor_data_from_module(module, tensor)
                     if param_name == node.op.ParamName.WEIGHTS:
@@ -385,11 +385,11 @@ class TorchParser(object):
 
                     tensor.from_ndarray(data)
                     tensor = tensor_util.convert_parameter_tensor_format(
-                        tensor, FrameworkType.TORCH, FrameworkType.GTX
+                        tensor, FrameworkType.TORCH, FrameworkType.BRIDGE
                     )
             elif node.op.type in [
-                GTX_OP.DEPTHWISE_CONVTRANSPOSE2D,
-                GTX_OP.DEPTHWISE_CONVTRANSPOSE3D,
+                OP.DEPTHWISE_CONVTRANSPOSE2D,
+                OP.DEPTHWISE_CONVTRANSPOSE3D,
             ]:
                 for param_name, tensor in node.op.params.items():
                     data = cls._get_tensor_data_from_module(module, tensor)
@@ -408,9 +408,9 @@ class TorchParser(object):
 
                     tensor.from_ndarray(data)
                     tensor = tensor_util.convert_parameter_tensor_format(
-                        tensor, FrameworkType.TORCH, FrameworkType.GTX
+                        tensor, FrameworkType.TORCH, FrameworkType.BRIDGE
                     )
-            elif node.op.type in [GTX_OP.LAYER_NORM]:
+            elif node.op.type in [OP.LAYER_NORM]:
                 for param_name, tensor in node.op.params.items():
                     data = cls._get_tensor_data_from_module(module, tensor)
                     tensor.from_ndarray(data)
@@ -424,7 +424,7 @@ class TorchParser(object):
                     tensor.from_ndarray(data)
                     if node.has_bound_params():
                         tensor = tensor_util.convert_parameter_tensor_format(
-                            tensor, FrameworkType.TORCH, FrameworkType.GTX
+                            tensor, FrameworkType.TORCH, FrameworkType.BRIDGE
                         )
 
     def _get_device_info_from_inputs(self, inputs):
@@ -447,11 +447,11 @@ class TorchParser(object):
         else:
             return self._get_device_info_from_inputs(inputs)
 
-    def get_gtx_value(self, value):
+    def get_value(self, value):
         if isinstance(value, (tuple, list)):
             values = []
             for ele in value:
-                values.append(self.get_gtx_value(ele))
+                values.append(self.get_value(ele))
             return type(value)(values)
         else:
             if value.is_none():

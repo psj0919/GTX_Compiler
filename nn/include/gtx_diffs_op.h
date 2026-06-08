@@ -18,8 +18,8 @@
 
 
 
-#ifndef gtx_TORCH_DIFFS_OP_H
-#define gtx_TORCH_DIFFS_OP_H
+#ifndef TORCH_DIFFS_OP_H
+#define TORCH_DIFFS_OP_H
 
 using at::Tensor;
 
@@ -33,4 +33,4 @@ void DiffsFixPos(Tensor Tinput,
 
 void diffs_fix_pos(at::Tensor Tinput, at::Tensor Tbuffer, at::Tensor Tfixpos, int64_t bit_width, int64_t range, int64_t method, int64_t device_id);
 
-#endif // gtx_TORCH_DIFFS_OP_H
+#endif // TORCH_DIFFS_OP_H

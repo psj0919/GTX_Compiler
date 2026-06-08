@@ -15,13 +15,13 @@
 #
 
 import torch
-from gtx_shared.quantization import maybe_get_quantizer
-from gtx_shared.utils import GtxOption, GtxScreenLogger, QWarning
-from gtx_shared.quantization import kernel_need_quant
-from gtx_shared.quantization import quantize_tensors
+from shared.quantization import maybe_get_quantizer
+from shared.utils import Option, ScreenLogger, QWarning
+from shared.quantization import kernel_need_quant
+from shared.quantization import quantize_tensors
 import numpy as np
-import gtx_utils as py_utils
-from .fix_ops import GtxAIESqrt
+import utils as py_utils
+from .fix_ops import AIESqrt
 
 __all__ = ["sqrt"]
 
@@ -37,7 +37,7 @@ class Sqrt(torch.nn.Module):
     def forward(self, input):
         # ensure input>=0
         if torch.nonzero(input < 0, as_tuple=False).numel() > 0:
-            GtxScreenLogger().warning2user(
+            ScreenLogger().warning2user(
                 QWarning.TENSOR_NEGATIVE,
                 f"Elements in input tensor of node {self.node.name} are negative, which is not permittable for 'sqrt' operation. The negative numbers have been replaced by zero.",
             )
@@ -52,10 +52,10 @@ class Sqrt(torch.nn.Module):
         # quantize input tensor
         qinput = quantize_tensors([input], self.node, tensor_type="input")[0]
 
-        if GtxOption.gtx_op_sqrt_mode.value == "ipu_8bw":
+        if Option.op_sqrt_mode.value == "ipu_8bw":
             # sqrt=x*(1/sqrt(x)): cuda/cpu
             output = torch.empty_like(qinput)
-            GtxAIESqrt(qinput, output)  # float32
+            AIESqrt(qinput, output)  # float32
 
             # quantize output
             output = quantize_tensors([output], self.node, method=4)[0]

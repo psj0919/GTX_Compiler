@@ -24,28 +24,28 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-import gtx_shared.utils as gtx_utils
-from gtx_shared.inspector.graph import Graph
+import shared.utils as utils
+from shared.inspector.graph import Graph
 import utils.jit_utils as jit_utils
 import utils.module_util as module_util
-from gtx_shared.base import FrameworkType
-from gtx_shared.compile import DevGraphOptimizer
-from gtx_shared.gtx_graph import Graph, convert_block_node_to_graph
-from gtx_shared.optimization import QuantOptimizer
-from gtx_shared.utils import (
+from shared.base import FrameworkType
+from shared.compile import DevGraphOptimizer
+from shared.graph import Graph, convert_block_node_to_graph
+from shared.optimization import QuantOptimizer
+from shared.utils import (
     GLOBAL_MAP,
-    gtx_KEYS,
-    GTX_OP,
-    GtxDebugLogger,
-    GtxOption,
-    GtxScreenLogger,
+    KEYS,
+    OP,
+    DebugLogger,
+    Option,
+    ScreenLogger,
     permute_data,
     permute_axes,
     QError,
     QWarning,
     QNote,
 )
-from gtx_shared.utils.dpu_utils import get_avgpool_dpu_coeff
+from shared.utils.dpu_utils import get_avgpool_dpu_coeff
 from .export import get_script_writer
 from nn import stacked_lstm
 from nn.modules import channel_scale, reluk
@@ -62,7 +62,7 @@ graph_counter = itertools.count(0)
 
 def _reload_module(module_file_name: str, module_name: str) -> torch.nn.Module:
 
-    py_module_name = "_".join(["gtx", module_name])
+    py_module_name = "_".join(["", module_name])
     spec = importlib.util.spec_from_file_location(py_module_name, module_file_name)
     py_module = importlib.util.module_from_spec(spec)
     sys.modules[py_module_name] = py_module
@@ -70,14 +70,14 @@ def _reload_module(module_file_name: str, module_name: str) -> torch.nn.Module:
     return py_module.__dict__[module_name]()
 
 
-def recreate_gtx_module(
+def recreate_module(
     graph: Graph, enable_quant: bool, export_file: str
 ) -> torch.nn.Module:
 
     exporter = get_script_writer(enable_quant=enable_quant)
     exporter.write(graph, file_path=export_file)
-    gtx_module = _reload_module(export_file, graph.name)
-    return gtx_module
+    module = _reload_module(export_file, graph.name)
+    return module
 
 
 def parse_module(
@@ -87,17 +87,17 @@ def parse_module(
     graph_name: Optional[str] = None,
 ) -> Graph:
 
-    if GtxOption.gtx_equalization.value:
-        if GtxOption.gtx_relu6_replace.value == "reluk":
+    if Option.equalization.value:
+        if Option.relu6_replace.value == "reluk":
             replace_relu6_with_reluk(module)
-        elif GtxOption.gtx_relu6_replace.value == "relu":
+        elif Option.relu6_replace.value == "relu":
             replace_relu6_with_relu(module)
 
-    if GtxOption.gtx_convert_relu6_to_relu.value:
+    if Option.convert_relu6_to_relu.value:
         replace_relu6_with_relu(module)
-    if GtxOption.gtx_convert_sigmoid_to_hsigmoid.value:
+    if Option.convert_sigmoid_to_hsigmoid.value:
         replace_sigmoid_with_hsigmoid(module)
-    if GtxOption.gtx_convert_silu_to_hswish.value:
+    if Option.convert_silu_to_hswish.value:
         replace_silu_with_hswish(module)
 
     # replace affine=false with affine=true
@@ -119,14 +119,14 @@ def parse_module(
         prefix=f"{graph.name}{TorchGraphSymbol.GRAPH_SCOPE_SYM}"
     )
 
-    if GtxOption.gtx_parse_debug.value >= 3:
-        GtxDebugLogger.write(f"gtx quant graph:\n{graph}")
+    if Option.parse_debug.value >= 3:
+        DebugLogger.write(f" quant graph:\n{graph}")
     return graph
 
 
 def quant_optimize(graph: Graph):
     optimizer = QuantOptimizer()
-    graph = optimizer(graph, fuse_conv_bn=GtxOption.gtx_conv_bn_merge.value)
+    graph = optimizer(graph, fuse_conv_bn=Option.conv_bn_merge.value)
     return graph
     #   return graph
     #   graph = optimizer(block)
@@ -167,7 +167,7 @@ def connect_module_with_graph(
     Hook graph info with modules
     Args:
         module (torch.nn.Module): rebuild module
-        graph (Graph): gtx graph
+        graph (Graph):  graph
         record_once (bool, optional): whether record output once or multiple times. Defaults to True.
         recover_param (bool, optional): recover parameters from graph to module. Defaults to True.
         recover_state_dict_keys (bool, optional): recover the state dict keys in rebuild module from graph. Defaults to False.
@@ -190,18 +190,18 @@ def connect_module_with_graph(
 #   ModuleHooker.hook_module_with_quantizer(module, quantizer)
 
 
-def update_gtx_parameters(module: torch.nn.Module, graph: Graph) -> NoReturn:
+def update_parameters(module: torch.nn.Module, graph: Graph) -> NoReturn:
     ModuleHooker.update_parameters(module, graph, graph2module=False)
 
 
-def update_gtx_blob_data(
+def update_blob_data(
     module: torch.nn.Module,
     graph: Graph,
     time_step: Optional[int] = None,
     only_update_shape=False,
 ) -> NoReturn:
     ModuleHooker.update_blobs_once(module, graph, time_step, only_update_shape)
-    permute_nodes = graph.find_nodes_by_types([GTX_OP.PERMUTE])
+    permute_nodes = graph.find_nodes_by_types([OP.PERMUTE])
     if only_update_shape is False:
         for node in permute_nodes:
             in_data = node.in_tensors[0].data
@@ -209,7 +209,7 @@ def update_gtx_blob_data(
                 data = permute_data(in_data, node.node_attr(node.op.AttrName.ORDER))
                 node.out_tensors[0].from_ndarray(data)
             else:
-                GtxScreenLogger().warning(f"{node.__repr__()} has no data.")
+                ScreenLogger().warning(f"{node.__repr__()} has no data.")
     else:
         for node in permute_nodes:
             in_shape = node.in_tensors[0].shape
@@ -219,7 +219,7 @@ def update_gtx_blob_data(
                 )
                 node.out_tensors[0].shape = out_shape
             else:
-                GtxScreenLogger().warning(f"{node.__repr__()} has no shape.")
+                ScreenLogger().warning(f"{node.__repr__()} has no shape.")
 
 
 def set_outputs_recorder_status(module, turn_on) -> NoReturn:
@@ -259,7 +259,7 @@ def prepare_quantizable_module(
     connect_qm_with_graph=True,
 ) -> Tuple[torch.nn.Module, Graph]:
 
-    gtx_utils.create_work_dir(export_folder)
+    utils.create_work_dir(export_folder)
 
     if isinstance(state_dict_file, str):
         state_dict = torch.load(state_dict_file)
@@ -270,9 +270,9 @@ def prepare_quantizable_module(
     )
 
     # switch to specified device
-    GtxScreenLogger().info(f"=>Quant Module is in '{device.type}'.")
+    ScreenLogger().info(f"=>Quant Module is in '{device.type}'.")
 
-    if GtxOption.gtx_fx_mode.value is True:
+    if Option.fx_mode.value is True:
         module, input_args.args = to_device(module, input_args.args, device)
         from utils.jit_utils import set_training
 
@@ -285,22 +285,22 @@ def prepare_quantizable_module(
             quant_module = quant_module.to(device)
     else:
         # parse origin module to graph
-        GtxScreenLogger().info(f"=>Parsing {get_module_name(module)}...")
+        ScreenLogger().info(f"=>Parsing {get_module_name(module)}...")
         graph = parse_module(module, input_args)
-        GtxScreenLogger().info(f"=>Quantizable module is generated.({export_file})")
+        ScreenLogger().info(f"=>Quantizable module is generated.({export_file})")
         # recreate quantizable module from graph
-        quant_module = recreate_gtx_module(graph, True, export_file).to(device)
+        quant_module = recreate_module(graph, True, export_file).to(device)
     quant_module.train(mode=module.training)
 
     # hook module with graph
     if connect_qm_with_graph is True:
         connect_module_with_graph(quant_module, graph)
 
-    if quant_mode > 1 and GtxOption.gtx_deploy_check.value > 0:
+    if quant_mode > 1 and Option.deploy_check.value > 0:
         register_output_intime_hook(quant_module)
         set_output_intime_status(quant_module, True)
 
-    if quant_mode > 1 and GtxOption.gtx_input_check.value > 0:
+    if quant_mode > 1 and Option.input_check.value > 0:
         register_input_dump_hook(quant_module)
         set_input_dump_status(quant_module, True)
 
@@ -309,7 +309,7 @@ def prepare_quantizable_module(
 
 def prepare_from_fx(gm: "GraphModule", example_inputs: List[torch.Tensor]):
     """
-    convert gm to a quantizable gm and prepare gtx_graph
+    convert gm to a quantizable gm and prepare graph
     """
     import copy
     import types
@@ -318,8 +318,8 @@ def prepare_from_fx(gm: "GraphModule", example_inputs: List[torch.Tensor]):
     from fx.optimization.normalize import normalize
     from fx.fx_translator import GraphTranslator
     from fx.meta_prop import collect_value_meta
-    from nn.modules.gtx_quant_model import GTX_QuantModel
-    from nn.modules.gtx_quant_model import forward_processor
+    from nn.modules.quant_model import QuantModel
+    from nn.modules.quant_model import forward_processor
     from torch._subclasses import FakeTensorMode
     from quantization.torchquantizer import TORCHQuantizer
 
@@ -339,8 +339,8 @@ def prepare_from_fx(gm: "GraphModule", example_inputs: List[torch.Tensor]):
     quantizable_gm = QuantizeModule(gm, graph_translator.graph).transform()
     quant_opt_graph = quant_optimize(graph_translator.graph)
     #! MODIFIED
-    GTX_QuantModel.forward = forward_processor(quantizable_gm.__class__.forward)
-    quant_module = GTX_QuantModel()
+    QuantModel.forward = forward_processor(quantizable_gm.__class__.forward)
+    quant_module = QuantModel()
     quant_module.forward = types.MethodType(
         forward_processor(quantizable_gm.__class__.forward), quant_module
     )
@@ -362,7 +362,7 @@ def replace_relu6_with_relu(module: torch.nn.Module):
 
     if any([isinstance(submodule, torch.nn.ReLU6) for submodule in module.modules()]):
         module.apply(_replace_func)
-        GtxScreenLogger().warning2user(
+        ScreenLogger().warning2user(
             QWarning.REPLACE_RELU6, f"ReLU6 has been replaced by ReLU."
         )
 
@@ -376,7 +376,7 @@ def replace_relu6_with_reluk(module: torch.nn.Module):
 
     if any([isinstance(submodule, torch.nn.ReLU6) for submodule in module.modules()]):
         module.apply(_replace_func)
-        GtxScreenLogger().warning2user(
+        ScreenLogger().warning2user(
             QWarning.REPLACE_RELUK, f"ReLU6 has been replaced by ReLUK."
         )
 
@@ -389,7 +389,7 @@ def replace_sigmoid_with_hsigmoid(module: torch.nn.Module):
 
     if any([isinstance(submodule, torch.nn.Sigmoid) for submodule in module.modules()]):
         module.apply(_replace_func)
-        GtxScreenLogger().warning2user(
+        ScreenLogger().warning2user(
             QWarning.REPLACE_SIGMOID, f"Sigmoid has been replaced by Hardsigmoid."
         )
 
@@ -404,7 +404,7 @@ def replace_silu_with_hswish(module: torch.nn.Module):
         [isinstance(submodule, torch.nn.SiLU) for submodule in module.modules()]
     ):
         module.apply(_replace_func)
-        GtxScreenLogger().warning2user(
+        ScreenLogger().warning2user(
             QWarning.REPLACE_SILU, f"SiLU has been replaced by Hardswish."
         )
 
@@ -448,7 +448,7 @@ def replace_batchnorm_affine_false_with_true(module: torch.nn.Module):
                 c_op_new.running_var.data.copy_(c_op.running_var.data)
                 c_op_new = c_op_new.to(c_op.running_mean.device)
                 op._modules[op_name] = c_op_new
-                GtxScreenLogger().warning2user(
+                ScreenLogger().warning2user(
                     QWarning.BATCHNORM_AFFINE,
                     f"{op_name} attribute affine=False has been replaced by affine=True when parsing the model.",
                 )
@@ -476,10 +476,10 @@ def replace_layernorm_affine_false_with_true(module: torch.nn.Module):
                     elementwise_affine=True,
                 )
             if isinstance(c_op, torch.nn.LayerNorm) and not c_op.elementwise_affine:
-                device = GLOBAL_MAP.get_ele(gtx_KEYS.QUANT_DEVICE)
+                device = GLOBAL_MAP.get_ele(KEYS.QUANT_DEVICE)
                 c_op_new = c_op_new.to(device)
                 op._modules[op_name] = c_op_new
-                GtxScreenLogger().warning2user(
+                ScreenLogger().warning2user(
                     QWarning.LAYERNORM_AFFINE,
                     f"{op_name} attribute elementwise_affine=False has been replaced by elementwise_affine=True when parsing the model.",
                 )
@@ -528,7 +528,7 @@ def insert_scale_after_conv2d(module: torch.nn.Module):
         ]
     ):
         module.apply(_insert_func)
-        GtxScreenLogger().warning(f"ChannelScale has been inserted after Conv2d.")
+        ScreenLogger().warning(f"ChannelScale has been inserted after Conv2d.")
 
 
 def insert_scale_after_batchnorm2d(module: torch.nn.Module):
@@ -546,16 +546,16 @@ def insert_scale_after_batchnorm2d(module: torch.nn.Module):
         ]
     ):
         module.apply(_insert_func)
-        GtxScreenLogger().warning(
+        ScreenLogger().warning(
             f"ChannelScale has been inserted after batchnorm2d."
         )
 
 
-def _deploy_optimize(quant_model, gtx_graph, need_partition):
-    g_optmizer = DevGraphOptimizer(gtx_graph)
+def _deploy_optimize(quant_model, graph, need_partition):
+    g_optmizer = DevGraphOptimizer(graph)
     # sync model data with dev graph
     connect_module_with_graph(quant_model, g_optmizer.dev_graph, recover_param=False)
-    update_gtx_blob_data(quant_model, g_optmizer.dev_graph, only_update_shape=False)
+    update_blob_data(quant_model, g_optmizer.dev_graph, only_update_shape=False)
     g_optmizer.strip_redundant_ops()
     g_optmizer.update_op_attrs()
     g_optmizer.convert_shape_tensor_to_const()
@@ -575,21 +575,21 @@ def _deploy_optimize(quant_model, gtx_graph, need_partition):
     # for node in g_optmizer._dev_graph.nodes:
     #   print(f"{node.name}, {node.op.type}, {node.out_tensors[0].layout}")
 
-    if GtxOption.gtx_parse_debug.value >= 3:
-        GtxDebugLogger.write(f"\nfrozen dev graph:\n{g_optmizer.dev_graph}")
+    if Option.parse_debug.value >= 3:
+        DebugLogger.write(f"\nfrozen dev graph:\n{g_optmizer.dev_graph}")
 
     deploy_graphs = (
         g_optmizer.partition_by_quant_part() if need_partition is True else []
     )
-    connect_module_with_graph(quant_model, gtx_graph, recover_param=False)
+    connect_module_with_graph(quant_model, graph, recover_param=False)
     return deploy_graphs, g_optmizer.dev_graph
 
 
-def get_deploy_graph_list(quant_model, gtx_graph, need_partition=True):
+def get_deploy_graph_list(quant_model, graph, need_partition=True):
     if isinstance(quant_model, list):
         graph_list = []
-        for node in gtx_graph.nodes:
-            if node.op.type == GTX_OP.BLOCK:
+        for node in graph.nodes:
+            if node.op.type == OP.BLOCK:
                 graph_list.append(convert_block_node_to_graph(node))
         assert len(quant_model) == len(graph_list)
         deploy_graphs = []
@@ -598,21 +598,21 @@ def get_deploy_graph_list(quant_model, gtx_graph, need_partition=True):
             deploy_graphs.append(dev_graph)
         return [deploy_graphs], None
     else:
-        return _deploy_optimize(quant_model, gtx_graph, need_partition)
+        return _deploy_optimize(quant_model, graph, need_partition)
 
 
 def convert_lstm(ori_module: torch.nn.Module, device):
     """replace_torch_lstm_with_stacked_lstm"""
 
     if isinstance(ori_module, torch.nn.LSTM):
-        if GtxOption.gtx_jit_script.value:
+        if Option.jit_script.value:
             return torch.jit.script(stacked_lstm(ori_module).to(device).eval())
         else:
             return stacked_lstm(ori_module).to(device).eval()
 
     for n, m in ori_module.named_children():
         if isinstance(m, torch.nn.LSTM):
-            if GtxOption.gtx_jit_script.value:
+            if Option.jit_script.value:
                 setattr(
                     ori_module, n, torch.jit.script(stacked_lstm(m).to(device).eval())
                 )
@@ -646,15 +646,15 @@ def _valid_bnfp(bnfp):
 def insert_fix_neuron_in_script_model(script_model, quantizer):
     quant_config = quantizer.quant_config
     script_graph = script_model.graph
-    # device = GLOBAL_MAP.get_ele(gtx_KEYS.QUANT_DEVICE)
+    # device = GLOBAL_MAP.get_ele(KEYS.QUANT_DEVICE)
     # device_id = 1 if device == torch.device("cpu") else 0
-    for node in quantizer.Gtxgraph.all_nodes():
+    for node in quantizer.graph.all_nodes():
         if _get_node_scope(node) != get_module_name(script_model):
             continue
         state_dict = module_util.state_dict_from_node(node)
         if state_dict:
             for tensor_name, tensor in state_dict.items():
-                torch_value_name = jit_utils.gtx_name_2_jit_name(tensor_name)
+                torch_value_name = jit_utils.name_2_jit_name(tensor_name)
                 const_node = jit_utils.find_fw_node_by_name(
                     script_graph, torch_value_name, recursive=True
                 )
@@ -671,7 +671,7 @@ def insert_fix_neuron_in_script_model(script_model, quantizer):
                     if not _valid_bnfp(bnfp):
                         continue
                     method = (
-                        -1 if GtxOption.gtx_use_torch_quantizer.value is True else 3
+                        -1 if Option.use_torch_quantizer.value is True else 3
                     )
                     fix_node = jit_utils.create_fix_node(
                         script_graph,
@@ -689,35 +689,35 @@ def insert_fix_neuron_in_script_model(script_model, quantizer):
                     if fix_node is not None:
                         jit_utils.insert_after_node(script_graph, const_node, fix_node)
 
-    for gtx_node_name in quant_config["output"].keys():
-        if _get_node_scope(gtx_node_name) != get_module_name(script_model):
+    for node_name in quant_config["output"].keys():
+        if _get_node_scope(node_name) != get_module_name(script_model):
             continue
-        for idx in range(quantizer.get_quant_len(gtx_node_name, "output")):
+        for idx in range(quantizer.get_quant_len(node_name, "output")):
             index = (
-                None if quantizer.get_quant_len(gtx_node_name, "output") == 1 else idx
+                None if quantizer.get_quant_len(node_name, "output") == 1 else idx
             )
-            bnfp = quantizer.get_quant_config(gtx_node_name, True, "output", idx)
+            bnfp = quantizer.get_quant_config(node_name, True, "output", idx)
             if not _valid_bnfp(bnfp):
                 continue
 
-            if quantizer.Gtxgraph.node(gtx_node_name).op.type == GTX_OP.INPUT:
-                torch_value_name = jit_utils.gtx_name_2_jit_name(gtx_node_name)
+            if quantizer.graph.node(node_name).op.type == OP.INPUT:
+                torch_value_name = jit_utils.name_2_jit_name(node_name)
                 input_value = jit_utils.find_input_value_by_name(
                     script_graph, torch_value_name
                 )
                 input_node = jit_utils.get_fw_graph_input_node(script_graph)
                 device_id = (
                     1
-                    if quantizer.graph.node(gtx_node_name)
+                    if quantizer.graph.node(node_name)
                     .out_tensors[idx]
                     .device.device_type
                     == "cpu"
                     else 0
                 )
                 method = 4 if quantizer.lstm else 2
-                if GtxOption.gtx_use_torch_quantizer.value is True:
+                if Option.use_torch_quantizer.value is True:
                     method = -1
-                elif quantizer.lstm and GtxOption.gtx_ip_asr.value is True:
+                elif quantizer.lstm and Option.ip_asr.value is True:
                     method = 3
                 fix_node = jit_utils.create_fix_node(
                     script_graph,
@@ -729,7 +729,7 @@ def insert_fix_neuron_in_script_model(script_model, quantizer):
                     method=method,
                     device_id=device_id,
                     inplace=quantizer.inplace,
-                    name=gtx_node_name,
+                    name=node_name,
                     tensor_type="output",
                     index=index,
                 )
@@ -738,26 +738,26 @@ def insert_fix_neuron_in_script_model(script_model, quantizer):
                         script_graph, input_node, fix_node, torch_value_name
                     )
             else:
-                torch_value_name = jit_utils.gtx_name_2_jit_name(gtx_node_name)
+                torch_value_name = jit_utils.name_2_jit_name(node_name)
                 fw_node = jit_utils.find_fw_node_by_name(
                     script_graph, torch_value_name, recursive=True
                 )
                 device_id = (
                     1
-                    if quantizer.graph.node(gtx_node_name)
+                    if quantizer.graph.node(node_name)
                     .out_tensors[idx]
                     .device.device_type
                     == "cpu"
                     else 0
                 )
                 method = 4 if quantizer.lstm else 2
-                if GtxOption.gtx_use_torch_quantizer.value is True:
+                if Option.use_torch_quantizer.value is True:
                     method = -1
-                elif quantizer.lstm and GtxOption.gtx_ip_asr.value is True:
+                elif quantizer.lstm and Option.ip_asr.value is True:
                     method = 3
                     if (
-                        quantizer.Gtxgraph.node(gtx_node_name).op.type
-                        == GTX_OP.LAYER_NORM
+                        quantizer.graph.node(node_name).op.type
+                        == OP.LAYER_NORM
                     ):
                         method = 4
                 fix_node = jit_utils.create_fix_node(
@@ -770,41 +770,41 @@ def insert_fix_neuron_in_script_model(script_model, quantizer):
                     method=method,
                     device_id=device_id,
                     inplace=quantizer.inplace,
-                    name=gtx_node_name,
+                    name=node_name,
                     tensor_type="output",
                     index=index,
                 )
                 if fix_node is not None:
                     jit_utils.insert_after_node(script_graph, fw_node, fix_node, idx)
 
-    for gtx_node_name in quant_config["input"].keys():
-        if _get_node_scope(gtx_node_name) != get_module_name(script_model):
+    for node_name in quant_config["input"].keys():
+        if _get_node_scope(node_name) != get_module_name(script_model):
             continue
-        for idx in range(quantizer.get_quant_len(gtx_node_name, "input")):
+        for idx in range(quantizer.get_quant_len(node_name, "input")):
             index = (
-                None if quantizer.get_quant_len(gtx_node_name, "output") == 1 else idx
+                None if quantizer.get_quant_len(node_name, "output") == 1 else idx
             )
-            bnfp = quantizer.get_quant_config(gtx_node_name, True, "input", idx)
+            bnfp = quantizer.get_quant_config(node_name, True, "input", idx)
             if not _valid_bnfp(bnfp):
                 continue
 
-            torch_value_name = jit_utils.gtx_name_2_jit_name(gtx_node_name)
+            torch_value_name = jit_utils.name_2_jit_name(node_name)
             fw_node = jit_utils.find_fw_node_by_name(
                 script_graph, torch_value_name, recursive=True
             )
             input_node = jit_utils.get_in_node_at(fw_node, idx)
             device_id = (
                 1
-                if quantizer.graph.node(gtx_node_name)
+                if quantizer.graph.node(node_name)
                 .in_tensors[idx]
                 .device.device_type
                 == "cpu"
                 else 0
             )
             method = 4 if quantizer.lstm else 2
-            if GtxOption.gtx_use_torch_quantizer.value is True:
+            if Option.use_torch_quantizer.value is True:
                 method = -1
-            elif quantizer.lstm and GtxOption.gtx_ip_asr.value is True:
+            elif quantizer.lstm and Option.ip_asr.value is True:
                 method = 3
             fix_node = jit_utils.create_fix_node(
                 script_graph,
@@ -816,7 +816,7 @@ def insert_fix_neuron_in_script_model(script_model, quantizer):
                 method=method,
                 device_id=device_id,
                 inplace=quantizer.inplace,
-                name=gtx_node_name,
+                name=node_name,
                 tensor_type="input",
                 index=index,
             )
@@ -835,9 +835,9 @@ def opt_script_model_for_quant(script_model):
 
 
 def insert_mul_after_avgpool(script_model, quantizer):
-    def _insert_mul_node(gtx_node_name, kernel):
+    def _insert_mul_node(node_name, kernel):
         scale = get_avgpool_dpu_coeff(kernel)
-        torch_value_name = jit_utils.gtx_name_2_jit_name(gtx_node_name)
+        torch_value_name = jit_utils.name_2_jit_name(node_name)
         fw_node = jit_utils.find_fw_node_by_name(script_graph, torch_value_name)
         mul_node = jit_utils.create_mul_node(
             script_graph, jit_utils.get_node_output_at(fw_node, 0), scale
@@ -846,21 +846,21 @@ def insert_mul_after_avgpool(script_model, quantizer):
             jit_utils.insert_after_node(script_graph, fw_node, mul_node)
 
     script_graph = script_model.graph
-    gtx_graph = quantizer.Gtxgraph
+    graph = quantizer.graph
 
-    for gtx_node in gtx_graph.all_nodes():
-        if _get_node_scope(gtx_node.name) != get_module_name(script_model):
+    for node in graph.all_nodes():
+        if _get_node_scope(node.name) != get_module_name(script_model):
             continue
-        if gtx_node.op.type == GTX_OP.AVG_POOL:
-            kernel = gtx_node.node_attr(gtx_node.op.AttrName.KERNEL)
-            _insert_mul_node(gtx_node.name, kernel)
-        elif gtx_node.op.type == GTX_OP.ADAPTIVEAVGPOOL2D:
-            if not gtx_node.in_tensors[0].shape or (
-                not gtx_node.out_tensors[0].shape
+        if node.op.type == OP.AVG_POOL:
+            kernel = node.node_attr(node.op.AttrName.KERNEL)
+            _insert_mul_node(node.name, kernel)
+        elif node.op.type == OP.ADAPTIVEAVGPOOL2D:
+            if not node.in_tensors[0].shape or (
+                not node.out_tensors[0].shape
             ):
                 continue
-            input_size = gtx_node.in_tensors[0].shape[2:]
-            output_size = gtx_node.out_tensors[0].shape[2:]
+            input_size = node.in_tensors[0].shape[2:]
+            output_size = node.out_tensors[0].shape[2:]
             mod = [input_size[i] % output_size[i] for i in range(0, len(input_size))]
             if mod != [0] * len(mod):
                 continue
@@ -869,7 +869,7 @@ def insert_mul_after_avgpool(script_model, quantizer):
             stride_w = int(input_size[1] / output_size[1])
             kernel_h = input_size[0] - (output_size[0] - 1) * stride_h
             kernel_w = input_size[1] - (output_size[1] - 1) * stride_w
-            _insert_mul_node(gtx_node.name, [kernel_w, kernel_h])
+            _insert_mul_node(node.name, [kernel_w, kernel_h])
     return script_model
 
 

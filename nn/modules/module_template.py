@@ -15,14 +15,14 @@
 #
 
 import torch
-from gtx_shared.gtx_graph import Tensor
-from gtx_shared.quantization import maybe_get_quantizer
-from gtx_shared.quantization import quantize_tensors
-import gtx_utils as py_utils
-from gtx_utils import TorchOpClassType
-from gtx_shared.utils import gtx_KEYS, GTX_OP, GLOBAL_MAP, GtxScreenLogger
-from gtx_shared.utils import GtxOption
-from gtx_shared.gtx_graph import GtxGraphHolder
+from shared.graph import Tensor
+from shared.quantization import maybe_get_quantizer
+from shared.quantization import quantize_tensors
+import utils as py_utils
+from utils import TorchOpClassType
+from shared.utils import KEYS, OP, GLOBAL_MAP, ScreenLogger
+from shared.utils import Option
+from shared.graph import GraphHolder
 
 __all__ = ["Module"]
 
@@ -48,14 +48,16 @@ def creat_module(torch_op_type, torch_op_attr, *args, **kwargs):
 
                 def forward(self, *args, **kwargs):
                     # quantize input tensor
-                    configer = GtxGraphHolder()
+                    configer = GraphHolder()
                     qinputs = quantize_tensors(
                         list(args), self.node, tensor_type="input"
                     )
+                    # 비-inplace 로 양자화한 weight/bias 를 forward 동안만 적용하기 위한 복원 목록
+                    restore = []
                     if configer.node_quantizable_with_params(self.node):
                         qparams = []
                         inplace = (
-                            GtxOption.gtx_quant_off.value
+                            Option.quant_off.value
                             or self.quantizer is not None
                             and self.quantizer.inplace
                         )
@@ -84,12 +86,30 @@ def creat_module(torch_op_type, torch_op_attr, *args, **kwargs):
                                     tensor_names=param_names,
                                     tensor_type="param",
                                 )
-                            if not GtxOption.gtx_quant_off.value:
+                            if not Option.quant_off.value:
                                 self.param_quantized = True
                         else:
                             qparams = [p for p in params]
 
-                    output = super().forward(*args, **kwargs)
+                        # inplace 가 아니면 양자화된 파라미터가 super().forward 에서
+                        # 실제로 쓰이도록 weight/bias 에 잠시 주입(fake-quant)하고
+                        # forward 후 원래 값으로 복원한다.
+                        if not inplace:
+                            for orig, qp in zip(params, qparams):
+                                if orig is None or qp is None or orig is qp:
+                                    continue
+                                qp_data = qp.data if hasattr(qp, "data") else qp
+                                restore.append((orig, orig.data))
+                                orig.data = qp_data
+
+                    # 양자화된 입력을 실제 연산에 사용한다.
+                    fwd_args = qinputs if len(qinputs) == len(args) else list(args)
+                    output = super().forward(*fwd_args, **kwargs)
+
+                    # 주입했던 파라미터를 원복
+                    for orig, orig_data in restore:
+                        orig.data = orig_data
+
                     if isinstance(output, (list, tuple)):
                         output = quantize_tensors(output, self.node)
                     else:
@@ -151,7 +171,7 @@ def creat_module(torch_op_type, torch_op_attr, *args, **kwargs):
                         ):
                             output = output.clone()
                     except TypeError as e:
-                        GtxScreenLogger().warning_once(
+                        ScreenLogger().warning_once(
                             f"{str(e)}. The arguments of function will convert to positional arguments."
                         )
                         inputs = list(args) + list(kwargs.values())
@@ -237,7 +257,7 @@ def creat_module(torch_op_type, torch_op_attr, *args, **kwargs):
 
                 inputs = quantize_tensors(inputs, self.node, tensor_type="input")
 
-                caller_map = GLOBAL_MAP.get_ele(gtx_KEYS.NODE_CALLER_MAP)
+                caller_map = GLOBAL_MAP.get_ele(KEYS.NODE_CALLER_MAP)
                 output = caller_map[self.node.name](*args)
 
                 if isinstance(output, (list, tuple)):
@@ -262,7 +282,7 @@ def creat_module(torch_op_type, torch_op_attr, *args, **kwargs):
                 return f"'{torch_op_type}'"
 
             def forward(self, *args):
-                caller_map = GLOBAL_MAP.get_ele(gtx_KEYS.NODE_CALLER_MAP)
+                caller_map = GLOBAL_MAP.get_ele(KEYS.NODE_CALLER_MAP)
                 output = caller_map[self.node.name](*args)
                 if isinstance(output, (list, tuple)):
                     output = quantize_tensors(output, self.node)
@@ -285,7 +305,7 @@ def creat_module(torch_op_type, torch_op_attr, *args, **kwargs):
                 return f"'{torch_op_type}'"
 
             def forward(self, args):
-                caller_map = GLOBAL_MAP.get_ele(gtx_KEYS.NODE_CALLER_MAP)
+                caller_map = GLOBAL_MAP.get_ele(KEYS.NODE_CALLER_MAP)
                 output = caller_map[self.node.name](**args)
                 if isinstance(output, (list, tuple)):
                     output = quantize_tensors(output, self.node)
@@ -320,8 +340,15 @@ def creat_module(torch_op_type, torch_op_attr, *args, **kwargs):
         return PassthroughModule()
 
 
-def Module(gtx_type, *args, **kwargs):
-    torch_op_type = py_utils.get_torch_op_type(gtx_type)
+def Module(type, *args, **kwargs):
+    # backend='ggml' 이면 op-type 문자열로 직접 GgmlModule 생성(torch 맵 우회),
+    # 아니면 op-type 을 torch op 로 resolve 한 뒤 PyTorch 모듈 생성.
+    from .ggml_backend import get_backend, GgmlModule
+
+    if get_backend() == "ggml":
+        return GgmlModule(type, *args, **kwargs)
+
+    torch_op_type = py_utils.get_torch_op_type(type)
     torch_op_attr = py_utils.get_torch_op_attr(torch_op_type)
     return creat_module(torch_op_type, torch_op_attr, *args, **kwargs)
 

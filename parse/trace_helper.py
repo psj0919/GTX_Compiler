@@ -17,22 +17,22 @@ import sys
 from collections import ChainMap, OrderedDict, defaultdict
 from copy import copy
 from typing import Dict
-from gtx_shared.gtx_graph import GraphSearcher
-from gtx_shared.utils import (
-    GtxDebugLogger,
-    GtxOption,
+from shared.graph import GraphSearcher
+from shared.utils import (
+    DebugLogger,
+    Option,
     PatternType,
-    GtxScreenLogger,
+    ScreenLogger,
     GLOBAL_MAP,
-    gtx_KEYS,
+    KEYS,
 )
-from gtx_shared.utils import QError
-from gtx_utils.jit_utils import *
-from gtx_utils.module_util import get_module_name
+from shared.utils import QError
+from utils.jit_utils import *
+from utils.module_util import get_module_name
 from .opt_pass import OptPass
 from .torch_graph import *
 from .override_torch_function import TraceTensorMode, clear_override_import_redundant_op
-from gtx_utils.torch_utils import CmpFlag, compare_torch_version
+from utils.torch_utils import CmpFlag, compare_torch_version
 
 from .rich_in_out_helper import FlattenInOutModelForTrace, StandardInputData
 
@@ -63,12 +63,12 @@ class TorchGraphHandler(object):
                 input_args = input_data
             else:
                 input_args = input_data.args
-            GtxScreenLogger().check2user(
+            ScreenLogger().check2user(
                 QError.TRACED_NOT_SUPPORT,
                 "The model produced by 'torch.jit.script' is not supported in quantizer",
                 type(module) == torch.jit._trace.TopLevelTracedModule,
             )
-            GtxScreenLogger().info(
+            ScreenLogger().info(
                 f"The input model {get_module_name(module)} is ScriptModule."
             )
             fw_graph = self._get_graph_from_script(module, input_args)
@@ -89,21 +89,21 @@ class TorchGraphHandler(object):
 
             with torch.no_grad():
                 with TraceTensorMode(input_args) as input_args:
-                    GtxScreenLogger().info(
+                    ScreenLogger().info(
                         f"The input model {get_module_name(module)} is torch.nn.Module."
                     )
                     fw_graph = self._trace_graph_from_model(module, input_args, train)
                     _is_control_flow_graph = self._check_control_flow(fw_graph)
                     if (
                         _is_control_flow_graph
-                        or GtxOption.gtx_jit_trace.value is True
+                        or Option.jit_trace.value is True
                     ):
-                        GtxScreenLogger().check2user(
+                        ScreenLogger().check2user(
                             QError.TORCH_VERSION,
                             f"The quantizer only support network with control flow for torch version > 1.11.",
                             compare_torch_version(CmpFlag.GREATER_EQUAL, "1.12.0"),
                         )
-                        GtxScreenLogger().info(
+                        ScreenLogger().info(
                             f"Find the control flow operation in {get_module_name(module)} and retry jit trace to keep it."
                         )
                         traced_module = torch.jit.trace(module.eval(), input_args)
@@ -116,34 +116,34 @@ class TorchGraphHandler(object):
 
     def build_torch_graph(self, graph_name, module, input_args, train=False):
         # self._module = module
-        GtxScreenLogger().info("Start to trace and freeze model...")
-        if GtxOption.gtx_parse_debug.value != 0:
-            GtxDebugLogger.write("####Parser Debug Info:\n")
+        ScreenLogger().info("Start to trace and freeze model...")
+        if Option.parse_debug.value != 0:
+            DebugLogger.write("####Parser Debug Info:\n")
         try:
             fw_graph, is_control_flow_graph = self._get_fw_graph_from_module(
                 module, input_args, train
             )
         except Exception as e:
-            GtxScreenLogger().error2user(
+            ScreenLogger().error2user(
                 QError.PYTORCH_TRACE,
                 f"Failed to get graph from model and input args. The PyTorch internal failed reason is:\n{str(e)}",
             )
             # sys.exit(1)
-        GtxScreenLogger().info("Finish tracing.")
+        ScreenLogger().info("Finish tracing.")
 
         node_kinds = {node.kind().split(":")[-1] for node in fw_graph.nodes()}
-        if GtxOption.gtx_parse_debug.value >= 1:
-            GtxDebugLogger.write(f"jit graph:\n{fw_graph}")
-            GtxDebugLogger.write(f"\nparsing nodes types:\n{node_kinds}\n")
+        if Option.parse_debug.value >= 1:
+            DebugLogger.write(f"jit graph:\n{fw_graph}")
+            DebugLogger.write(f"\nparsing nodes types:\n{node_kinds}\n")
 
         raw_graph = self._create_raw_graph(graph_name, fw_graph)
-        if GtxOption.gtx_parse_debug.value >= 2:
-            GtxDebugLogger.write(f"\ntorch raw graph:\n{raw_graph}")
+        if Option.parse_debug.value >= 2:
+            DebugLogger.write(f"\ntorch raw graph:\n{raw_graph}")
         self._opt_raw_graph(raw_graph, is_control_flow_graph)
-        if GtxOption.gtx_parse_debug.value >= 2:
-            GtxDebugLogger.write(f"\ntorch opt graph:\n{raw_graph}")
+        if Option.parse_debug.value >= 2:
+            DebugLogger.write(f"\ntorch opt graph:\n{raw_graph}")
 
-        if GtxOption.gtx_parse_debug.value >= 3:
+        if Option.parse_debug.value >= 3:
             self._check_stub_topology(raw_graph)
 
         return raw_graph
@@ -164,12 +164,12 @@ class TorchGraphHandler(object):
         script_graph = frozen_module.graph
         script_graph = optimize_graph(script_graph, is_jit_graph=True)
         rename_graph_inputs(script_graph)
-        if GtxOption.gtx_parse_debug.value >= 1:
-            GtxDebugLogger.write(f"origin jit graph:\n{script_graph}")
+        if Option.parse_debug.value >= 1:
+            DebugLogger.write(f"origin jit graph:\n{script_graph}")
         post_process_script_graph(script_graph)
 
         self._params = self._get_param_names(script_graph)
-        GLOBAL_MAP.set_map(gtx_KEYS.TORCH_SCRIPT_MODEL, frozen_module)
+        GLOBAL_MAP.set_map(KEYS.TORCH_SCRIPT_MODEL, frozen_module)
 
         return script_graph
 

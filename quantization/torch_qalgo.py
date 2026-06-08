@@ -22,10 +22,10 @@ from scipy import stats
 import torch
 from collections import Counter
 
-# from . import py_gtx
+# from . import py_
 from nn.modules.fix_ops import diffs_fix_pos
-from gtx_shared.utils import GtxOption, GtxScreenLogger, QError, QWarning
-from gtx_shared.base import GTX_OP
+from shared.utils import Option, ScreenLogger, QError, QWarning
+from shared.base import OP
 from nn import fake_quantize_per_tensor, fake_quantize_per_channel
 from nn import (
     fake_quantize_per_tensor_tensorrt,
@@ -34,29 +34,29 @@ from nn import (
 from utils.torch_utils import CmpFlag, compare_torch_version
 
 
-def get_py_gtx():
-    from . import py_gtx
+def get_py_():
+    from . import py_
 
-    return py_gtx
+    return py_
 
 
 _CONV_LINEAR_TYPES = [
-    GTX_OP.CONV2D,
-    GTX_OP.DEPTHWISE_CONV2D,
-    GTX_OP.CONV3D,
-    GTX_OP.DEPTHWISE_CONV3D,
-    GTX_OP.DENSE,
-    GTX_OP.LINEAR,
+    OP.CONV2D,
+    OP.DEPTHWISE_CONV2D,
+    OP.CONV3D,
+    OP.DEPTHWISE_CONV3D,
+    OP.DENSE,
+    OP.LINEAR,
 ]
 
 _CONV_TRANSPOSE_TYPES = [
-    GTX_OP.CONVTRANSPOSE2D,
-    GTX_OP.DEPTHWISE_CONVTRANSPOSE2D,
-    GTX_OP.CONVTRANSPOSE3D,
-    GTX_OP.DEPTHWISE_CONVTRANSPOSE3D,
+    OP.CONVTRANSPOSE2D,
+    OP.DEPTHWISE_CONVTRANSPOSE2D,
+    OP.CONVTRANSPOSE3D,
+    OP.DEPTHWISE_CONVTRANSPOSE3D,
 ]
 
-_CONV_NORM_TYPES = [GTX_OP.BATCH_NORM, GTX_OP.LAYER_NORM]
+_CONV_NORM_TYPES = [OP.BATCH_NORM, OP.LAYER_NORM]
 
 
 def create_quant_algo(quant_strategy_info, node):
@@ -67,7 +67,7 @@ def create_quant_algo(quant_strategy_info, node):
 
     if granularity == "per_channel":
         if compare_torch_version(CmpFlag.LESS, "1.5.0"):
-            GtxScreenLogger().error2user(
+            ScreenLogger().error2user(
                 QError.TORCH_VERSION,
                 f"Torch should uptate to 1.5.0 or higher version if per_channel quantization.",
             )
@@ -84,7 +84,7 @@ def create_quant_algo(quant_strategy_info, node):
             elif op_type in _CONV_NORM_TYPES:
                 axis = 0
             else:
-                GtxScreenLogger().error2user(
+                ScreenLogger().error2user(
                     QError.QUANT_CONFIG,
                     f"'{op_type}' is not supported in per channel quantization. ",
                 )
@@ -131,7 +131,7 @@ class UniformQuantAlgo(ABC):
         self._float_max = None
         self._float_min = None
         self._calib_cnt = 0
-        self._statistic_local = GtxOption.gtx_calibration_local.value
+        self._statistic_local = Option.calibration_local.value
 
     @abstractmethod
     def fake_quantize(self, input, inplace):
@@ -230,13 +230,13 @@ class PerChannelQuantAlgo(UniformQuantAlgo):
     def fake_quantize(self, input, inplace):
         if self._round_method == "half_even":
             if (
-                GtxOption.gtx_tensorrt_quant_algo.value
+                Option.tensorrt_quant_algo.value
                 and self._symmetric_mode == "symmetric"
             ):
                 return fake_quantize_per_channel_tensorrt(
                     input, self._float_max, self._quant_min, self._quant_max, self._axis
                 )
-            elif GtxOption.gtx_use_torch_quantizer.value is True:
+            elif Option.use_torch_quantizer.value is True:
                 if compare_torch_version(CmpFlag.GREATER, "1.9.0"):
                     self._zero_point = self._zero_point.to(torch.int32)
                 else:
@@ -454,7 +454,7 @@ class PowerofTwoQuantPerChannelAlgo(PerChannelQuantAlgo):
             elif self._method == "maxmin":
                 scope = 1
 
-            if self._node_type in [GTX_OP.INPUT, GTX_OP.QUANT_STUB]:
+            if self._node_type in [OP.INPUT, OP.QUANT_STUB]:
                 scope = 1
 
             if self._round_method == "half_up":
@@ -464,7 +464,7 @@ class PowerofTwoQuantPerChannelAlgo(PerChannelQuantAlgo):
             elif self._round_method == "std_round":
                 mth = 3
             elif self._round_method == "half_even":
-                if GtxOption.gtx_use_torch_quantizer.value is True:
+                if Option.use_torch_quantizer.value is True:
                     mth = -1
                 else:
                     mth = 8
@@ -476,7 +476,7 @@ class PowerofTwoQuantPerChannelAlgo(PerChannelQuantAlgo):
 
             self._calib_cnt = self._calib_cnt + 1
 
-            get_py_gtx().nn.GtxDiffsFixPosChannel(
+            get_py_().nn.DiffsFixPosChannel(
                 Tinput=tensor,
                 Tbuffer=Tbuffer,
                 Tfixpos=self._fix_pos,
@@ -496,7 +496,7 @@ class PowerofTwoQuantPerChannelAlgo(PerChannelQuantAlgo):
                     method=mth,
                 )
             if self._bitwidth <= 8:
-                max_fp = GtxOption.gtx_max_fix_position.value
+                max_fp = Option.max_fix_position.value
                 # self._fix_pos = min(max_fp, self._fix_pos)
                 self._fix_pos = torch.where(
                     self._fix_pos.long() > max_fp, max_fp, self._fix_pos.long()
@@ -536,13 +536,13 @@ class PerTensorQuantAlgo(UniformQuantAlgo):
     def fake_quantize(self, input, inplace):
         if self._round_method == "half_even":
             if (
-                GtxOption.gtx_tensorrt_quant_algo.value
+                Option.tensorrt_quant_algo.value
                 and self._symmetric_mode == "symmetric"
             ):
                 return fake_quantize_per_tensor_tensorrt(
                     input, self._float_max, self._quant_min, self._quant_max
                 )
-            elif GtxOption.gtx_use_torch_quantizer.value is True:
+            elif Option.use_torch_quantizer.value is True:
                 return torch.fake_quantize_per_tensor_affine(
                     input,
                     self._scale,
@@ -681,7 +681,7 @@ class HistogramQuantPerTensorAlgo(PerTensorQuantAlgo):
         super().__init__(config)
         self._calib_hist = None
         self._calib_bin_edges = None
-        self._num_bins = GtxOption.gtx_calib_histogram_bins.value
+        self._num_bins = Option.calib_histogram_bins.value
 
     def calibrate(self, tensor):
         self._calib_cnt = self._calib_cnt + 1
@@ -774,8 +774,8 @@ class MSEQuantPerTensorAlgo(HistogramQuantPerTensorAlgo):
         super().__init__(config)
 
     def calib_scale(self, calib_hist, calib_bin_edges):
-        start_bin = GtxOption.gtx_mse_start_bin.value
-        stride = GtxOption.gtx_mse_stride.value
+        start_bin = Option.mse_start_bin.value
+        stride = Option.mse_stride.value
 
         counts = torch.from_numpy(calib_hist[:]).float()
         edges = torch.from_numpy(calib_bin_edges[:]).float()
@@ -793,7 +793,7 @@ class MSEQuantPerTensorAlgo(HistogramQuantPerTensorAlgo):
             scale = amax / self._quant_max
             zero_point = 0
             if self._round_method == "half_even":
-                # if GtxOption.gtx_tensorrt_quant_algo.value:
+                # if Option.tensorrt_quant_algo.value:
                 #   quant_centers = fake_quantize_per_tensor_tensorrt(centers, amax,
                 #                                                     self._quant_min, self._quant_max)
                 # else:
@@ -839,8 +839,8 @@ class EntropyQuantPerTensorAlgo(HistogramQuantPerTensorAlgo):
         super().__init__(config)
 
     def calib_scale(self, calib_hist, calib_bin_edges):
-        start_bin = GtxOption.gtx_entropy_start_bin.value
-        stride = GtxOption.gtx_entropy_stride.value
+        start_bin = Option.entropy_start_bin.value
+        stride = Option.entropy_stride.value
 
         # calib_hist = calib_hist.int().cpu().numpy()
         # calib_hist = calib_hist.long().cpu().numpy()
@@ -933,7 +933,7 @@ class PowerofTwoQuantPerTensorAlgo(PerTensorQuantAlgo):
         elif self._method == "maxmin":
             scope = 1
 
-        if self._node_type in [GTX_OP.INPUT, GTX_OP.QUANT_STUB]:
+        if self._node_type in [OP.INPUT, OP.QUANT_STUB]:
             scope = 1
 
         if self._round_method == "half_up":
@@ -943,7 +943,7 @@ class PowerofTwoQuantPerTensorAlgo(PerTensorQuantAlgo):
         elif self._round_method == "std_round":
             mth = 3
         elif self._round_method == "half_even":
-            if GtxOption.gtx_use_torch_quantizer.value is True:
+            if Option.use_torch_quantizer.value is True:
                 mth = -1
             else:
                 mth = 8
@@ -954,7 +954,7 @@ class PowerofTwoQuantPerTensorAlgo(PerTensorQuantAlgo):
 
         self._calib_cnt = self._calib_cnt + 1
 
-        get_py_gtx().nn.GtxDiffsFixPos(
+        get_py_().nn.DiffsFixPos(
             Tinput=tensor,
             Tbuffer=Tbuffer,
             Tfixpos=Tfixpos,
@@ -968,7 +968,7 @@ class PowerofTwoQuantPerTensorAlgo(PerTensorQuantAlgo):
 
         self._fix_pos = (int)(Tfixpos.item())
         if self._bitwidth <= 8:
-            max_fp = GtxOption.gtx_max_fix_position.value
+            max_fp = Option.max_fix_position.value
             self._fix_pos = min(max_fp, self._fix_pos)
         else:
             self._fix_pos = min(15, self._fix_pos)

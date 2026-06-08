@@ -14,8 +14,8 @@
 # limitations under the License.
 #
 
-from gtx_shared.base import gtx_CONSTANT, GTX_OP
-from gtx_shared.gtx_graph import Tensor
+from shared.base import CONSTANT, OP
+from shared.graph import Tensor
 from .code_template import CodeTemplate
 
 
@@ -50,7 +50,7 @@ class OpDescriptor(object):
 
         for i in range(dim[0]):
             start_symbol.append(str(0))
-            end_symbol.append(str(gtx_CONSTANT.INT_MAX))
+            end_symbol.append(str(CONSTANT.INT_MAX))
             step_symbol.append(str(1))
 
         for i in range(len(starts)):
@@ -68,7 +68,7 @@ class OpDescriptor(object):
                 symbols = slice_symbol
         # for i in range(len(starts)):
         #   start_symbol = str(starts[i]) if starts[i] > 0 else ''
-        #   end_symbol = str(ends[i]) if ends[i] < gtx_CONSTANT.INT_MAX else ''
+        #   end_symbol = str(ends[i]) if ends[i] < CONSTANT.INT_MAX else ''
         #   step_symbol = ':' + str(steps[i]) if steps[i] > 1 else ''
         #   slice_symbol = start_symbol + break_symbol + end_symbol + step_symbol
         #   if i > 0:
@@ -145,7 +145,7 @@ class OpDescriptor(object):
 
         for i in range(dims[0]):
             start_symbol.append(str(0))
-            end_symbol.append(str(gtx_CONSTANT.INT_MAX))
+            end_symbol.append(str(CONSTANT.INT_MAX))
             step_symbol.append(str(1))
 
         for i in range(len(starts)):
@@ -213,9 +213,9 @@ class OpDescriptor(object):
         max_trip_count_str = ctx.infer_attr_value(max_trip_count)
 
         for inner_node in node.blocks[0].nodes:
-            if inner_node.op.type == GTX_OP.RETURN:
+            if inner_node.op.type == OP.RETURN:
                 continue
-            if inner_node.op.type in [GTX_OP.INPUT, GTX_OP.TUPLE_INPUT]:
+            if inner_node.op.type in [OP.INPUT, OP.TUPLE_INPUT]:
                 output_str = ctx._to_list_str(ctx._get_module_output(inner_node))
                 if block_inputs_idx == 0:
                     iter_var_str = output_str
@@ -227,7 +227,7 @@ class OpDescriptor(object):
                         output_str = f"({output_str})"
                     block_inputs.append(output_str)
                 block_inputs_idx += 1
-            elif inner_node.op.type == GTX_OP.DERIVE_LOOP_INDEX:
+            elif inner_node.op.type == OP.DERIVE_LOOP_INDEX:
                 iter_start_str = str(inner_node.node_config("start"))
                 output_str = ctx._to_list_str(ctx._get_module_output(inner_node))
                 iter_var_str = output_str
@@ -342,7 +342,7 @@ for $iter_var in range($iter_start, $iter_end):
         for i in range(dim + 1):
             if i != dim:
                 starts.append(str(0))
-                ends.append(str(gtx_CONSTANT.INT_MAX))
+                ends.append(str(CONSTANT.INT_MAX))
                 steps.append(str(1))
             else:
                 starts.append(ctx.infer_attr_value(start))
@@ -386,7 +386,7 @@ else:
         block_ret = [""] * 2
         for i, block in enumerate(node.blocks):
             for inner_node in block.nodes:
-                if inner_node.op.type == GTX_OP.RETURN:
+                if inner_node.op.type == OP.RETURN:
                     continue
                 forward_str, output_str = ctx._get_forward_str(inner_node)
                 blocks[i] += forward_str + "\n"
@@ -483,27 +483,27 @@ else:
 
 
 MISC_OP_DISCR_MAP = {
-    GTX_OP.INPUT: OpDescriptor.input,
-    GTX_OP.TUPLE_INPUT: OpDescriptor.input,
-    GTX_OP.SLICE_TENSOR_INPLACE_COPY: OpDescriptor.slice_tensor_inplace_copy,
-    GTX_OP.INDEX: OpDescriptor.index,
-    GTX_OP.INT: OpDescriptor.int_,
-    GTX_OP.STRIDED_SLICE_INPLACE_COPY: OpDescriptor.strided_slice_inplace_copy,
-    GTX_OP.INDEX_INPUT_INPLACE: OpDescriptor.index_put_inplace,
-    GTX_OP.LOOP: OpDescriptor.loop,
-    GTX_OP.LIST_ADD: OpDescriptor.list_add,
-    GTX_OP.FLOOR_DIV: OpDescriptor.floor_div,
-    GTX_OP.TUPLE_UNPACK: OpDescriptor.sequence_unpack,
-    GTX_OP.SLICE: OpDescriptor.slice,
-    GTX_OP.LENGTH: OpDescriptor.length,
-    GTX_OP.IF: OpDescriptor.If,
-    GTX_OP.SCALAR_LESS_THAN: OpDescriptor.lt,
-    GTX_OP.SCALAR_EQUAL: OpDescriptor.eq,
-    GTX_OP.RETURN: OpDescriptor.return_,
-    GTX_OP.LIST: OpDescriptor.list,
-    GTX_OP.TUPLE: OpDescriptor._tuple,
-    GTX_OP.TUPLE_INDEX: OpDescriptor.tuple_index,
-    GTX_OP.DEVICE: OpDescriptor.device,
-    GTX_OP.DTYPE: OpDescriptor.dtype,
-    GTX_OP.CONSTANT_WITH_RESHAPE: OpDescriptor.constant_with_reshape,
+    OP.INPUT: OpDescriptor.input,
+    OP.TUPLE_INPUT: OpDescriptor.input,
+    OP.SLICE_TENSOR_INPLACE_COPY: OpDescriptor.slice_tensor_inplace_copy,
+    OP.INDEX: OpDescriptor.index,
+    OP.INT: OpDescriptor.int_,
+    OP.STRIDED_SLICE_INPLACE_COPY: OpDescriptor.strided_slice_inplace_copy,
+    OP.INDEX_INPUT_INPLACE: OpDescriptor.index_put_inplace,
+    OP.LOOP: OpDescriptor.loop,
+    OP.LIST_ADD: OpDescriptor.list_add,
+    OP.FLOOR_DIV: OpDescriptor.floor_div,
+    OP.TUPLE_UNPACK: OpDescriptor.sequence_unpack,
+    OP.SLICE: OpDescriptor.slice,
+    OP.LENGTH: OpDescriptor.length,
+    OP.IF: OpDescriptor.If,
+    OP.SCALAR_LESS_THAN: OpDescriptor.lt,
+    OP.SCALAR_EQUAL: OpDescriptor.eq,
+    OP.RETURN: OpDescriptor.return_,
+    OP.LIST: OpDescriptor.list,
+    OP.TUPLE: OpDescriptor._tuple,
+    OP.TUPLE_INDEX: OpDescriptor.tuple_index,
+    OP.DEVICE: OpDescriptor.device,
+    OP.DTYPE: OpDescriptor.dtype,
+    OP.CONSTANT_WITH_RESHAPE: OpDescriptor.constant_with_reshape,
 }

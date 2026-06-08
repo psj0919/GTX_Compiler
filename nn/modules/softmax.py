@@ -18,19 +18,19 @@ import math
 import torch
 import numpy as np
 
-from gtx_shared.quantization import maybe_get_quantizer
-from gtx_shared.quantization import kernel_need_quant
-from gtx_shared.quantization import quantize_tensors
-from gtx_shared.utils import GtxOption
+from shared.quantization import maybe_get_quantizer
+from shared.quantization import kernel_need_quant
+from shared.quantization import quantize_tensors
+from shared.utils import Option
 from .fix_ops import (
-    GtxSoftmaxExpApproximate,
-    GtxSoftmaxLOD,
-    GtxSoftmaxSimulationPart1,
-    GtxSoftmaxSimulationPart2,
-    GtxExpApprAIE2,
-    GtxInverseAIE2,
+    SoftmaxExpApproximate,
+    SoftmaxLOD,
+    SoftmaxSimulationPart1,
+    SoftmaxSimulationPart2,
+    ExpApprAIE2,
+    InverseAIE2,
 )
-import gtx_utils as py_utils
+import utils as py_utils
 from nn.nonlinear import approx
 
 __all__ = ["softmax"]
@@ -48,7 +48,7 @@ class Softmax(torch.nn.modules.Softmax):
     def forward(self, input):
         if (
             not kernel_need_quant(self.quantizer, self.node) or self.quantizer.exporting
-        ) or GtxOption.gtx_gemm88.value:
+        ) or Option.gemm88.value:
             # Method 0: quant input and output
             output = super().forward(input)
             output = quantize_tensors([output], self.node)[0]
@@ -58,18 +58,18 @@ class Softmax(torch.nn.modules.Softmax):
             qinput = quantize_tensors([input], self.node, tensor_type="input")[0]
 
             input_name = self.node.in_nodes[0]
-            input_node = self.quantizer.configer.get_Gtxnode(input_name)
+            input_node = self.quantizer.configer.get_node(input_name)
             if not self.quantizer.configer.node_output_quantizable(input_node):
                 input_name = input_node.in_nodes[0]
 
             # Method 1: Hardware PL Softmax with 8 bw
-            if GtxOption.gtx_op_softmax_mode.value == "hardware_pl":
+            if Option.op_softmax_mode.value == "hardware_pl":
                 x_max = torch.max(qinput, dim=self.dim, keepdim=True).values
                 Exp_sum_appr = 0.0
 
                 uvi = 47274 / math.pow(2, 15) * (qinput - x_max)
                 exp_appr = torch.empty_like(uvi)
-                GtxSoftmaxExpApproximate(uvi, exp_appr)
+                SoftmaxExpApproximate(uvi, exp_appr)
 
                 exp_appr = torch.round(exp_appr * 10**5)
                 exp_appr = exp_appr / (10**5)
@@ -77,33 +77,33 @@ class Softmax(torch.nn.modules.Softmax):
 
                 F = Exp_sum_appr
                 w = torch.empty_like(F)
-                GtxSoftmaxLOD(F, w)
+                SoftmaxLOD(F, w)
                 m = F / (2**w)
 
                 lnF = torch.round((22713 / (2**15)) * (m - 1 + w) * 10**5) / 10**5
                 uvi = 47274 / (2**15) * (qinput - x_max - lnF)
                 exp_appr = torch.empty_like(uvi)
-                GtxSoftmaxExpApproximate(uvi, exp_appr)
+                SoftmaxExpApproximate(uvi, exp_appr)
                 exp_appr = torch.round(exp_appr * 10**5) / 10**5
                 output = exp_appr
                 output = quantize_tensors([output], self.node)[0]
 
             # Method 2: Liyi Softmax with any bw
-            elif GtxOption.gtx_op_softmax_mode.value == "liyi":
+            elif Option.op_softmax_mode.value == "liyi":
                 x_max = torch.max(qinput, dim=self.dim, keepdim=True).values
                 qinput = qinput - x_max
 
                 exp_appr = torch.empty_like(qinput)
-                GtxSoftmaxSimulationPart1(qinput, exp_appr)
+                SoftmaxSimulationPart1(qinput, exp_appr)
                 sum = torch.sum(exp_appr, dim=self.dim, keepdim=True)
 
                 sum1 = torch.empty_like(sum)
-                GtxSoftmaxSimulationPart2(sum, sum1)
+                SoftmaxSimulationPart2(sum, sum1)
                 output = (exp_appr * sum1).bfloat16().float()
                 output = quantize_tensors([output], self.node)[0]
 
             # Method 3: Table Look up for AIE2 Softmax with 8 bw and 16 bw(based on LUT)
-            elif GtxOption.gtx_op_softmax_mode.value == "aie2_lut_16bw":
+            elif Option.op_softmax_mode.value == "aie2_lut_16bw":
                 bw = self.quantizer.get_quant_config(self.node.name, False)[0]
                 fragpos = self.quantizer.get_quant_config(input_name, False)[1]
 
@@ -125,17 +125,17 @@ class Softmax(torch.nn.modules.Softmax):
                         qinput -= 32
 
                 exp_appr = torch.empty_like(qinput)
-                GtxExpApprAIE2(qinput, exp_appr, bw)
+                ExpApprAIE2(qinput, exp_appr, bw)
                 sum = torch.sum(exp_appr, dim=self.dim, keepdim=True)
                 sum_inv = torch.empty_like(sum)
-                GtxInverseAIE2(sum, sum_inv)
+                InverseAIE2(sum, sum_inv)
                 output = (exp_appr * sum_inv).bfloat16().float()
                 output = quantize_tensors([output], self.node)[0]
 
             # Method 4: Bert with 8 bw
             elif (
-                GtxOption.gtx_op_softmax_mode.value == "bert_8bw"
-                or GtxOption.gtx_ip_v70_bert.value
+                Option.op_softmax_mode.value == "bert_8bw"
+                or Option.ip_v70_bert.value
             ):
                 # def generate_exp_table(bw, input_scale, table_name):
                 #   from bfloat16 import bfloat16
@@ -208,7 +208,7 @@ class Softmax(torch.nn.modules.Softmax):
                 output = quantize_tensors([output], self.node, method=4)[0]
 
             # Method 5: ipu 8bw
-            elif GtxOption.gtx_op_softmax_mode.value == "ipu_8bw":
+            elif Option.op_softmax_mode.value == "ipu_8bw":
                 output = approx.softmax_approx_poly(
                     qinput
                 )  # bfloat16, default settings: axis=-1, exp_table_size=1, degree=3

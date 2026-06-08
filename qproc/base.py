@@ -22,21 +22,21 @@ import re
 import torch
 
 # from version import __version__, Ctorch_version
-import gtx_shared.utils as gtx_utils
-from gtx_shared.base import GLOBAL_MAP, gtx_KEYS, GTX_OP
-from gtx_shared.compile import CompilerFactory, DeployChecker
-from gtx_shared.utils import (
+import shared.utils as utils
+from shared.base import GLOBAL_MAP, KEYS, OP
+from shared.compile import CompilerFactory, DeployChecker
+from shared.utils import (
     AddXopError,
-    GtxOption,
-    GtxScreenLogger,
+    Option,
+    ScreenLogger,
     option_util,
     QError,
     QWarning,
 )
-from gtx_shared.gtx_graph import Graph, Node, Block, convert_graph_to_block_node
-from gtx_shared.gtx_graph import operator_definition as base_op
+from shared.graph import Graph, Node, Block, convert_graph_to_block_node
+from shared.graph import operator_definition as base_op
 
-# from gtx_shared.quantization import DefaultQstrategy, QStrategyFactory
+# from shared.quantization import DefaultQstrategy, QStrategyFactory
 from quantization import FakeQuantizer, TorchQConfig, TORCHQuantizer
 from utils.torch_utils import CmpFlag, compare_torch_version
 from utils.onnx_utils import get_opset_version
@@ -45,8 +45,8 @@ from utils.module_util import (
     to_device,
     get_module_name,
 )
-from gtx_shared.compile import get_xmodel_and_dump_infos
-from gtx_shared.quantization.fix_pos_adjust import FixPosInserter
+from shared.compile import get_xmodel_and_dump_infos
+from shared.quantization.fix_pos_adjust import FixPosInserter
 from .adaquant import AdvancedQuantProcessor
 from .utils import (
     connect_module_with_graph,
@@ -57,7 +57,7 @@ from .utils import (
     prepare_quantizable_module,
     register_output_hook,
     set_outputs_recorder_status,
-    update_gtx_blob_data,
+    update_blob_data,
     quant_model_inferenced,
     insert_mul_after_avgpool,
     remove_quant_dequant_stub,
@@ -77,7 +77,7 @@ class TorchQuantProcessor:
         self, quant_mode, output_dir, quant_strategy_info, is_lstm=False
     ):
         if isinstance(quant_mode, int):
-            GtxScreenLogger().warning(
+            ScreenLogger().warning(
                 f"quant_mode will not support integer value in future version. It supports string values 'calib' and 'test'."
             )
             qmode = quant_mode
@@ -87,23 +87,23 @@ class TorchQuantProcessor:
             elif quant_mode == "test":
                 qmode = 2
             else:
-                GtxScreenLogger().warning(
+                ScreenLogger().warning(
                     f"quant_mode supported values are 'calib' and 'test'. Change it to 'calib' as calibration mode."
                 )
                 qmode = 1
         else:
-            GtxScreenLogger().warning(
+            ScreenLogger().warning(
                 f"quant_mode supported values are string 'calib' and 'test'. Change it to 'calib' as calibration mode."
             )
             qmode = 1
 
-        if GtxOption.gtx_quant_mode.value > 0:
-            qmode = GtxOption.gtx_quant_mode.value
+        if Option.quant_mode.value > 0:
+            qmode = Option.quant_mode.value
 
         if qmode == 1:
-            GtxScreenLogger().info(f"Quantization calibration process start up...")
+            ScreenLogger().info(f"Quantization calibration process start up...")
         elif qmode == 2:
-            GtxScreenLogger().info(f"Quantization test process start up...")
+            ScreenLogger().info(f"Quantization test process start up...")
 
         target_device = quant_strategy_info["target_device"]
         if target_device in ["DPU", "FLEXML"]:
@@ -149,7 +149,7 @@ class TorchQuantProcessor:
         # Check arguments type
         if isinstance(module, torch.nn.DataParallel):
             module = module.module
-            GtxScreenLogger().warning2user(
+            ScreenLogger().warning2user(
                 QWarning.DATA_PARALLEL,
                 f"Data parallel is not supported. The wrapper 'torch.nn.DataParallel' has been removed in quantizer.",
             )
@@ -158,7 +158,7 @@ class TorchQuantProcessor:
         device = torch.device("cpu")
 
         # Transform torch module to quantized module format
-        gtx_utils.create_work_dir(output_dir)
+        utils.create_work_dir(output_dir)
 
         # Parse the quant config file
         QConfiger = TorchQConfig()
@@ -184,14 +184,14 @@ class TorchQuantProcessor:
         #                                  mix_bit=mix_bit)
         quantizer, qmode = self._init_quant_env(quant_mode, output_dir, qconfig)
 
-        GLOBAL_MAP.set_map(gtx_KEYS.QUANTIZER, quantizer)
-        GLOBAL_MAP.set_map(gtx_KEYS.QUANT_MODE, qmode)
-        GLOBAL_MAP.set_map(gtx_KEYS.QUANT_DEVICE, device)
-        GLOBAL_MAP.set_map(gtx_KEYS.QUANT_CONFIG, qconfig)
+        GLOBAL_MAP.set_map(KEYS.QUANTIZER, quantizer)
+        GLOBAL_MAP.set_map(KEYS.QUANT_MODE, qmode)
+        GLOBAL_MAP.set_map(KEYS.QUANT_DEVICE, device)
+        GLOBAL_MAP.set_map(KEYS.QUANT_CONFIG, qconfig)
         if lstm_app:
-            option_util.set_option_value("gtx_cv_app", False)
+            option_util.set_option_value("cv_app", False)
         else:
-            option_util.set_option_value("gtx_cv_app", True)
+            option_util.set_option_value("cv_app", True)
 
         # Prepare quantizable module
 
@@ -218,7 +218,7 @@ class TorchQuantProcessor:
         # intialize quantizer
         if target is None or quant_config_file:
             if target is not None and quant_config_file is not None:
-                GtxScreenLogger().warning2user(
+                ScreenLogger().warning2user(
                     QWarning.HW_AWARE_QUANT,
                     "The hardware-aware quantization is turned off by quant_config_file.",
                 )
@@ -229,17 +229,17 @@ class TorchQuantProcessor:
             if tmp_module is not None:
                 tmp_module = tmp_module.to(device)
 
-            quant_off_stat = GtxOption.gtx_quant_off.value
-            param_corr_stat = GtxOption.gtx_param_corr.value
-            gtx_utils.set_option_value("gtx_quant_off", True)
-            gtx_utils.set_option_value("gtx_param_corr", False)
+            quant_off_stat = Option.quant_off.value
+            param_corr_stat = Option.param_corr.value
+            utils.set_option_value("quant_off", True)
+            utils.set_option_value("param_corr", False)
             register_output_hook(tmp_module, record_once=True)
             set_outputs_recorder_status(tmp_module, True)
             tmp_module.eval()
             _ = tmp_module(*input_data.args, **input_data.kwargs)
 
-            gtx_utils.set_option_value("gtx_quant_off", quant_off_stat)
-            gtx_utils.set_option_value("gtx_param_corr", param_corr_stat)
+            utils.set_option_value("quant_off", quant_off_stat)
+            utils.set_option_value("param_corr", param_corr_stat)
             _, dev_graph = get_deploy_graph_list(
                 tmp_module, graph, need_partition=False
             )
@@ -254,8 +254,8 @@ class TorchQuantProcessor:
         connect_module_with_graph(quant_module, graph)
         # hook module with quantizer
         quantizer.quant_model = quant_module
-        if GLOBAL_MAP.get_ele(gtx_KEYS.TORCH_SCRIPT_MODEL):
-            quantizer.add_script(GLOBAL_MAP.get_ele(gtx_KEYS.TORCH_SCRIPT_MODEL))
+        if GLOBAL_MAP.get_ele(KEYS.TORCH_SCRIPT_MODEL):
+            quantizer.add_script(GLOBAL_MAP.get_ele(KEYS.TORCH_SCRIPT_MODEL))
 
         flatten_input_for_innermodel, _ = input_data.make_flatten_data()
         self._example_inputs = flatten_input_for_innermodel
@@ -277,10 +277,10 @@ class TorchQuantProcessor:
         # self.adaquant = None
 
         # dump blob dist
-        if GtxOption.gtx_visualize.value is True:
+        if Option.visualize.value is True:
             visualize_tensors(quantizer.quant_model)
 
-        if GtxOption.gtx_calib_before_finetune.value is True:
+        if Option.calib_before_finetune.value is True:
             self.quantizer.export_float_param()
 
     def advanced_quant_setup(self, module, graph, example_inputs):
@@ -299,7 +299,7 @@ class TorchQuantProcessor:
         torch.set_grad_enabled(True)
         if (
             self.quantizer.quant_mode == 1
-            and GtxOption.gtx_calib_before_finetune.value is True
+            and Option.calib_before_finetune.value is True
         ):
             self.quantizer.load_float_param()
 
@@ -324,7 +324,7 @@ class TorchQuantProcessor:
                     module, module_graph, example_input
                 )
                 index = index + 1
-                if GtxOption.gtx_ft_mode.value == 0:
+                if Option.ft_mode.value == 0:
                     adaquant.finetune(run_fn, run_args)
                 else:
                     adaquant.finetune_v2(run_fn, run_args)
@@ -332,12 +332,12 @@ class TorchQuantProcessor:
             adaquant = self.advanced_quant_setup(
                 self.quantizer.quant_model, self.quantizer.graph, self._example_inputs
             )
-            if GtxOption.gtx_ft_mode.value == 0:
+            if Option.ft_mode.value == 0:
                 adaquant.finetune(run_fn, run_args)
             else:
                 adaquant.finetune_v2(run_fn, run_args)
 
-        GtxScreenLogger().info(f"=>Export fast finetuned parameters ...")
+        ScreenLogger().info(f"=>Export fast finetuned parameters ...")
         # export finetuned parameters
         self.quantizer.export_param()
 
@@ -345,7 +345,7 @@ class TorchQuantProcessor:
 
         # self.advanced_quant_setup()
         # if self.adaquant is not None:
-        #   if GtxOption.gtx_ft_mode.value == 0:
+        #   if Option.ft_mode.value == 0:
         #     self.adaquant.finetune(run_fn, run_args)
         #   else:
         #     self.adaquant.finetune_v2(run_fn, run_args)
@@ -353,7 +353,7 @@ class TorchQuantProcessor:
 
     # full control quantization
     def quantize(self, run_fn, run_args, ft_run_args):
-        GtxScreenLogger().info(f"Model quantization calibration begin:")
+        ScreenLogger().info(f"Model quantization calibration begin:")
         # calibration
         self.quantizer.quant_mode = 1
         if ft_run_args is not None:
@@ -361,10 +361,10 @@ class TorchQuantProcessor:
             self.quantizer.fast_finetuned = True
         run_fn(*run_args)
         self.quantizer.export_quant_config()
-        GtxScreenLogger().info(f"Model quantization calibration end.")
+        ScreenLogger().info(f"Model quantization calibration end.")
 
     def test(self, run_fn, run_args):
-        GtxScreenLogger().info(f"Quantized model test begin:")
+        ScreenLogger().info(f"Quantized model test begin:")
         # test and print log message
         self.quantizer.quant_mode = 2
         if self.quantizer.fast_finetuned:
@@ -372,18 +372,18 @@ class TorchQuantProcessor:
             self.quantizer.load_param()
 
         log_str = run_fn(*run_args)
-        GtxScreenLogger().info(
+        ScreenLogger().info(
             f"Quantized model evaluation returns metric:\n {log_str}"
         )
-        GtxScreenLogger().info(f"Quantized model end.")
+        ScreenLogger().info(f"Quantized model end.")
 
     def deploy(self, run_fn, run_args, fmt="xmodel", dynamic_batch=False):
-        GtxScreenLogger().info(f"Quantized model depoyment begin:")
+        ScreenLogger().info(f"Quantized model depoyment begin:")
         # export quantized model
         # how to handle batch size must be 1
         # check function input
         if fmt not in ["xmodel", "onnx", "torch_script"]:
-            GtxScreenLogger().error(
+            ScreenLogger().error(
                 f"Parameter deploy only can be set 'xmodel', 'onnx' and 'torch_script'."
             )
 
@@ -408,7 +408,7 @@ class TorchQuantProcessor:
             )
         elif fmt == "torch_script":
             self.export_traced_torch_script(self.quantizer.output_dir, verbose=True)
-        GtxScreenLogger().info(f"Quantized model depoyment end.")
+        ScreenLogger().info(f"Quantized model depoyment end.")
 
     # quantization steps of quantized tensors
     def export_quant_config(self):
@@ -417,14 +417,14 @@ class TorchQuantProcessor:
     # export xmodel file to be compiled for deployment
     def export_xmodel(self, output_dir, deploy_check=False, dynamic_batch=False):
         if quant_model_inferenced(self.quantizer.quant_model) is False:
-            GtxScreenLogger().error2user(
+            ScreenLogger().error2user(
                 QError.NO_FORWARD,
                 f"torch_quantizer.quant_model FORWARD function must be called before exporting quantization result.\n    \
-                Please refer to example code at https://github.com/Supergate/GTX-Compiler.",
+                Please refer to example code at https://github.com/Supergate/-Compiler.",
             )
             return
         dump_xmodel(output_dir, deploy_check, self._lstm_app)
-        dump_all_fmt = os.getenv("gtx_DUMP_ALL_FORMAT")
+        dump_all_fmt = os.getenv("DUMP_ALL_FORMAT")
         if dump_all_fmt is not None:
             self.export_onnx_model(
                 output_dir, dynamic_batch=dynamic_batch, opset_version=None
@@ -443,12 +443,12 @@ class TorchQuantProcessor:
         opt_graph=False,
     ):
         fixposinserter = FixPosInserter(self.quantizer)
-        fixposinserter(self.quantizer.Gtxgraph)
+        fixposinserter(self.quantizer.graph)
 
         if quant_model_inferenced(self.quantizer.quant_model) is False:
-            GtxScreenLogger().error2user(
+            ScreenLogger().error2user(
                 QError.NO_FORWARD,
-                f"torch_quantizer.quant_model FORWARD function must be called before exporting quantization result.\n    Please refer to example code at https://github.com/Supergate/GTX-Compiler.",
+                f"torch_quantizer.quant_model FORWARD function must be called before exporting quantization result.\n    Please refer to example code at https://github.com/Supergate/-Compiler.",
             )
             return
         if self.quantizer.is_lstm:
@@ -486,27 +486,27 @@ class TorchQuantProcessor:
 
     def export_traced_torch_script(self, output_dir, verbose=False):
         fixposinserter = FixPosInserter(self.quantizer)
-        fixposinserter(self.quantizer.Gtxgraph)
+        fixposinserter(self.quantizer.graph)
 
         if quant_model_inferenced(self.quantizer.quant_model) is False:
-            GtxScreenLogger().error2user(
+            ScreenLogger().error2user(
                 QError.NO_FORWARD,
-                f"torch_quantizer.quant_model FORWARD function must be called before exporting quantization result.\n    Please refer to example code at https://github.com/Supergate/GTX-Compiler.",
+                f"torch_quantizer.quant_model FORWARD function must be called before exporting quantization result.\n    Please refer to example code at https://github.com/Supergate/-Compiler.",
             )
             return
-        gtx_utils.create_work_dir(output_dir)
+        utils.create_work_dir(output_dir)
         if compare_torch_version(CmpFlag.LESS, "1.7.0"):
-            GtxScreenLogger().error2user(
+            ScreenLogger().error2user(
                 QError.TORCH_VERSION,
                 f"Only supprt exporting torch script with pytorch 1.7 and later version.",
             )
             return
         self.quantizer.reset_status_for_exporting()
-        device = GLOBAL_MAP.get_ele(gtx_KEYS.QUANT_DEVICE)
-        force_cpu = os.getenv("gtx_FORCE_CPU_DUMP")
+        device = GLOBAL_MAP.get_ele(KEYS.QUANT_DEVICE)
+        force_cpu = os.getenv("FORCE_CPU_DUMP")
         if force_cpu is not None:
             device = torch.device("cpu")
-            GLOBAL_MAP.set_map(gtx_KEYS.QUANT_DEVICE, device)
+            GLOBAL_MAP.set_map(KEYS.QUANT_DEVICE, device)
         model, input_args = to_device(
             self.quantizer.quant_model, self._example_inputs, device
         )
@@ -517,7 +517,7 @@ class TorchQuantProcessor:
         if verbose is True:
             print(script_module.inlined_graph)
         torch.jit.save(script_module, output_file)
-        GtxScreenLogger().info(
+        ScreenLogger().info(
             f"{self.quantizer.quant_model._get_name()}_int.pt is generated.({output_file})"
         )
         return script_module
@@ -545,32 +545,32 @@ class TorchQuantProcessor:
 
     def export_torch_script(self, output_dir, verbose=False):
         if quant_model_inferenced(self.quantizer.quant_model) is False:
-            GtxScreenLogger().error2user(
+            ScreenLogger().error2user(
                 QError.NO_FORWARD,
                 f"torch_quantizer.quant_model FORWARD function must be called before exporting quantization result.\n    \
-                    Please refer to example code at https://github.com/Supergate/GTX-Compiler.",
+                    Please refer to example code at https://github.com/Supergate/-Compiler.",
             )
             return
         if (
             isinstance(self.quantizer.quant_model, torch.nn.Module)
-            and len(self.quantizer.Gtxgraph.all_blocks()) == 1
-            and GtxOption.gtx_export_jit.value is False
+            and len(self.quantizer.graph.all_blocks()) == 1
+            and Option.export_jit.value is False
         ):
             return self.export_traced_torch_script(
                 output_dir=output_dir, verbose=verbose
             )
 
         if compare_torch_version(CmpFlag.LESS_EQUAL, "1.10.0"):
-            GtxScreenLogger().error2user(
+            ScreenLogger().error2user(
                 QError.TORCH_VERSION,
                 f"Only supprt exporting torch script with pytorch 1.10 and later version.",
             )
             return
-        gtx_utils.create_work_dir(output_dir)
+        utils.create_work_dir(output_dir)
         script_models = (
             self.quantizer.scripts if len(self.quantizer.scripts) > 0 else None
         )
-        GtxScreenLogger().check2user(
+        ScreenLogger().check2user(
             QError.NO_SCRIPT_MODEL,
             "Quantizer does not find any script model.",
             script_models is not None,
@@ -584,7 +584,7 @@ class TorchQuantProcessor:
                 output_dir, f"{get_module_name(script_model)}_int.pt"
             )
             torch.jit.save(quantized_script_model, output_file)
-            GtxScreenLogger().info(
+            ScreenLogger().info(
                 f"{get_module_name(script_model)}_int.pt is generate.({output_file})"
             )
             quantized_scripts.append(quantized_script_model)
@@ -605,21 +605,21 @@ def dump_xmodel(output_dir="quantize_result", deploy_check=False, lstm_app=False
     Returns:
       None
     """
-    quantizer = GLOBAL_MAP.get_ele(gtx_KEYS.QUANTIZER)
+    quantizer = GLOBAL_MAP.get_ele(KEYS.QUANTIZER)
 
     fixposinserter = FixPosInserter(quantizer)
-    fixposinserter(quantizer.Gtxgraph)
+    fixposinserter(quantizer.graph)
 
     if quantizer and quantizer.quant_mode > 1:
-        gtx_utils.create_work_dir(output_dir)
+        utils.create_work_dir(output_dir)
 
         # compile to xmodel
 
         compiler = CompilerFactory.get_compiler("xmodel")
 
-        GtxScreenLogger().info("=>Converting to xmodel ...")
+        ScreenLogger().info("=>Converting to xmodel ...")
         deploy_graphs, _ = get_deploy_graph_list(
-            quantizer.quant_model, quantizer.Gtxgraph
+            quantizer.quant_model, quantizer.graph
         )
         xmodel_depoly_infos, dump_deploy_infos = get_xmodel_and_dump_infos(
             quantizer, deploy_graphs
@@ -627,11 +627,11 @@ def dump_xmodel(output_dir="quantize_result", deploy_check=False, lstm_app=False
         if not lstm_app:
             for node in xmodel_depoly_infos[0].dev_graph.nodes:
                 error_out = False
-                if node.op.type not in [GTX_OP.INPUT, GTX_OP.QUANT_STUB]:
+                if node.op.type not in [OP.INPUT, OP.QUANT_STUB]:
                     continue
                 for i, tensor in enumerate(node.out_tensors):
                     if tensor.shape and tensor.shape[0] != 1:
-                        GtxScreenLogger().error2user(
+                        ScreenLogger().error2user(
                             QError.XMODEL_BATCHSIZE,
                             f"Batch size must be 1 when exporting xmodel.",
                         )
@@ -644,13 +644,13 @@ def dump_xmodel(output_dir="quantize_result", deploy_check=False, lstm_app=False
             # dump data for accuracy check
             if deploy_check:
                 # sync data
-                GtxScreenLogger().info(
+                ScreenLogger().info(
                     f"=>Dumping '{depoly_info.dev_graph.name}'' checking data..."
                 )
                 # connect_module_with_graph(quantizer.quant_model, depoly_info.dev_graph, recover_param=False)
-                # update_gtx_blob_data(quantizer.quant_model, depoly_info.dev_graph)
-                # connect_module_with_graph(quantizer.quant_model, quantizer.Gtxgraph, recover_param=False)
-                last_only = os.getenv("gtx_ONLY_DUMP_LAST")
+                # update_blob_data(quantizer.quant_model, depoly_info.dev_graph)
+                # connect_module_with_graph(quantizer.quant_model, quantizer.graph, recover_param=False)
+                last_only = os.getenv("ONLY_DUMP_LAST")
                 if lstm_app:
                     checker = DeployChecker(
                         output_dir_name=output_dir, data_format="txt"
@@ -671,16 +671,16 @@ def dump_xmodel(output_dir="quantize_result", deploy_check=False, lstm_app=False
                     select_batch=select_batch,
                 )
 
-                GtxScreenLogger().info(
+                ScreenLogger().info(
                     f"=>Finish dumping data.({checker.dump_folder})"
                 )
 
         if quantizer.quant_strategy_info["target_device"] == "DPU":
             for depoly_info in xmodel_depoly_infos:
                 try:
-                    valid, msg = compiler.verify_gtx_graph(depoly_info.dev_graph)
+                    valid, msg = compiler.verify_graph(depoly_info.dev_graph)
                     if not valid:
-                        GtxScreenLogger().warning2user(
+                        ScreenLogger().warning2user(
                             QWarning.CONVERT_XMODEL,
                             f"""Convert '{depoly_info.dev_graph.name}' to xmodel failed with following reasons:\n{msg}""",
                         )
@@ -694,7 +694,7 @@ def dump_xmodel(output_dir="quantize_result", deploy_check=False, lstm_app=False
                     )
 
                 except AddXopError as e:
-                    GtxScreenLogger().error2user(
+                    ScreenLogger().error2user(
                         QError.EXPORT_XMODEL,
                         f"Failed convert graph '{depoly_info.dev_graph.name}' to xmodel.",
                     )
@@ -702,17 +702,17 @@ def dump_xmodel(output_dir="quantize_result", deploy_check=False, lstm_app=False
 
                 compiler.verify_xmodel(depoly_info.dev_graph, xgraph)
         else:
-            GtxScreenLogger().warning2user(
+            ScreenLogger().warning2user(
                 QWarning.XMODEL_DEVICE,
                 f"Not support to dump xmodel when target device is not DPU.",
             )
 
 
-def GTX_system_info(device):
+def system_info(device):
     # Force CPU-only mode
     device = torch.device("cpu")
 
-    GtxScreenLogger().check2user(
+    ScreenLogger().check2user(
         QError.TORCH_VERSION,
         #         f"Installed pytorch version is {torch.__version__}, \
         # not consistent with pytorch version when compiling quantizer ({Ctorch_version})",
@@ -730,7 +730,7 @@ def GTX_system_info(device):
     result = re.findall(r"GCC \d+.\d+.\d+", long_ver)
     if len(result) > 0:
         gcc_ver = result[0]
-    GtxScreenLogger().info(
+    ScreenLogger().info(
         f"OS and CPU information:\n\
                system --- {pf.system()}\n\
                  node --- {pf.node()}\n\
@@ -739,13 +739,13 @@ def GTX_system_info(device):
               machine --- {pf.machine()}\n\
             processor --- {pf.processor()}"
     )
-    GtxScreenLogger().info(
+    ScreenLogger().info(
         f"Tools version information:\n\
                   GCC --- {gcc_ver}\n\
                python --- {py_ver}\n\
               pytorch --- {torch.__version__}\n"
     )
-    # gtx_pytorch --- {ggml.__version__}"
+    # pytorch --- {ggml.__version__}"
     # GPU info removed - CPU-only mode
 
 
@@ -759,7 +759,7 @@ def _check_args(module):
 
 def _init_quant_env(quant_mode, output_dir, quant_strategy_info, is_lstm=False):
     if isinstance(quant_mode, int):
-        GtxScreenLogger().warning(
+        ScreenLogger().warning(
             f"quant_mode will not support integer value in future version. It supports string values 'calib' and 'test'."
         )
         qmode = quant_mode
@@ -769,23 +769,23 @@ def _init_quant_env(quant_mode, output_dir, quant_strategy_info, is_lstm=False):
         elif quant_mode == "test":
             qmode = 2
         else:
-            GtxScreenLogger().warning(
+            ScreenLogger().warning(
                 f"quant_mode supported values are 'calib' and 'test'. Change it to 'calib' as calibration mode."
             )
             qmode = 1
     else:
-        GtxScreenLogger().warning(
+        ScreenLogger().warning(
             f"quant_mode supported values are string 'calib' and 'test'. Change it to 'calib' as calibration mode."
         )
         qmode = 1
 
-    if GtxOption.gtx_quant_mode.value > 0:
-        qmode = GtxOption.gtx_quant_mode.value
+    if Option.quant_mode.value > 0:
+        qmode = Option.quant_mode.value
 
     if qmode == 1:
-        GtxScreenLogger().info(f"Quantization calibration process start up...")
+        ScreenLogger().info(f"Quantization calibration process start up...")
     elif qmode == 2:
-        GtxScreenLogger().info(f"Quantization test process start up...")
+        ScreenLogger().info(f"Quantization test process start up...")
 
     target_device = quant_strategy_info["target_device"]
     if target_device == "DPU":
@@ -824,7 +824,7 @@ class DynamoQuantProcessor(object):
         _check_args(module)
         if isinstance(module, torch.nn.DataParallel):
             module = module.module
-            GtxScreenLogger().warning2user(
+            ScreenLogger().warning2user(
                 QWarning.DATA_PARALLEL,
                 f"Data parallel is not supported. The wrapper 'torch.nn.DataParallel' has been removed in quantizer.",
             )
@@ -833,7 +833,7 @@ class DynamoQuantProcessor(object):
         device = torch.device("cpu")
 
         # Transform torch module to quantized module format
-        gtx_utils.create_work_dir(output_dir)
+        utils.create_work_dir(output_dir)
 
         # Parse the quant config file
         QConfiger = TorchQConfig()
@@ -847,14 +847,14 @@ class DynamoQuantProcessor(object):
         qconfig = QConfiger.qconfig
         quantizer, qmode = _init_quant_env(quant_mode, output_dir, qconfig)
 
-        GLOBAL_MAP.set_map(gtx_KEYS.QUANTIZER, quantizer)
-        GLOBAL_MAP.set_map(gtx_KEYS.QUANT_MODE, qmode)
-        GLOBAL_MAP.set_map(gtx_KEYS.QUANT_DEVICE, device)
-        GLOBAL_MAP.set_map(gtx_KEYS.QUANT_CONFIG, qconfig)
+        GLOBAL_MAP.set_map(KEYS.QUANTIZER, quantizer)
+        GLOBAL_MAP.set_map(KEYS.QUANT_MODE, qmode)
+        GLOBAL_MAP.set_map(KEYS.QUANT_DEVICE, device)
+        GLOBAL_MAP.set_map(KEYS.QUANT_CONFIG, qconfig)
         if lstm_app:
-            option_util.set_option_value("gtx_cv_app", False)
+            option_util.set_option_value("cv_app", False)
         else:
-            option_util.set_option_value("gtx_cv_app", True)
+            option_util.set_option_value("cv_app", True)
 
         quantizable_fn = aot_module_quantize(quantizer, qmode, device=device)
 
@@ -871,10 +871,10 @@ class DynamoQuantProcessor(object):
         self._example_inputs = input_args
 
         # dump blob dist
-        if GtxOption.gtx_visualize.value is True:
+        if Option.visualize.value is True:
             visualize_tensors(quantizer.quant_model)
 
-        if GtxOption.gtx_calib_before_finetune.value is True:
+        if Option.calib_before_finetune.value is True:
             self.quantizer.export_float_param()
 
     def quant_model(self):

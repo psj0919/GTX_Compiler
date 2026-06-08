@@ -1,7 +1,7 @@
 //==================================================================
 // Copyright   : (C) Supergate - All Rights Reserved
 // Project     : GSF / VTS
-// Description : GTX intrinsic function description (level 1)
+// Description :  intrinsic function description (level 1)
 // 				 base instruction intrinsic function
 // Author      : mh.kim ( NPU Div - NPU Core Team )    
 // Last Update : 2026/01/23
@@ -11,7 +11,7 @@
 #define INTRIN_LEVEL1_C
 
 #include "intrin_level1.h"
-#include "gtx_csr.h"
+#include "csr.h"
 
 
 //=================================

@@ -15,10 +15,10 @@
 #
 
 import torch
-from gtx_shared.quantization import maybe_get_quantizer
-from gtx_shared.utils import GtxOption
-from gtx_shared.quantization import quantize_tensors
-import gtx_utils as py_utils
+from shared.quantization import maybe_get_quantizer
+from shared.utils import Option
+from shared.quantization import quantize_tensors
+import utils as py_utils
 
 __all__ = ["relu"]
 
@@ -44,3 +44,14 @@ def relu(*args, **kwargs):
     # if quant_mode==None:
     #    return
     return ReLU(*args, **kwargs)
+
+
+# --- ggml/vision.cpp codegen (render) ---
+from shared.compile.render_api import register_render as _register_render
+from shared.base import OP as _OP
+
+
+@_register_render(_OP.RELU)
+def render(node, ctx):
+    fn = "ggml_relu_inplace" if ctx.attr(node, "inplace", False) else "ggml_relu"
+    return ctx.out(node, f"{fn}(m, {ctx.inp(node)})")

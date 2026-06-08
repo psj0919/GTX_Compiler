@@ -17,17 +17,17 @@ import os
 import torch
 import types
 
-from gtx_shared.base import GTX_OP as OpTypes
-from gtx_shared.optimization.optimizer import QuantOptimizer
-from gtx_shared.utils import GtxOption
-from gtx_shared.utils import GtxScreenLogger
-from gtx_shared.utils import io as io_util
-from gtx_shared.utils import option_util
-from gtx_shared.utils.msg_code import QError
-from gtx_shared.utils.msg_code import QWarning
+from shared.base import OP as OpTypes
+from shared.optimization.optimizer import QuantOptimizer
+from shared.utils import Option
+from shared.utils import ScreenLogger
+from shared.utils import io as io_util
+from shared.utils import option_util
+from shared.utils.msg_code import QError
+from shared.utils.msg_code import QWarning
 
 import parse
-import gtx_utils as py_utils
+import utils as py_utils
 from nn.modules import functional
 from nn.quantization.modules import conv_fused
 from nn.quantization.modules import tqt as tqt_mod
@@ -46,11 +46,11 @@ _DEPLOYABLE_MODEL_NAME = "deployable.pth"
 
 
 def logging_warn(code, message):
-    GtxScreenLogger().warning2user(code, message)
+    ScreenLogger().warning2user(code, message)
 
 
 def logging_error(code, message):
-    GtxScreenLogger().check2user(code, message, False)
+    ScreenLogger().check2user(code, message, False)
 
 
 class TensorTypes(object):
@@ -111,9 +111,9 @@ class QatProcessor(object):
     def __init__(self, model, inputs, bitwidth=8, mix_bit=False, device=None):
 
         # turn off options optimization for following quantization
-        option_util.set_option_value("gtx_quant_opt", 0)
-        option_util.set_option_value("gtx_param_corr", False)
-        option_util.set_option_value("gtx_equalization", False)
+        option_util.set_option_value("quant_opt", 0)
+        option_util.set_option_value("param_corr", False)
+        option_util.set_option_value("equalization", False)
 
         if isinstance(model, torch.nn.DataParallel):
             logging_error(
@@ -174,7 +174,7 @@ class QatProcessor(object):
         # For example, the param 'ResNet::conv.bias' only exist in the quantizer's
         # graph because it comes from the fused conv + bias.
         self._tensor_to_node = {}
-        graph = quantizer.Gtxgraph
+        graph = quantizer.graph
         for node in graph.nodes:
             for name, tensor in node.op.params.items():
                 self._tensor_to_node[tensor.name] = (node.name, name)
@@ -183,7 +183,7 @@ class QatProcessor(object):
         self._graph = parser(self._model._get_name(), self._model, self._inputs)
 
         quant_optimizer = QuantOptimizer()
-        if GtxOption.gtx_partition_mode.value > 0:
+        if Option.partition_mode.value > 0:
             quant_optimizer._tag_quant_nodes_v2(self._raph)
         else:
             quant_optimizer._tag_quant_nodes(self._graph)
@@ -213,7 +213,7 @@ class QatProcessor(object):
                 quant_method = None
                 if (
                     not name == TensorTypes.PARAM
-                ) and GtxOption.gtx_ip_v70_bert_qat.value:
+                ) and Option.ip_v70_bert_qat.value:
                     specil_method_op = [OpTypes.LAYER_NORM, OpTypes.SOFTMAX]
                     if self._graph.node(node).op.type in specil_method_op:
                         quant_method = 4

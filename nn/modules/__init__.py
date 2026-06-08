@@ -1,6 +1,7 @@
 from .conv import *
 from .conv1d import *
 from .linear import *
+from .matmul import *
 from .rnn_builder import *
 from .add import *
 from .sub import *
@@ -42,9 +43,16 @@ from .prelu import *
 
 # from .clamp import *
 from .sqrt import *
-from gtx_utils.torch_utils import CmpFlag, compare_torch_version
+from utils.torch_utils import CmpFlag, compare_torch_version
 
 if compare_torch_version(CmpFlag.GREATER_EQUAL, "1.9"):
     from .mish import *
 
-from .gtx_quant_model import *
+from .quant_model import *
+from .ggml_backend import (
+    set_backend,
+    get_backend,
+    bind_gguf,
+    run_gguf,
+    GgmlModule,
+)

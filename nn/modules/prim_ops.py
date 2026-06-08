@@ -17,13 +17,13 @@
 import os
 import torch
 import torch.nn.functional as F
-from gtx_shared.utils import GtxOption, GtxScreenLogger
-from gtx_shared.base import gtx_CONSTANT
-from gtx_shared.quantization import maybe_get_quantizer
-from gtx_shared.quantization import quantize_tensors
-from gtx_shared.quantization import quant_reluk_params
-from gtx_shared.quantization import quant_channel_scale_params
-import gtx_utils as py_utils
+from shared.utils import Option, ScreenLogger
+from shared.base import CONSTANT
+from shared.quantization import maybe_get_quantizer
+from shared.quantization import quantize_tensors
+from shared.quantization import quant_reluk_params
+from shared.quantization import quant_channel_scale_params
+import utils as py_utils
 from typing import Any, Optional, Sequence, Union
 from torch.autograd import Variable
 
@@ -80,7 +80,7 @@ class QuantInput(_PrimModule):
         qinput = quantize_tensors([input], self.node, tensor_type="input")[0]
 
         output = qinput
-        if GtxOption.gtx_stat.value > 2:
+        if Option.stat.value > 2:
             print("Channel number of input data: {}".format(output.shape[1]))
             print(
                 "Input data histogram: {}".format(
@@ -142,7 +142,7 @@ class Input(_PrimModule):
                     and input[idx].storage().size() != input[idx].numel()
                 ):
                     input[idx] = torch.clone(input[idx])
-                    GtxScreenLogger().warning_once(
+                    ScreenLogger().warning_once(
                         f"The element number of tensor is not equal to its storage size. Please check input tensor in node {self.node.name}!"
                     )
 
@@ -154,13 +154,13 @@ class Input(_PrimModule):
         ):
             # py_utils.blob_to_torch_format(self.node.out_tensors[0])
             if not (list(self.node.out_tensors[0].shape[1:]) == list(input.size())[1:]):
-                GtxScreenLogger().warning_once(
+                ScreenLogger().warning_once(
                     f"The shape of input ({input.shape[1:]}) should be the same with that of dummy input ({self.node.out_tensors[0].shape[1:]})"
                 )
-            # py_utils.blob_to_gtx_format(self.node.out_tensors[0])
+            # py_utils.blob_to_format(self.node.out_tensors[0])
         output = qinput
 
-        if self.node.in_quant_part and GtxOption.gtx_stat.value > 2:
+        if self.node.in_quant_part and Option.stat.value > 2:
             print("Channel number of input data: {}".format(output.shape[1]))
             print(
                 "Input data histogram: {}".format(

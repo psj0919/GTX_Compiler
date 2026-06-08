@@ -141,7 +141,7 @@ class FlattenInOutModelForTrace(torch.nn.Module):
 
     @classmethod
     def getOriginModelNameFormString(cls, data_str):
-        names = re.findall(r"gtx_st_([\w_]+)_ed", data_str)
+        names = re.findall(r"st_([\w_]+)_ed", data_str)
         if len(names) > 0:
             return names[0]
         else:
@@ -149,30 +149,30 @@ class FlattenInOutModelForTrace(torch.nn.Module):
 
     @classmethod
     def check_need_recovery_name(cls, name):
-        return "gtx_st_" in name or "FlattenInOutModelForTrace" in name
+        return "st_" in name or "FlattenInOutModelForTrace" in name
 
     @classmethod
     def recovery_tensor_name(cls, name):
-        return re.sub(r"gtx_st_[\w_]+_ed\.", "", name)
+        return re.sub(r"st_[\w_]+_ed\.", "", name)
 
     @classmethod
     def recovery_node_scope_name(cls, scope_name):
         real_class_name = re.findall(
-            r"FlattenInOutModelForTrace/(.*)?\[gtx_st_[\w_]+_ed\]", scope_name
+            r"FlattenInOutModelForTrace/(.*)?\[st_[\w_]+_ed\]", scope_name
         )
         if len(real_class_name) > 0:
             scope_name = re.sub(
-                r"FlattenInOutModelForTrace/(.*)?\[gtx_st_[\w_]+_ed\]",
+                r"FlattenInOutModelForTrace/(.*)?\[st_[\w_]+_ed\]",
                 real_class_name[0],
                 scope_name,
             )
 
         real_model_name = re.findall(
-            r".*FlattenInOutModelForTrace::/(.*::)gtx_st_[\w_]+_ed", scope_name
+            r".*FlattenInOutModelForTrace::/(.*::)st_[\w_]+_ed", scope_name
         )
         if len(real_model_name) > 0:
             scope_name = re.sub(
-                r".*FlattenInOutModelForTrace::/(.*::)gtx_st_[\w_]+_ed",
+                r".*FlattenInOutModelForTrace::/(.*::)st_[\w_]+_ed",
                 real_model_name[0],
                 scope_name,
             )
@@ -180,7 +180,7 @@ class FlattenInOutModelForTrace(torch.nn.Module):
 
     def __init__(self, inner_model, input_schema) -> None:
         super().__init__()
-        self.module_name = "gtx_st_" + inner_model._get_name() + "_ed"
+        self.module_name = "st_" + inner_model._get_name() + "_ed"
         setattr(self, self.module_name, inner_model)
         self.input_schema = input_schema
         self.training = inner_model.training

@@ -1,0 +1,167 @@
+#
+# Copyright 2025 Supergate.cc, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+"""vision.cpp(ggml) codegen 의 op 렌더링 프레임워크.
+
+각 op 의 C++ 렌더링은 `nn/modules/<op>.py` 의 module-level ``render(node, ctx)``
+함수에 두고 ``@register_render(OP.X)`` 로 등록한다. `VispCodeGenerator` 는
+`RENDERERS` 레지스트리로 디스패치한다(구조적 op INPUT/FLATTEN/RETURN 은 generator 내장).
+
+render(node, ctx) 규약:
+- `ctx.inp(node, i)`   : i 번째 입력의 C++ 변수명
+- `ctx.attr(node, k, d)`: op attr 값 (AttrName/IrAttr/MockGraph 모두 처리)
+- `ctx.scalar(v)`      : [s, s] -> s
+- `ctx.weight(node, [suffix...])` : weight key 기록 + `m["key"]` 문자열 반환
+- `ctx.out(node, expr) : `tensor <var> = <expr>;` emit + 출력 바인딩 + var 반환
+설계: docs/ggml_codegen.md
+"""
+
+import re
+
+from shared.base import OP
+
+# op 값(소문자) -> render(node, ctx)
+RENDERERS = {}
+
+# 출력 변수명 prefix (가독성)
+_HINT = {
+    "conv2d": "conv",
+    "batch_norm": "bn",
+    "relu": "relu",
+    "elemwise_add": "add",
+    "maxpool": "pool",
+    "avgpool": "pool",
+    "adaptive_avg_pool2d": "pool",
+    "flatten": "flat",
+    "dense": "fc",
+    "matmul": "mm",
+}
+
+# `Sequential[layer1]/BasicBlock[0]/Conv2d[conv1]` -> ['layer1','0','conv1']
+_BRACKET = re.compile(r"\[([^\]]+)\]")
+_NON_IDENT = re.compile(r"[^0-9A-Za-z_]")
+
+# 요청 이름 -> 실제 attr 키 후보 (실제 그래프는 AttrName enum 키, MockGraph 는 string)
+_ATTR_ALIASES = {
+    "stride": ("stride",),
+    "padding": ("pad", "padding"),
+    "kernel_size": ("kernel", "kernel_size"),
+    "bias": ("bias_term", "bias"),
+    "dilation": ("dilation",),
+    "groups": ("group", "groups"),
+    "inplace": ("inplace",),
+    "output_size": ("output_size", "out_size"),
+}
+
+
+def register_render(*op_types):
+    """op 의 render(node, ctx) 함수를 RENDERERS 에 등록하는 데코레이터."""
+
+    def deco(fn):
+        for ot in op_types:
+            RENDERERS[ot] = fn
+            if isinstance(ot, str):
+                RENDERERS[ot.lower()] = fn
+        return fn
+
+    return deco
+
+
+def op_value(node):
+    return str(node.op.type).lower()
+
+
+def weight_key(node):
+    """노드 이름에서 PyTorch state_dict 경로(=GGUF 텐서 prefix)를 산출.
+
+    실제 그래프의 노드명(`ResNet/Sequential[layer1]/.../Conv2d[conv1]/ret.5`)에서
+    대괄호 토큰을 모아 `layer1.0.conv1` 를 만든다 (ggml_weight_binder 와 동일 규칙).
+    """
+    name = getattr(node, "name", "") or ""
+    parts = _BRACKET.findall(name)
+    if parts:
+        return ".".join(parts)
+    return _NON_IDENT.sub("_", name) or "unnamed"
+
+
+def attr(node, key, default=None):
+    """op attr 값을 읽는다. AttrName enum 키 + IrAttr 래퍼(실제 그래프),
+    string 키 + raw 값(MockGraph) 모두 처리."""
+    attrs = getattr(node.op, "attrs", None) or {}
+    aliases = _ATTR_ALIASES.get(key, (key,))
+    try:
+        items = list(attrs.items())
+    except AttributeError:
+        return default
+    for k, v in items:
+        kname = getattr(k, "value", k)  # AttrName.STRIDE -> 'stride'
+        if kname in aliases or k in aliases:
+            val = getattr(v, "value", v)  # IrAttr -> 실제 값
+            return default if val is None else val
+    return default
+
+
+def scalarize(v, idx=0, default=1):
+    """[s, s] 같은 리스트면 idx 요소, 스칼라면 그대로."""
+    if isinstance(v, (list, tuple)):
+        return v[idx] if len(v) > idx else default
+    return v if v is not None else default
+
+
+class RenderContext:
+    """render(node, ctx) 가 사용하는 상태/헬퍼. VispCodeGenerator 가 walk 하며 채운다."""
+
+    def __init__(self):
+        self._var = {}        # id(tensor) -> C++ 변수명
+        self._counter = 0
+        self._weights = []    # (weight_key, [suffix...])
+        self.lines = []       # forward 본문 라인
+
+    # --- 변수/바인딩 ---
+    def new_var(self, hint="t"):
+        self._counter += 1
+        return f"{hint}{self._counter}"
+
+    def inp(self, node, i=0):
+        ins = [t for t in node.in_tensors if t is not None]
+        if i < len(ins):
+            return self._var.get(id(ins[i]), "x")
+        return "x"
+
+    def bind(self, node, var):
+        if node.out_tensors:
+            self._var[id(node.out_tensors[0])] = var
+
+    def out(self, node, expr, hint=None):
+        hint = hint or _HINT.get(op_value(node), "t")
+        var = self.new_var(hint)
+        self.lines.append(f"    tensor {var} = {expr};")
+        self.bind(node, var)
+        return var
+
+    def line(self, text):
+        self.lines.append(text)
+
+    # --- attr / weight ---
+    def attr(self, node, key, default=None):
+        return attr(node, key, default)
+
+    def scalar(self, v, idx=0, default=1):
+        return scalarize(v, idx, default)
+
+    def weight(self, node, suffixes):
+        key = weight_key(node)
+        self._weights.append((key, list(suffixes)))
+        return f'm["{key}"]'

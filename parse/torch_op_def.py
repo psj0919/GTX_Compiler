@@ -17,19 +17,19 @@
 from enum import auto, unique
 from typing import Dict, List, Callable, Optional, Union, Any, Set
 
-import gtx_utils as utils
-from gtx_shared.base import gtx_CONSTANT, GTX_OP
-from gtx_shared.gtx_graph import Operation
-from gtx_shared.gtx_graph import operator_definition as base_op
-from gtx_shared.gtx_graph import Tensor
-from gtx_shared.utils import transformed_axis, DataFormat, AutoName
+import utils as utils
+from shared.base import CONSTANT, OP
+from shared.graph import Operation
+from shared.graph import operator_definition as base_op
+from shared.graph import Tensor
+from shared.utils import transformed_axis, DataFormat, AutoName
 
 
 class TorchFlatten(base_op.Flatten):
 
     def __init__(self, *args, **kwargs):
-        super(TorchFlatten, self).__init__(GTX_OP.FLATTEN, *args, **kwargs)
-        utils.op_register(GTX_OP.FLATTEN, "flatten")
+        super(TorchFlatten, self).__init__(OP.FLATTEN, *args, **kwargs)
+        utils.op_register(OP.FLATTEN, "flatten")
 
     @property
     def start_dim(self):
@@ -51,8 +51,8 @@ class TorchFlatten(base_op.Flatten):
 class TorchAdd(base_op.BinaryOp):
     # TODO: Change class Operation to base_op.BinaryOp
     def __init__(self, *args, **kwargs):
-        super(TorchAdd, self).__init__(GTX_OP.ADD, *args, **kwargs)
-        utils.op_register(GTX_OP.ADD, "add")
+        super(TorchAdd, self).__init__(OP.ADD, *args, **kwargs)
+        utils.op_register(OP.ADD, "add")
 
     @property
     def input(self):
@@ -74,15 +74,15 @@ class TorchAdd(base_op.BinaryOp):
 class TorchReLU(Operation):
 
     def __init__(self, *args, **kwargs):
-        super(TorchReLU, self).__init__(GTX_OP.RELU, *args, **kwargs)
-        utils.op_register(GTX_OP.RELU, "ReLU")
+        super(TorchReLU, self).__init__(OP.RELU, *args, **kwargs)
+        utils.op_register(OP.RELU, "ReLU")
 
 
 class TorchLeakyReLU(base_op.LeakyReLU):
 
     def __init__(self):
         super().__init__()
-        utils.op_register(GTX_OP.LEAKY_RELU, "LeakyReLU")
+        utils.op_register(OP.LEAKY_RELU, "LeakyReLU")
 
     @property
     def negative_slope(self):
@@ -97,7 +97,7 @@ class TorchPReLU(base_op.PReLU):
 
     def __init__(self, *args, **kwargs):
         super(TorchPReLU, self).__init__(*args, **kwargs)
-        utils.op_register(GTX_OP.PRELU, "PReLU")
+        utils.op_register(OP.PRELU, "PReLU")
 
     @property
     def num_parameters(self):
@@ -112,7 +112,7 @@ class TorchGELU(base_op.GELU):
 
     def __init__(self, *args, **kwargs):
         super(TorchGELU, self).__init__(*args, **kwargs)
-        utils.op_register(GTX_OP.GELU, "GELU")
+        utils.op_register(OP.GELU, "GELU")
 
     @property
     def approximate(self):
@@ -126,36 +126,36 @@ class TorchGELU(base_op.GELU):
 class TorchMish(Operation):
 
     def __init__(self, *args, **kwargs):
-        super(TorchMish, self).__init__(GTX_OP.MISH, *args, **kwargs)
-        utils.op_register(GTX_OP.MISH, "Mish")
+        super(TorchMish, self).__init__(OP.MISH, *args, **kwargs)
+        utils.op_register(OP.MISH, "Mish")
 
 
 class TorchTanh(Operation):
 
     def __init__(self, *args, **kwargs):
-        super(TorchTanh, self).__init__(GTX_OP.TANH, *args, **kwargs)
-        utils.op_register(GTX_OP.TANH, "Tanh")
+        super(TorchTanh, self).__init__(OP.TANH, *args, **kwargs)
+        utils.op_register(OP.TANH, "Tanh")
 
 
 class TorchHardTanh(Operation):
 
     def __init__(self, *args, **kwargs):
-        super(TorchHardTanh, self).__init__(GTX_OP.HARDTANH, *args, **kwargs)
-        utils.op_register(GTX_OP.HARDTANH, "Hardtanh")
+        super(TorchHardTanh, self).__init__(OP.HARDTANH, *args, **kwargs)
+        utils.op_register(OP.HARDTANH, "Hardtanh")
 
 
 class TorchInput(Operation):
 
     def __init__(self, *args, **kwargs):
-        super(TorchInput, self).__init__(GTX_OP.INPUT, *args, **kwargs)
-        utils.op_register(GTX_OP.INPUT, GTX_OP.INPUT)
+        super(TorchInput, self).__init__(OP.INPUT, *args, **kwargs)
+        utils.op_register(OP.INPUT, OP.INPUT)
 
 
 class TorchReturn(Operation):
 
     def __init__(self, *args, **kwargs):
-        super(TorchReturn, self).__init__(GTX_OP.RETURN, *args, **kwargs)
-        utils.op_register(GTX_OP.RETURN, GTX_OP.RETURN)
+        super(TorchReturn, self).__init__(OP.RETURN, *args, **kwargs)
+        utils.op_register(OP.RETURN, OP.RETURN)
 
 
 class TorchLinear(base_op.Dense):
@@ -166,8 +166,8 @@ class TorchLinear(base_op.Dense):
         BIAS = auto()
 
     def __init__(self, *args, **kwargs):
-        super(TorchLinear, self).__init__(GTX_OP.DENSE, *args, **kwargs)
-        utils.op_register(GTX_OP.DENSE, "Linear")
+        super(TorchLinear, self).__init__(OP.DENSE, *args, **kwargs)
+        utils.op_register(OP.DENSE, "Linear")
 
     @property
     def bias(self):
@@ -204,9 +204,9 @@ class TorchBatchNorm(base_op.BatchNorm):
         MOVING_VAR = "var"
 
     def __init__(self):
-        super().__init__(GTX_OP.BATCH_NORM)
+        super().__init__(OP.BATCH_NORM)
         utils.op_register(
-            GTX_OP.BATCH_NORM,
+            OP.BATCH_NORM,
             "BatchNorm",
             class_type=utils.TorchOpClassType.NN_MODULE,
         )
@@ -236,9 +236,9 @@ class TorchInstanceNorm(base_op.InstanceNorm):
         BETA = "bias"
 
     def __init__(self):
-        super().__init__(GTX_OP.INSTANCE_NORM)
+        super().__init__(OP.INSTANCE_NORM)
         utils.op_register(
-            GTX_OP.INSTANCE_NORM,
+            OP.INSTANCE_NORM,
             "InstanceNorm",
             class_type=utils.TorchOpClassType.NN_MODULE,
         )
@@ -276,8 +276,8 @@ class TorchGroupNorm(base_op.GroupNorm):
         BETA = "bias"
 
     def __init__(self):
-        super().__init__(GTX_OP.GROUP_NORM)
-        utils.op_register(GTX_OP.GROUP_NORM, "GroupNorm")
+        super().__init__(OP.GROUP_NORM)
+        utils.op_register(OP.GROUP_NORM, "GroupNorm")
 
     @property
     def eps(self):
@@ -386,16 +386,16 @@ class _TorchConv1d(base_op.Conv1d):
 
 class TorchConv1d(_TorchConv1d):
 
-    def __init__(self, gtx_op_type, *args, **kwargs):
-        super().__init__(gtx_op_type, *args, **kwargs)
-        utils.op_register(gtx_op_type, "Conv1d")
+    def __init__(self, op_type, *args, **kwargs):
+        super().__init__(op_type, *args, **kwargs)
+        utils.op_register(op_type, "Conv1d")
 
 
 class TorchConvTranspose1d(_TorchConv1d):
 
-    def __init__(self, gtx_op_type, *args, **kwargs):
-        super().__init__(gtx_op_type, *args, **kwargs)
-        utils.op_register(gtx_op_type, "ConvTranspose1d")
+    def __init__(self, op_type, *args, **kwargs):
+        super().__init__(op_type, *args, **kwargs)
+        utils.op_register(op_type, "ConvTranspose1d")
 
 
 class _TorchConv2d(base_op.Conv2d):
@@ -484,16 +484,16 @@ class _TorchConv2d(base_op.Conv2d):
 
 class TorchConv2d(_TorchConv2d):
 
-    def __init__(self, gtx_op_type, *args, **kwargs):
-        super(TorchConv2d, self).__init__(gtx_op_type, *args, **kwargs)
-        utils.op_register(gtx_op_type, "Conv2d")
+    def __init__(self, op_type, *args, **kwargs):
+        super(TorchConv2d, self).__init__(op_type, *args, **kwargs)
+        utils.op_register(op_type, "Conv2d")
 
 
 class TorchConvTranspose2d(_TorchConv2d):
 
-    def __init__(self, gtx_op_type, *args, **kwargs):
-        super().__init__(gtx_op_type, *args, **kwargs)
-        utils.op_register(gtx_op_type, "ConvTranspose2d")
+    def __init__(self, op_type, *args, **kwargs):
+        super().__init__(op_type, *args, **kwargs)
+        utils.op_register(op_type, "ConvTranspose2d")
 
 
 class _TorchConv3d(base_op.Conv3d):
@@ -602,23 +602,23 @@ class _TorchConv3d(base_op.Conv3d):
 
 class TorchConv3d(_TorchConv3d):
 
-    def __init__(self, gtx_op_type, *args, **kwargs):
-        super().__init__(gtx_op_type, *args, **kwargs)
-        utils.op_register(gtx_op_type, "Conv3d")
+    def __init__(self, op_type, *args, **kwargs):
+        super().__init__(op_type, *args, **kwargs)
+        utils.op_register(op_type, "Conv3d")
 
 
 class TorchConvTranspose3d(_TorchConv3d):
 
-    def __init__(self, gtx_op_type, *args, **kwargs):
-        super().__init__(gtx_op_type, *args, **kwargs)
-        utils.op_register(gtx_op_type, "ConvTranspose3d")
+    def __init__(self, op_type, *args, **kwargs):
+        super().__init__(op_type, *args, **kwargs)
+        utils.op_register(op_type, "ConvTranspose3d")
 
 
 class TorchMaxPool(base_op.MaxPool):
 
     def __init__(self, *args, **kwargs):
-        super(TorchMaxPool, self).__init__(GTX_OP.MAX_POOL, *args, **kwargs)
-        utils.op_register(GTX_OP.MAX_POOL, "MaxPool2d")
+        super(TorchMaxPool, self).__init__(OP.MAX_POOL, *args, **kwargs)
+        utils.op_register(OP.MAX_POOL, "MaxPool2d")
 
     @property
     def kernel_size(self):
@@ -664,8 +664,8 @@ class TorchMaxPool(base_op.MaxPool):
 class TorchMaxPool1d(base_op.MaxPool1d):
 
     def __init__(self, *args, **kwargs):
-        super(TorchMaxPool1d, self).__init__(GTX_OP.MAX_POOL1D, *args, **kwargs)
-        utils.op_register(GTX_OP.MAX_POOL1D, "MaxPool1d")
+        super(TorchMaxPool1d, self).__init__(OP.MAX_POOL1D, *args, **kwargs)
+        utils.op_register(OP.MAX_POOL1D, "MaxPool1d")
 
     @property
     def kernel_size(self):
@@ -704,8 +704,8 @@ class TorchMaxPool1d(base_op.MaxPool1d):
 class TorchAvgPool(base_op.AvgPool):
 
     def __init__(self, *args, **kwargs):
-        super(TorchAvgPool, self).__init__(GTX_OP.AVG_POOL, *args, **kwargs)
-        utils.op_register(GTX_OP.AVG_POOL, "AvgPool2d")
+        super(TorchAvgPool, self).__init__(OP.AVG_POOL, *args, **kwargs)
+        utils.op_register(OP.AVG_POOL, "AvgPool2d")
 
     @property
     def kernel_size(self):
@@ -759,16 +759,16 @@ class TorchAvgPool(base_op.AvgPool):
 class TorchAdaptiveAvgPool(base_op.UnaryOp):
     def __init__(self, *args, **kwargs):
         super(TorchAdaptiveAvgPool, self).__init__(
-            GTX_OP.ADAPTIVEAVGPOOL2D, *args, **kwargs
+            OP.ADAPTIVEAVGPOOL2D, *args, **kwargs
         )
-        utils.op_register(GTX_OP.ADAPTIVEAVGPOOL2D, "AdaptiveAvgPool2d")
+        utils.op_register(OP.ADAPTIVEAVGPOOL2D, "AdaptiveAvgPool2d")
 
 
 class TorchSize(base_op.Shape):
 
     def __init__(self, *args, **kwargs):
-        super(TorchSize, self).__init__(GTX_OP.SHAPE, *args, **kwargs)
-        utils.op_register(GTX_OP.SHAPE, "size")
+        super(TorchSize, self).__init__(OP.SHAPE, *args, **kwargs)
+        utils.op_register(OP.SHAPE, "size")
 
     @property
     def dim(self):
@@ -782,8 +782,8 @@ class TorchSize(base_op.Shape):
 class TorchCat(base_op.Concat):
 
     def __init__(self, *args, **kwargs):
-        super(TorchCat, self).__init__(GTX_OP.CONCAT, *args, **kwargs)
-        utils.op_register(GTX_OP.CONCAT, "cat")
+        super(TorchCat, self).__init__(OP.CONCAT, *args, **kwargs)
+        utils.op_register(OP.CONCAT, "cat")
 
     @property
     def dim(self):
@@ -797,8 +797,8 @@ class TorchCat(base_op.Concat):
 class TorchView(base_op.Reshape):
 
     def __init__(self):
-        super(TorchView, self).__init__(GTX_OP.RESHAPE)
-        utils.op_register(GTX_OP.RESHAPE, "reshape")
+        super(TorchView, self).__init__(OP.RESHAPE)
+        utils.op_register(OP.RESHAPE, "reshape")
 
     @property
     def shape(self):
@@ -817,15 +817,15 @@ class TorchView(base_op.Reshape):
 class TorchDropout(Operation):
 
     def __init__(self, *args, **kwargs):
-        super(TorchDropout, self).__init__(GTX_OP.DROPOUT, *args, **kwargs)
-        utils.op_register(GTX_OP.DROPOUT, "Dropout")
+        super(TorchDropout, self).__init__(OP.DROPOUT, *args, **kwargs)
+        utils.op_register(OP.DROPOUT, "Dropout")
 
 
 class TorchPermuteInvarOp(base_op.PermuteInvariantOp):
 
-    def __init__(self, gtx_op_type, torch_op_type, *args, **kwargs):
-        super().__init__(gtx_op_type, *args, **kwargs)
-        utils.op_register(gtx_op_type, torch_op_type)
+    def __init__(self, op_type, torch_op_type, *args, **kwargs):
+        super().__init__(op_type, *args, **kwargs)
+        utils.op_register(op_type, torch_op_type)
 
     @property
     def dim(self):
@@ -852,8 +852,8 @@ class TorchPermuteInvarOp(base_op.PermuteInvariantOp):
 class TorchPermute(base_op.Permute):
 
     def __init__(self, *args, **kwargs):
-        super(TorchPermute, self).__init__(GTX_OP.PERMUTE, *args, **kwargs)
-        utils.op_register(GTX_OP.PERMUTE, "permute")
+        super(TorchPermute, self).__init__(OP.PERMUTE, *args, **kwargs)
+        utils.op_register(OP.PERMUTE, "permute")
 
     @property
     def dims(self):
@@ -867,28 +867,28 @@ class TorchPermute(base_op.Permute):
 class TorchTranspose(base_op.Permute):
 
     def __init__(self, *args, **kwargs):
-        super(TorchTranspose, self).__init__(GTX_OP.TRANSPOSE, *args, **kwargs)
-        utils.op_register(GTX_OP.TRANSPOSE, "transpose")
+        super(TorchTranspose, self).__init__(OP.TRANSPOSE, *args, **kwargs)
+        utils.op_register(OP.TRANSPOSE, "transpose")
 
 
 class TorchContiguous(Operation):
 
     def __init__(self, *args, **kwargs):
-        super(TorchContiguous, self).__init__(GTX_OP.CONTIGUOUS, *args, **kwargs)
-        utils.op_register(GTX_OP.CONTIGUOUS, "contiguous")
+        super(TorchContiguous, self).__init__(OP.CONTIGUOUS, *args, **kwargs)
+        utils.op_register(OP.CONTIGUOUS, "contiguous")
 
 
 class TorchChunk(Operation):
 
     def __init__(self, *args, **kwargs):
-        super(TorchChunk, self).__init__(GTX_OP.CHUNK, *args, **kwargs)
-        utils.op_register(GTX_OP.CHUNK, "chunk")
+        super(TorchChunk, self).__init__(OP.CHUNK, *args, **kwargs)
+        utils.op_register(OP.CHUNK, "chunk")
 
 
 class TorchInterpolate(base_op.Resize):
     def __init__(self):
         super().__init__()
-        utils.op_register(GTX_OP.RESIZE, "interpolate")
+        utils.op_register(OP.RESIZE, "interpolate")
         # self._scale_factor_bc = [1.0, 1.0]
 
     @property
@@ -950,7 +950,7 @@ class TorchResizeLinear(TorchInterpolate):
 class TorchInterpolate3d(base_op.Resize3d):
     def __init__(self):
         super().__init__()
-        utils.op_register(GTX_OP.RESIZE_3D, "interpolate")
+        utils.op_register(OP.RESIZE_3D, "interpolate")
         # self._scale_factor_bc = [1.0, 1.0]
 
     @property
@@ -1009,8 +1009,8 @@ class TorchResizeTrilinear(TorchInterpolate3d):
 
 class TorchConst(base_op.Constant):
     def __init__(self):
-        super().__init__(GTX_OP.CONST)
-        utils.op_register(GTX_OP.CONST, "tensor")
+        super().__init__(OP.CONST)
+        utils.op_register(OP.CONST, "tensor")
 
     @property
     def data(self):
@@ -1023,8 +1023,8 @@ class TorchConst(base_op.Constant):
 
 class TorchTensor(base_op.Constant):
     def __init__(self):
-        super().__init__(GTX_OP.TENSOR)
-        utils.op_register(GTX_OP.TENSOR, "tensor")
+        super().__init__(OP.TENSOR)
+        utils.op_register(OP.TENSOR, "tensor")
 
     @property
     def data(self):
@@ -1038,8 +1038,8 @@ class TorchTensor(base_op.Constant):
 class TorchMul(base_op.BinaryOp):
 
     def __init__(self, *args, **kwargs):
-        super(TorchMul, self).__init__(GTX_OP.MULTIPLY, *args, **kwargs)
-        utils.op_register(GTX_OP.MULTIPLY, "mul")
+        super(TorchMul, self).__init__(OP.MULTIPLY, *args, **kwargs)
+        utils.op_register(OP.MULTIPLY, "mul")
 
     @property
     def input(self):
@@ -1061,8 +1061,8 @@ class TorchMul(base_op.BinaryOp):
 class TorchDiv(base_op.BinaryOp):
 
     def __init__(self, *args, **kwargs):
-        super(TorchDiv, self).__init__(GTX_OP.DIV, *args, **kwargs)
-        utils.op_register(GTX_OP.DIV, "div")
+        super(TorchDiv, self).__init__(OP.DIV, *args, **kwargs)
+        utils.op_register(OP.DIV, "div")
 
     @property
     def input(self):
@@ -1084,22 +1084,22 @@ class TorchDiv(base_op.BinaryOp):
 class TorchCast(Operation):
 
     def __init__(self, *args, **kwargs):
-        super(TorchCast, self).__init__(GTX_OP.CAST, *args, **kwargs)
-        utils.op_register(GTX_OP.CAST, "to")
+        super(TorchCast, self).__init__(OP.CAST, *args, **kwargs)
+        utils.op_register(OP.CAST, "to")
 
 
 class TorchFloor(Operation):
 
     def __init__(self, *args, **kwargs):
-        super(TorchFloor, self).__init__(GTX_OP.FLOOR, *args, **kwargs)
-        utils.op_register(GTX_OP.FLOOR, "floor")
+        super(TorchFloor, self).__init__(OP.FLOOR, *args, **kwargs)
+        utils.op_register(OP.FLOOR, "floor")
 
 
 class TorchBinaryOp(base_op.BinaryOp):
-    def __init__(self, gtx_op_type, torch_op_type, force_to_primitive=False):
-        super().__init__(gtx_op_type)
+    def __init__(self, op_type, torch_op_type, force_to_primitive=False):
+        super().__init__(op_type)
         utils.op_register(
-            gtx_op_type, torch_op_type, force_to_primitive=force_to_primitive
+            op_type, torch_op_type, force_to_primitive=force_to_primitive
         )
 
     @property
@@ -1120,10 +1120,10 @@ class TorchBinaryOp(base_op.BinaryOp):
 
 
 class TorchUnaryOp(base_op.UnaryOp):
-    def __init__(self, gtx_op_type, torch_op_type, force_to_primitive=False):
-        super().__init__(gtx_op_type)
+    def __init__(self, op_type, torch_op_type, force_to_primitive=False):
+        super().__init__(op_type)
         utils.op_register(
-            gtx_op_type, torch_op_type, force_to_primitive=force_to_primitive
+            op_type, torch_op_type, force_to_primitive=force_to_primitive
         )
 
     @property
@@ -1137,15 +1137,15 @@ class TorchUnaryOp(base_op.UnaryOp):
 
 class TorchFloorDiv(Operation):
     def __init__(self, *args, **kwargs):
-        super(TorchFloorDiv, self).__init__(GTX_OP.FLOOR_DIV, *args, **kwargs)
-        utils.op_register(GTX_OP.FLOOR_DIV, "floor_divide")
+        super(TorchFloorDiv, self).__init__(OP.FLOOR_DIV, *args, **kwargs)
+        utils.op_register(OP.FLOOR_DIV, "floor_divide")
 
 
 class TorchSoftmax(base_op.Softmax):
 
     def __init__(self, *args, **kwargs):
         super().__init__()
-        utils.op_register(GTX_OP.SOFTMAX, "Softmax")
+        utils.op_register(OP.SOFTMAX, "Softmax")
 
     @property
     def dim(self):
@@ -1159,22 +1159,22 @@ class TorchSoftmax(base_op.Softmax):
 class TorchExp(Operation):
 
     def __init__(self, *args, **kwargs):
-        super(TorchExp, self).__init__(GTX_OP.EXP, *args, **kwargs)
-        utils.op_register(GTX_OP.EXP, "exp")
+        super(TorchExp, self).__init__(OP.EXP, *args, **kwargs)
+        utils.op_register(OP.EXP, "exp")
 
 
 class TorchDetach(Operation):
 
     def __init__(self, *args, **kwargs):
-        super(TorchDetach, self).__init__(GTX_OP.DETACH, *args, **kwargs)
-        utils.op_register(GTX_OP.DETACH, "detach")
+        super(TorchDetach, self).__init__(OP.DETACH, *args, **kwargs)
+        utils.op_register(OP.DETACH, "detach")
 
 
 class TorchRsub(base_op.Sub):
 
     def __init__(self):
-        super().__init__(GTX_OP.RSUB)
-        utils.op_register(GTX_OP.RSUB, "sub")
+        super().__init__(OP.RSUB)
+        utils.op_register(OP.RSUB, "sub")
 
     @property
     def input(self):
@@ -1196,57 +1196,57 @@ class TorchRsub(base_op.Sub):
 class TorchSelect(base_op.CustomOp):
 
     def __init__(self, *args, **kwargs):
-        super(TorchSelect, self).__init__(GTX_OP.SELECT, *args, **kwargs)
-        utils.op_register(GTX_OP.SELECT, "select")
+        super(TorchSelect, self).__init__(OP.SELECT, *args, **kwargs)
+        utils.op_register(OP.SELECT, "select")
 
 
 class TorchSigmoid(Operation):
 
     def __init__(self, *args, **kwargs):
-        super(TorchSigmoid, self).__init__(GTX_OP.SIGMOID, *args, **kwargs)
-        utils.op_register(GTX_OP.SIGMOID, "Sigmoid")
+        super(TorchSigmoid, self).__init__(OP.SIGMOID, *args, **kwargs)
+        utils.op_register(OP.SIGMOID, "Sigmoid")
 
 
 class TorchRepeat(Operation):
 
     def __init__(self, *args, **kwargs):
-        super(TorchRepeat, self).__init__(GTX_OP.REPEAT, *args, **kwargs)
-        utils.op_register(GTX_OP.REPEAT, "repeat")
+        super(TorchRepeat, self).__init__(OP.REPEAT, *args, **kwargs)
+        utils.op_register(OP.REPEAT, "repeat")
 
 
 class TorchInplaceCopy(Operation):
 
     def __init__(self, *args, **kwargs):
-        super(TorchInplaceCopy, self).__init__(GTX_OP.INPLACE_COPY, *args, **kwargs)
-        utils.op_register(GTX_OP.INPLACE_COPY, "copy_")
+        super(TorchInplaceCopy, self).__init__(OP.INPLACE_COPY, *args, **kwargs)
+        utils.op_register(OP.INPLACE_COPY, "copy_")
 
 
 # class TorchExpand(Operation):
 
 #   def __init__(self, *args, **kwargs):
-#     super(TorchExpand, self).__init__(GTX_OP.EXPAND, *args, **kwargs)
-#     utils.op_register(GTX_OP.EXPAND, 'expand')
+#     super(TorchExpand, self).__init__(OP.EXPAND, *args, **kwargs)
+#     utils.op_register(OP.EXPAND, 'expand')
 
 
 class TorchEmpty(Operation):
 
     def __init__(self, *args, **kwargs):
-        super(TorchEmpty, self).__init__(GTX_OP.EMPTY, *args, **kwargs)
-        utils.op_register(GTX_OP.EMPTY, "empty")
+        super(TorchEmpty, self).__init__(OP.EMPTY, *args, **kwargs)
+        utils.op_register(OP.EMPTY, "empty")
 
 
 class TorchUnsqueeze(Operation):
 
     def __init__(self, *args, **kwargs):
-        super(TorchUnsqueeze, self).__init__(GTX_OP.UNSQUEEZE, *args, **kwargs)
-        utils.op_register(GTX_OP.UNSQUEEZE, "unsqueeze")
+        super(TorchUnsqueeze, self).__init__(OP.UNSQUEEZE, *args, **kwargs)
+        utils.op_register(OP.UNSQUEEZE, "unsqueeze")
 
 
 class TorchLstm(base_op.Lstm):
 
     def __init__(self, *args, **kwargs):
-        super(TorchLstm, self).__init__(GTX_OP.BASIC_LSTM, *args, **kwargs)
-        utils.op_register(GTX_OP.BASIC_LSTM, "LSTM")
+        super(TorchLstm, self).__init__(OP.BASIC_LSTM, *args, **kwargs)
+        utils.op_register(OP.BASIC_LSTM, "LSTM")
 
     @property
     def input_size(self):
@@ -1291,8 +1291,8 @@ class TorchLstm(base_op.Lstm):
 
 class TorchGru(base_op.Gru):
     def __init__(self, *args, **kwargs):
-        super(TorchGru, self).__init__(GTX_OP.BASIC_GRU, *args, **kwargs)
-        utils.op_register(GTX_OP.BASIC_GRU, "GRU")
+        super(TorchGru, self).__init__(OP.BASIC_GRU, *args, **kwargs)
+        utils.op_register(OP.BASIC_GRU, "GRU")
 
     @property
     def input_size(self):
@@ -1338,15 +1338,15 @@ class TorchGru(base_op.Gru):
 class TorchSplit(Operation):
 
     def __init__(self, *args, **kwargs):
-        super(TorchSplit, self).__init__(GTX_OP.SPLIT, *args, **kwargs)
-        utils.op_register(GTX_OP.SPLIT, "split")
+        super(TorchSplit, self).__init__(OP.SPLIT, *args, **kwargs)
+        utils.op_register(OP.SPLIT, "split")
 
 
 class TorchZeros(base_op.ConstFromShape):
 
     def __init__(self, *args, **kwargs):
-        super(TorchZeros, self).__init__(GTX_OP.ZEROS, *args, **kwargs)
-        utils.op_register(GTX_OP.ZEROS, "zeros")
+        super(TorchZeros, self).__init__(OP.ZEROS, *args, **kwargs)
+        utils.op_register(OP.ZEROS, "zeros")
 
     @property
     def size(self):
@@ -1444,15 +1444,15 @@ class TorchPad(base_op.Pad):
 class TorchMatmul(base_op.Matmul):
 
     def __init__(self, *args, **kwargs):
-        super(TorchMatmul, self).__init__(GTX_OP.MATMUL, *args, **kwargs)
-        utils.op_register(GTX_OP.MATMUL, "matmul")
+        super(TorchMatmul, self).__init__(OP.MATMUL, *args, **kwargs)
+        utils.op_register(OP.MATMUL, "matmul")
 
 
 class TorchClamp(Operation):
 
     def __init__(self, *args, **kwargs):
-        super(TorchClamp, self).__init__(GTX_OP.CLAMP, *args, **kwargs)
-        utils.op_register(GTX_OP.CLAMP, "clamp")
+        super(TorchClamp, self).__init__(OP.CLAMP, *args, **kwargs)
+        utils.op_register(OP.CLAMP, "clamp")
 
 
 # TODO
@@ -1461,7 +1461,7 @@ class TorchSlice(base_op.StridedSlice):
     def __init__(self):
         super().__init__()
         utils.op_register(
-            GTX_OP.STRIDED_SLICE, "strided_slice", force_to_primitive=True
+            OP.STRIDED_SLICE, "strided_slice", force_to_primitive=True
         )
 
     @property
@@ -1526,7 +1526,7 @@ class TorchSlice(base_op.StridedSlice):
     #   if self._input_ndim < 4:
     #     return self.get_attr(self.AttrName.END)
     #   else:
-    #     end = [gtx_CONSTANT.INT_MAX] * self._input_ndim
+    #     end = [CONSTANT.INT_MAX] * self._input_ndim
     #     for dim, pos in enumerate(self.get_attr(self.AttrName.END)):
     #       new_dim = transformed_axis(
     #           src=DataFormat.channel_first, dst=DataFormat.channel_first, ndim=self._input_ndim, dim=dim)
@@ -1540,12 +1540,12 @@ class TorchSlice(base_op.StridedSlice):
     #   if self._input_ndim < 4:
     #     end_mask = 0
     #     for dim, pos in enumerate(end):
-    #       if isinstance(pos, int) and pos >= gtx_CONSTANT.INT_MAX:
+    #       if isinstance(pos, int) and pos >= CONSTANT.INT_MAX:
     #         end_mask |= 1 << dim
     #     self.set_attr(self.AttrName.END_MASK, end_mask)
     #     self.set_attr(self.AttrName.END, end)
     #   else:
-    #     new_end = [gtx_CONSTANT.INT_MAX] * self._input_ndim
+    #     new_end = [CONSTANT.INT_MAX] * self._input_ndim
     #     end_mask = 0
     #     for dim, pos in enumerate(end):
     #       new_dim = transformed_axis(
@@ -1553,7 +1553,7 @@ class TorchSlice(base_op.StridedSlice):
     #       new_end[new_dim] = pos
 
     #     for dim, pos in enumerate(new_end):
-    #       if isinstance(pos, int) and pos >= gtx_CONSTANT.INT_MAX:
+    #       if isinstance(pos, int) and pos >= CONSTANT.INT_MAX:
     #         end_mask |= 1 << dim
 
     #     self.set_attr(self.AttrName.END_MASK, end_mask)
@@ -1596,41 +1596,41 @@ class TorchSlice(base_op.StridedSlice):
 class TorchArange(Operation):
 
     def __init__(self):
-        super().__init__(GTX_OP.ARANGE)
-        utils.op_register(GTX_OP.ARANGE, "arange")
+        super().__init__(OP.ARANGE)
+        utils.op_register(OP.ARANGE, "arange")
 
 
 # class TorchSlicedInplaceCopy(Operation):
 
 #   def __init__(self):
-#     super().__init__(GTX_OP.SLICE_TENSOR_INPLACE_COPY)
+#     super().__init__(OP.SLICE_TENSOR_INPLACE_COPY)
 
 
 class TorchEmbeddingBag(base_op.EmbeddingBag):
     def __init__(self):
-        super().__init__(GTX_OP.EMBEDDING_BAG)
-        utils.op_register(GTX_OP.EMBEDDING_BAG, "EmbeddingBag")
+        super().__init__(OP.EMBEDDING_BAG)
+        utils.op_register(OP.EMBEDDING_BAG, "EmbeddingBag")
 
 
 class TorchEmbedding(base_op.Embedding):
     def __init__(self):
-        super().__init__(GTX_OP.EMBEDDING)
-        utils.op_register(GTX_OP.EMBEDDING, "Embedding")
+        super().__init__(OP.EMBEDDING)
+        utils.op_register(OP.EMBEDDING, "Embedding")
 
 
 class TorchBaseOperation(base_op.CustomOp):
     def __init__(
         self,
-        gtx_op_type,
+        op_type,
         torch_op_type=None,
         force_to_primitive=False,
         schema=None,
         class_type=None,
     ):
-        super().__init__(gtx_op_type)
+        super().__init__(op_type)
         if torch_op_type is not None:
             utils.op_register(
-                gtx_op_type,
+                op_type,
                 torch_op_type,
                 force_to_primitive=force_to_primitive,
                 schema=schema,
@@ -1641,17 +1641,17 @@ class TorchBaseOperation(base_op.CustomOp):
 class TorchAutoInferOperation(base_op.CustomOp):
     def __init__(
         self,
-        gtx_op_type,
+        op_type,
         torch_op_type=None,
         force_to_primitive=False,
         schema=None,
         class_type=None,
     ):
-        super().__init__(gtx_op_type)
+        super().__init__(op_type)
         self._config_list = {}
         if torch_op_type is not None:
             utils.op_register(
-                gtx_op_type,
+                op_type,
                 torch_op_type,
                 force_to_primitive=force_to_primitive,
                 schema=schema,
@@ -1676,10 +1676,10 @@ class TorchAutoInferOperation(base_op.CustomOp):
 
 
 class TorchCustomOperation(base_op.CustomOp):
-    def __init__(self, gtx_op_type, torch_op_type):
-        super().__init__(gtx_op_type)
+    def __init__(self, op_type, torch_op_type):
+        super().__init__(op_type)
         utils.op_register(
-            gtx_op_type,
+            op_type,
             torch_op_type,
             class_type=utils.TorchOpClassType.CUSTOM_FUNCTION,
         )
@@ -1689,7 +1689,7 @@ class TorchSqueeze(base_op.Squeeze):
 
     def __init__(self):
         super().__init__()
-        utils.op_register(GTX_OP.SQUEEZE, "squeeze")
+        utils.op_register(OP.SQUEEZE, "squeeze")
 
     @property
     def dim(self):
@@ -1713,8 +1713,8 @@ class TorchLayerNorm(base_op.LayerNorm):
         BETA = "bias"
 
     def __init__(self):
-        super().__init__(GTX_OP.LAYER_NORM)
-        utils.op_register(GTX_OP.LAYER_NORM, "LayerNorm")
+        super().__init__(OP.LAYER_NORM)
+        utils.op_register(OP.LAYER_NORM, "LayerNorm")
 
     @property
     def eps(self):
@@ -1742,14 +1742,14 @@ class TorchLayerNorm(base_op.LayerNorm):
 
 
 class TorchUnknownOperation(Operation):
-    def __init__(self, gtx_op_type):
-        super().__init__(gtx_op_type)
+    def __init__(self, op_type):
+        super().__init__(op_type)
 
 
 class TorchPixelShuffle(base_op.PixelShuffle):
     def __init__(self):
-        super().__init__(GTX_OP.PIXEL_SHUFFLE)
-        utils.op_register(GTX_OP.PIXEL_SHUFFLE, "PixelShuffle")
+        super().__init__(OP.PIXEL_SHUFFLE)
+        utils.op_register(OP.PIXEL_SHUFFLE, "PixelShuffle")
 
     @property
     def upscale_factor(self):
@@ -1762,8 +1762,8 @@ class TorchPixelShuffle(base_op.PixelShuffle):
 
 class TorchPixelUnshuffle(base_op.PixelShuffle):
     def __init__(self):
-        super().__init__(GTX_OP.PIXEL_UNSHUFFLE)
-        utils.op_register(GTX_OP.PIXEL_UNSHUFFLE, "PixelUnshuffle")
+        super().__init__(OP.PIXEL_UNSHUFFLE)
+        utils.op_register(OP.PIXEL_UNSHUFFLE, "PixelUnshuffle")
 
     @property
     def downscale_factor(self):
@@ -1775,21 +1775,21 @@ class TorchPixelUnshuffle(base_op.PixelShuffle):
 
 
 class TorchCorrelationOperation(base_op.Correlation):
-    # def __init__(self, gtx_op_type, torch_op_type, force_to_primitive=False, schema=None):
+    # def __init__(self, op_type, torch_op_type, force_to_primitive=False, schema=None):
     #   super().__init__(s)
-    #   utils.op_register(gtx_op_type, torch_op_type, force_to_primitive=force_to_primitive, schema=schema)
+    #   utils.op_register(op_type, torch_op_type, force_to_primitive=force_to_primitive, schema=schema)
     def __init__(
         self,
-        gtx_op_type,
+        op_type,
         torch_op_type,
         force_to_primitive=False,
         schema=None,
         *args,
         **kwargs,
     ):
-        super().__init__(gtx_op_type, *args, **kwargs)
+        super().__init__(op_type, *args, **kwargs)
         utils.op_register(
-            gtx_op_type,
+            op_type,
             torch_op_type,
             force_to_primitive=force_to_primitive,
             schema=schema,
@@ -1808,16 +1808,16 @@ class TorchCostVolumeOperation(base_op.CostVolume):
 
     def __init__(
         self,
-        gtx_op_type,
+        op_type,
         torch_op_type,
         force_to_primitive=False,
         schema=None,
         *args,
         **kwargs,
     ):
-        super().__init__(gtx_op_type, *args, **kwargs)
+        super().__init__(op_type, *args, **kwargs)
         utils.op_register(
-            gtx_op_type,
+            op_type,
             torch_op_type,
             force_to_primitive=force_to_primitive,
             schema=schema,
@@ -1836,7 +1836,7 @@ class TorchLogSoftmax(base_op.LogSoftmax):
 
     def __init__(self, *args, **kwargs):
         super().__init__()
-        utils.op_register(GTX_OP.LOG_SOFTMAX, "LogSoftmax")
+        utils.op_register(OP.LOG_SOFTMAX, "LogSoftmax")
 
     @property
     def dim(self):
@@ -1851,7 +1851,7 @@ class TorchArgMax_DIM(base_op.ArgMax_DIM):
 
     def __init__(self, *args, **kwargs):
         super().__init__()
-        utils.op_register(GTX_OP.ARGMAX_DIM, "argmax")
+        utils.op_register(OP.ARGMAX_DIM, "argmax")
 
     @property
     def dim(self):

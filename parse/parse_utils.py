@@ -14,8 +14,8 @@
 # limitations under the License.
 #
 
-from gtx_shared.gtx_graph.base_tensor import Tensor
-from gtx_utils import TorchGraphSymbol
+from shared.graph.base_tensor import Tensor
+from utils import TorchGraphSymbol
 from .rich_in_out_helper import FlattenInOutModelForTrace
 
 _GRAPH_SCOPE_SYM = TorchGraphSymbol.GRAPH_SCOPE_SYM

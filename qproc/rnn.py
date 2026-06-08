@@ -22,27 +22,27 @@ from typing import Any, Optional, Sequence, Union, List
 
 import torch
 
-import gtx_shared.utils as gtx_utils
+import shared.utils as utils
 import nn.modules.rnn_builder as rnn_builder
-from gtx_shared.base import GLOBAL_MAP, gtx_KEYS, GTX_OP
-from gtx_shared.utils import (
+from shared.base import GLOBAL_MAP, KEYS, OP
+from shared.utils import (
     create_work_dir,
     option_util,
-    GtxOption,
-    GtxScreenLogger,
+    Option,
+    ScreenLogger,
     QError,
     QWarning,
     QNote,
 )
 
-# from gtx_shared.quantization import DefaultQstrategy, QstrategyFactory
-from gtx_shared.compile import CompilerFactory, DeployChecker
-from gtx_shared.gtx_graph import (
+# from shared.quantization import DefaultQstrategy, QstrategyFactory
+from shared.compile import CompilerFactory, DeployChecker
+from shared.graph import (
     merge_multi_subgraphs,
     reorder_multi_subgraph_nodes,
     merge_multi_graphs_to_single_graph,
 )
-from gtx_shared.quantization.fix_pos_adjust import FixPosInserter
+from shared.quantization.fix_pos_adjust import FixPosInserter
 from parse import NodeTransformer
 from quantization import TORCHQuantizer
 from utils import TorchSymbol
@@ -50,9 +50,9 @@ from quantization import TorchQConfig
 from .utils import (
     connect_module_with_graph,
     parse_module,
-    recreate_gtx_module,
+    recreate_module,
     set_outputs_recorder_status,
-    update_gtx_blob_data,
+    update_blob_data,
     register_output_hook,
     convert_lstm,
     prepare_quantizable_module,
@@ -94,30 +94,30 @@ class LSTMTorchQuantProcessor(TorchQuantProcessor):
                 torch.cuda.is_available() and ("CUDA_HOME" or "ROCM_HOME" in os.environ)
             ):
                 device = torch.device("cpu")
-                GtxScreenLogger().warning2user(
+                ScreenLogger().warning2user(
                     QWarning.CUDA_UNAVAILABLE,
                     f"CUDA (HIP) is not available, change device to CPU",
                 )
 
         # Transform torch module to quantized module format
-        gtx_utils.create_work_dir(output_dir)
+        utils.create_work_dir(output_dir)
 
         # turn off weights equalization and bias correction
-        if hasattr(GtxOption.gtx_param_corr, "_value"):
+        if hasattr(Option.param_corr, "_value"):
             option_util.set_option_value(
-                "gtx_param_corr", GtxOption.gtx_param_corr._value
+                "param_corr", Option.param_corr._value
             )
         else:
-            option_util.set_option_value("gtx_param_corr", False)
+            option_util.set_option_value("param_corr", False)
 
-        if hasattr(GtxOption.gtx_equalization, "_value"):
+        if hasattr(Option.equalization, "_value"):
             option_util.set_option_value(
-                "gtx_equalization", GtxOption.gtx_equalization._value
+                "equalization", Option.equalization._value
             )
         else:
-            option_util.set_option_value("gtx_equalization", False)
+            option_util.set_option_value("equalization", False)
 
-        option_util.set_option_value("gtx_cv_app", False)
+        option_util.set_option_value("cv_app", False)
 
         # Parse the quant config file
         QConfiger = TorchQConfig()
@@ -130,10 +130,10 @@ class LSTMTorchQuantProcessor(TorchQuantProcessor):
             quant_mode, output_dir, qconfig, is_lstm=True
         )
 
-        GLOBAL_MAP.set_map(gtx_KEYS.QUANTIZER, quantizer)
-        GLOBAL_MAP.set_map(gtx_KEYS.QUANT_MODE, qmode)
-        GLOBAL_MAP.set_map(gtx_KEYS.QUANT_DEVICE, device)
-        GLOBAL_MAP.set_map(gtx_KEYS.QUANT_CONFIG, qconfig)
+        GLOBAL_MAP.set_map(KEYS.QUANTIZER, quantizer)
+        GLOBAL_MAP.set_map(KEYS.QUANT_MODE, qmode)
+        GLOBAL_MAP.set_map(KEYS.QUANT_DEVICE, device)
+        GLOBAL_MAP.set_map(KEYS.QUANT_CONFIG, qconfig)
 
         standard_RNNs, customized_RNNs = self._analyse_module(module)
 
@@ -317,7 +317,7 @@ class LSTMTorchQuantProcessor(TorchQuantProcessor):
                     export_file = os.path.join(
                         self._export_folder, f"{graph.name}{TorchSymbol.SCRIPT_SUFFIX}"
                     )
-                    quant_module = recreate_gtx_module(graph, True, export_file)
+                    quant_module = recreate_module(graph, True, export_file)
                     connect_module_with_graph(quant_module, graph)
                     lstm_cell_pair[lstm_direction] = quant_module
                     module_graph_map[id(quant_module)] = graph
@@ -351,12 +351,12 @@ class LSTMTorchQuantProcessor(TorchQuantProcessor):
         name_gen = (w.capitalize() for w in name_list)
         graph_name = "".join(name_gen)
         inputs = torch.randn(1, 2, lstm_module.input_size)
-        lstm_gtx_graph = parse_module(
+        lstm_graph = parse_module(
             lstm_module.cpu(), inputs, enable_opt=False, graph_name=graph_name
         )
         lstm_node = None
-        for node in lstm_gtx_graph.nodes:
-            if node.op.type in [GTX_OP.BASIC_LSTM, GTX_OP.BASIC_GRU]:
+        for node in lstm_graph.nodes:
+            if node.op.type in [OP.BASIC_LSTM, OP.BASIC_GRU]:
                 lstm_node = node
         transform = NodeTransformer()
         assert lstm_node
@@ -367,10 +367,10 @@ class LSTMTorchQuantProcessor(TorchQuantProcessor):
         """
         `dump xmodel for LSTM cell`
         """
-        quantizer = GLOBAL_MAP.get_ele(gtx_KEYS.QUANTIZER)
+        quantizer = GLOBAL_MAP.get_ele(KEYS.QUANTIZER)
 
         fixposinserter = FixPosInserter(quantizer)
-        fixposinserter(quantizer.Gtxgraph)
+        fixposinserter(quantizer.graph)
 
         if quantizer and quantizer.quant_mode > 1:
             compiler = CompilerFactory.get_compiler("xmodel")
@@ -388,11 +388,11 @@ class LSTMTorchQuantProcessor(TorchQuantProcessor):
                             )
                         except Exception as e:
                             print(
-                                f"[gtx_ERROR]:failed convert gtx graph to xmodel({str(e)})."
+                                f"[ERROR]:failed convert  graph to xmodel({str(e)})."
                             )
 
             if deploy_check:
-                print("[gtx_NOTE]: Dumping checking data...")
+                print("[NOTE]: Dumping checking data...")
                 checker = DeployChecker(output_dir_name=output_dir, data_format="txt")
 
                 # get timestep output
@@ -402,7 +402,7 @@ class LSTMTorchQuantProcessor(TorchQuantProcessor):
                     graph = info["graph"]
                     if layer.input is None:
                         warnings.warn(
-                            f"[gtx_WARNING]: Provide inputs for '{name}' when do deploy checking",
+                            f"[WARNING]: Provide inputs for '{name}' when do deploy checking",
                             RuntimeWarning,
                         )
                         continue
@@ -412,7 +412,7 @@ class LSTMTorchQuantProcessor(TorchQuantProcessor):
 
                     for timestep in range(layer.input.size()[1]):
                         enable_dump_weight = True if timestep == 0 else False
-                        update_gtx_blob_data(cell, graph, timestep)
+                        update_blob_data(cell, graph, timestep)
                         checker.update_dump_folder(f"{graph.name}/frame_{timestep}")
                         checker.dump_nodes_output(
                             graph,
@@ -424,7 +424,7 @@ class LSTMTorchQuantProcessor(TorchQuantProcessor):
 
                     set_outputs_recorder_status(cell, False)
 
-                print("[gtx_NOTE]: Finish dumping data.")
+                print("[NOTE]: Finish dumping data.")
 
 
 class RNNQuantProcessor(TorchQuantProcessor):
@@ -463,30 +463,30 @@ class RNNQuantProcessor(TorchQuantProcessor):
                 torch.cuda.is_available() and "CUDA_HOME" or "ROCM_HOME" in os.environ
             ):
                 device = torch.device("cpu")
-                GtxScreenLogger().warning2user(
+                ScreenLogger().warning2user(
                     QWarning.CUDA_UNAVAILABLE,
                     f"CUDA is not available, change device to CPU",
                 )
 
         # Transform torch module to quantized module format
-        gtx_utils.create_work_dir(output_dir)
+        utils.create_work_dir(output_dir)
 
         # turn off weights equalization and bias correction
-        if hasattr(GtxOption.gtx_param_corr, "_value"):
+        if hasattr(Option.param_corr, "_value"):
             option_util.set_option_value(
-                "gtx_param_corr", GtxOption.gtx_param_corr._value
+                "param_corr", Option.param_corr._value
             )
         else:
-            option_util.set_option_value("gtx_param_corr", False)
+            option_util.set_option_value("param_corr", False)
 
-        if hasattr(GtxOption.gtx_equalization, "_value"):
+        if hasattr(Option.equalization, "_value"):
             option_util.set_option_value(
-                "gtx_equalization", GtxOption.gtx_equalization._value
+                "equalization", Option.equalization._value
             )
         else:
-            option_util.set_option_value("gtx_equalization", False)
+            option_util.set_option_value("equalization", False)
 
-        option_util.set_option_value("gtx_cv_app", False)
+        option_util.set_option_value("cv_app", False)
 
         # Parse the quant config file
         QConfiger = TorchQConfig()
@@ -500,10 +500,10 @@ class RNNQuantProcessor(TorchQuantProcessor):
             quant_mode, output_dir, qconfig, is_lstm=True
         )
 
-        GLOBAL_MAP.set_map(gtx_KEYS.QUANTIZER, quantizer)
-        GLOBAL_MAP.set_map(gtx_KEYS.QUANT_MODE, qmode)
-        GLOBAL_MAP.set_map(gtx_KEYS.QUANT_DEVICE, device)
-        GLOBAL_MAP.set_map(gtx_KEYS.QUANT_CONFIG, qconfig)
+        GLOBAL_MAP.set_map(KEYS.QUANTIZER, quantizer)
+        GLOBAL_MAP.set_map(KEYS.QUANT_MODE, qmode)
+        GLOBAL_MAP.set_map(KEYS.QUANT_DEVICE, device)
+        GLOBAL_MAP.set_map(KEYS.QUANT_CONFIG, qconfig)
 
         if isinstance(module, list):
             quantize_models = []
@@ -530,9 +530,9 @@ class RNNQuantProcessor(TorchQuantProcessor):
                 quant_module.from_script(True)
                 multi_graph.append(graph)
                 quantize_models.append(quant_module.to(device))
-                if GLOBAL_MAP.get_ele(gtx_KEYS.TORCH_SCRIPT_MODEL):
+                if GLOBAL_MAP.get_ele(KEYS.TORCH_SCRIPT_MODEL):
                     quantizer.add_script(
-                        GLOBAL_MAP.get_ele(gtx_KEYS.TORCH_SCRIPT_MODEL)
+                        GLOBAL_MAP.get_ele(KEYS.TORCH_SCRIPT_MODEL)
                     )
 
                 if qmode > 1:
@@ -571,8 +571,8 @@ class RNNQuantProcessor(TorchQuantProcessor):
             )
             quant_module.from_script(True)
             quantizer.quant_model = quant_module.to(device)
-            if GLOBAL_MAP.get_ele(gtx_KEYS.TORCH_SCRIPT_MODEL):
-                quantizer.add_script(GLOBAL_MAP.get_ele(gtx_KEYS.TORCH_SCRIPT_MODEL))
+            if GLOBAL_MAP.get_ele(KEYS.TORCH_SCRIPT_MODEL):
+                quantizer.add_script(GLOBAL_MAP.get_ele(KEYS.TORCH_SCRIPT_MODEL))
             if qmode > 1:
                 register_output_hook(quant_module, record_once=True)
                 set_outputs_recorder_status(quant_module, True)
@@ -589,7 +589,7 @@ class RNNQuantProcessor(TorchQuantProcessor):
         self._example_inputs = input_args
         self._lstm_app = lstm_app
 
-        if GtxOption.gtx_calib_before_finetune.value is True:
+        if Option.calib_before_finetune.value is True:
             self.quantizer.export_float_param()
 
     def quant_model(self):

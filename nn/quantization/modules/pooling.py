@@ -16,7 +16,7 @@
 import torch
 import math
 
-# from nn.modules.fix_ops import GtxScale
+# from nn.modules.fix_ops import Scale
 
 
 class DPUAvgPool2d(torch.nn.modules.AvgPool2d):
@@ -51,7 +51,7 @@ class DPUAvgPool2d(torch.nn.modules.AvgPool2d):
                     shift_factor = shift_factor_
             scale = rec * multi_factor / (2**shift_factor)
 
-        # GtxScale(output, scale)
+        # Scale(output, scale)
         output = output * scale
 
         return output
@@ -98,7 +98,7 @@ class DPUAdaptiveAvgPool2d(torch.nn.modules.AdaptiveAvgPool2d):
                     shift_factor = shift_factor_
             scale = rec * multi_factor / (2**shift_factor)
 
-        # GtxScale(output, scale)
+        # Scale(output, scale)
         output = output * scale
 
         return output

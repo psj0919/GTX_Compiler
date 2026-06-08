@@ -18,14 +18,14 @@ import torch
 from torch.autograd import Variable
 import math
 
-from gtx_shared.utils import GtxOption, GtxScreenLogger, QError
-from gtx_shared.quantization import kernel_need_quant
-from gtx_shared.quantization import quantize_tensors
-from gtx_shared.quantization import maybe_get_quantizer
-import gtx_utils as py_utils
+from shared.utils import Option, ScreenLogger, QError
+from shared.quantization import kernel_need_quant
+from shared.quantization import quantize_tensors
+from shared.quantization import maybe_get_quantizer
+import utils as py_utils
 import torch.nn.functional as F
-from gtx_utils import Const
-from .fix_ops import GtxISqrt
+from utils import Const
+from .fix_ops import ISqrt
 
 __all__ = ["instanceNorm"]
 
@@ -57,7 +57,7 @@ class InstanceNorm(torch.nn.modules.instancenorm._InstanceNorm):
             params.append(self.bias)
         param_names = self.params_name[: len(params)]
         if len(params) != len(param_names):
-            GtxScreenLogger().error2user(
+            ScreenLogger().error2user(
                 QError.PARAM_NUMBER,
                 f"Parameter number error in node {self.node} for InstanceNorm operator!",
             )
@@ -74,12 +74,12 @@ class InstanceNorm(torch.nn.modules.instancenorm._InstanceNorm):
                 qparams = quantize_tensors(
                     params, self.node, tensor_names=param_names, tensor_type="param"
                 )
-            if not GtxOption.gtx_quant_off.value:
+            if not Option.quant_off.value:
                 self.param_quantized = True
         else:
             qparams = [p for p in params]
 
-        if GtxOption.gtx_op_instancenorm_mode.value == "ipu_8bw" and (
+        if Option.op_instancenorm_mode.value == "ipu_8bw" and (
             not self.quantizer.exporting
         ):
             output = self.simulateInstanceNorm(qinput, qparams)
@@ -202,7 +202,7 @@ class InstanceNorm(torch.nn.modules.instancenorm._InstanceNorm):
 
             # isqrt: 1/sqrt(var)
             isqrt = torch.empty_like(var)
-            GtxISqrt(var, isqrt)  # CUDA/CPU: float32
+            ISqrt(var, isqrt)  # CUDA/CPU: float32
             isqrt = isqrt.to(torch.bfloat16)
 
             # mul: (x-mu)*(1/sigma)
@@ -234,7 +234,7 @@ class InstanceNorm(torch.nn.modules.instancenorm._InstanceNorm):
 
         # main process
         input_name = self.node.in_nodes[0]
-        input_node = self.quantizer.configer.get_Gtxnode(input_name)
+        input_node = self.quantizer.configer.get_node(input_name)
         if not self.quantizer.configer.node_output_quantizable(input_node):
             input_name = input_node.in_nodes[0]
         ifp = self.quantizer.get_quant_config(input_name, False)[1]

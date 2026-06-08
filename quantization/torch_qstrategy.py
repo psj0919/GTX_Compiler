@@ -16,14 +16,14 @@
 
 from abc import abstractmethod
 from typing import Dict, Union
-from gtx_shared.base import GTX_OP
+from shared.base import OP
 
-from gtx_shared.utils import GtxOption
-from gtx_shared.utils import GtxScreenLogger, QError, QWarning
-from gtx_shared.quantization import QuantStrategyBase
-from gtx_shared.quantization import QuantConfigImpBase
+from shared.utils import Option
+from shared.utils import ScreenLogger, QError, QWarning
+from shared.quantization import QuantStrategyBase
+from shared.quantization import QuantConfigImpBase
 from quantization import create_quant_algo
-from utils.gtx2torch_op_map import get_gtx_op_type, get_torch_op_type
+from utils.torch_op_map import get_op_type, get_torch_op_type
 
 
 class TorchQstrategy(QuantStrategyBase):
@@ -41,8 +41,8 @@ class TorchQstrategy(QuantStrategyBase):
         for layer_type, layer_config in self._quant_strategy_info[
             "layer_type_config"
         ].items():
-            gtx_layer_type = get_gtx_op_type(layer_type)
-            self._layer_quant_types.append(gtx_layer_type)
+            layer_type = get_op_type(layer_type)
+            self._layer_quant_types.append(layer_type)
 
         for layer_name, layer_config in self._quant_strategy_info[
             "layer_name_config"
@@ -126,14 +126,14 @@ class TorchQstrategy(QuantStrategyBase):
         pass
 
 
-class TorchGtxQstrategy(TorchQstrategy):
+class TorchQstrategy(TorchQstrategy):
     def create_quant_config(self, quant_info_mgr):
         self._quant_config_imp.clear_quant_config()
 
-        print_log = GtxOption.gtx_stat.value > 0
+        print_log = Option.stat.value > 0
         self._get_layer_quant_types_and_names()
 
-        for node in quant_info_mgr.Gtxgraph.all_nodes():
+        for node in quant_info_mgr.graph.all_nodes():
             if print_log:
                 print("---- Handling node %s type: %s" % (node.name, node.op.type))
             if quant_info_mgr.is_node_quantizable(node, self.lstm):
@@ -153,7 +153,7 @@ class TorchGtxQstrategy(TorchQstrategy):
                                 or hasattr(node.op.ParamName, "GAMMA")
                                 and k == node.op.ParamName.GAMMA
                             ):
-                                if node.op.type is not GTX_OP.LAYER_NORM:
+                                if node.op.type is not OP.LAYER_NORM:
                                     quant_config = self.get_layer_tensor_config(
                                         node, "weights"
                                     )
@@ -206,7 +206,7 @@ class TorchGtxQstrategy(TorchQstrategy):
                                 print("---- Add fix of output blob %s" % end)
 
                 # input blobs (for mix precision quantization)
-                if node.op.type in [GTX_OP.DENSE, GTX_OP.CONV2D]:
+                if node.op.type in [OP.DENSE, OP.CONV2D]:
                     layer_weight_quant = self.get_layer_tensor_config(node, "weights")
                     layer_input_quant = self.get_layer_tensor_config(node, "input")
                     if (
@@ -234,8 +234,8 @@ class TorchGtxQstrategy(TorchQstrategy):
 
             elif (
                 self.lstm
-                and (node in quant_info_mgr.Gtxgraph.inputs)
-                and node.op.type not in [GTX_OP.BLOCK, GTX_OP.TUPLE_INPUT]
+                and (node in quant_info_mgr.graph.inputs)
+                and node.op.type not in [OP.BLOCK, OP.TUPLE_INPUT]
             ):
                 # this path is only for quantizing a whole graph without quant stub OP
                 # for lstm, check the following node type
@@ -245,9 +245,9 @@ class TorchGtxQstrategy(TorchQstrategy):
                     any(
                         (
                             quant_info_mgr.is_node_quantizable(c, self.lstm)
-                            and c.op.type is not GTX_OP.QUANT_STUB
+                            and c.op.type is not OP.QUANT_STUB
                         )
-                        for c in quant_info_mgr.Gtxgraph.children(node.name)
+                        for c in quant_info_mgr.graph.children(node.name)
                     )
                 ):
                     end = quant_info_mgr.quant_output(node.name).name
@@ -281,7 +281,7 @@ class TorchGtxQstrategy(TorchQstrategy):
 
         # check the input fix of all quantized ops
         if not self.lstm:
-            for node in quant_info_mgr.Gtxgraph.all_nodes():
+            for node in quant_info_mgr.graph.all_nodes():
                 if quant_info_mgr.is_node_quantizable(node, self.lstm):
                     if print_log:
                         print(
@@ -289,14 +289,14 @@ class TorchGtxQstrategy(TorchQstrategy):
                             % (node.name, node.op.type)
                         )
                     if node.op.type not in [
-                        GTX_OP.INPUT,
-                        GTX_OP.QUANT_STUB,
-                        GTX_OP.CONCAT,
+                        OP.INPUT,
+                        OP.QUANT_STUB,
+                        OP.CONCAT,
                     ]:
-                        for p_n in quant_info_mgr.Gtxgraph.parents(node):
+                        for p_n in quant_info_mgr.graph.parents(node):
                             # if not quant_info_mgr.op_unquantizable(p_n.op.type):
                             end = quant_info_mgr.quant_output(p_n.name).name
-                            end_node = quant_info_mgr.Gtxgraph.node(end)
+                            end_node = quant_info_mgr.graph.node(end)
                             out_is_tensor = False
                             for tensor in end_node.out_tensors:
                                 if tensor.dtype in [
@@ -344,8 +344,8 @@ class TorchGtxQstrategy(TorchQstrategy):
                                                 % (end, end_node.op.type)
                                             )
 
-                    elif node.op.type in [GTX_OP.INPUT]:
-                        cn_nodes = quant_info_mgr.Gtxgraph.children(node)
+                    elif node.op.type in [OP.INPUT]:
+                        cn_nodes = quant_info_mgr.graph.children(node)
                         if len(cn_nodes) == 1 and cn_nodes[0].op.is_custom_op:
                             end = quant_info_mgr.quant_output(node.name).name
                             if end in self._quant_config_imp.quant_config["output"]:
@@ -372,7 +372,7 @@ class TorchMPQstrategy(TorchQstrategy):
                     name, config["datatype"], tensor_type
                 )
             else:
-                GtxScreenLogger().warning_once(
+                ScreenLogger().warning_once(
                     f"{node.op.type} is not supported in int quantization, skip it."
                 )
         else:
@@ -383,13 +383,13 @@ class TorchMPQstrategy(TorchQstrategy):
     def create_quant_config(self, quant_info_mgr):
         self._quant_config_imp.clear_quant_config()
 
-        print_log = GtxOption.gtx_stat.value > 0
+        print_log = Option.stat.value > 0
         self._get_layer_quant_types_and_names()
 
-        for node in quant_info_mgr.Gtxgraph.all_nodes():
+        for node in quant_info_mgr.graph.all_nodes():
             if print_log:
                 print("---- Handling node %s type: %s" % (node.name, node.op.type))
-            if node.op.type in [GTX_OP.INPUT, GTX_OP.TUPLE_INPUT]:
+            if node.op.type in [OP.INPUT, OP.TUPLE_INPUT]:
                 if print_log:
                     print(
                         "---- Skip node %s quantization type: %s"
@@ -464,9 +464,9 @@ class TorchGemm88Qstrategy(TorchQstrategy):
         self._quant_config_imp.clear_quant_config()
 
         self._get_layer_quant_types_and_names()
-        print_log = GtxOption.gtx_stat.value > 0
-        gemm88_quant_op_list = [GTX_OP.DENSE, GTX_OP.MATMUL]
-        for node in quant_info_mgr.Gtxgraph.all_nodes():
+        print_log = Option.stat.value > 0
+        gemm88_quant_op_list = [OP.DENSE, OP.MATMUL]
+        for node in quant_info_mgr.graph.all_nodes():
             if print_log:
                 print("---- Handling node %s type: %s" % (node.name, node.op.type))
             if node.op.type in gemm88_quant_op_list:
@@ -509,7 +509,7 @@ class TorchTRTQstrategy(TorchQstrategy):
         self._quant_config_imp.clear_quant_config()
         self._get_layer_quant_types_and_names()
 
-        for node in quant_info_mgr.Gtxgraph.all_nodes():
+        for node in quant_info_mgr.graph.all_nodes():
             if quant_info_mgr.is_node_quantizable(node, self.lstm):
                 # parameters
                 for k in quant_info_mgr.quant_node_params(node).keys():

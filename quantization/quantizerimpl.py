@@ -2,11 +2,11 @@ import copy
 import numpy as np
 from abc import ABC, abstractmethod
 import torch
-from gtx_shared.base import key_names, GTX_OP
-from gtx_shared.utils import (
+from shared.base import key_names, OP
+from shared.utils import (
     tensor_util,
-    GtxOption,
-    GtxScreenLogger,
+    Option,
+    ScreenLogger,
     QWarning,
     QError,
 )
@@ -97,7 +97,7 @@ class QuantizerImpl(ABC):
 
         res_save = None
         if isinstance(res.values, torch.Tensor):
-            if GtxOption.gtx_quant_off.value or res.values.data.numel() == 0:
+            if Option.quant_off.value or res.values.data.numel() == 0:
                 if self.inplace:
                     return res
                 else:
@@ -105,7 +105,7 @@ class QuantizerImpl(ABC):
             res_save = res
             res = res.values.data
         else:
-            if GtxOption.gtx_quant_off.value or res.data.numel() == 0:
+            if Option.quant_off.value or res.data.numel() == 0:
                 if self.inplace:
                     return res
                 else:
@@ -116,14 +116,14 @@ class QuantizerImpl(ABC):
             and res.dtype != torch.double
             and res.dtype != torch.float16
         ):
-            GtxScreenLogger().warning2user_once(
+            ScreenLogger().warning2user_once(
                 QWarning.TENSOR_TYPE_NOT_QUANTIZABLE,
                 f"The tensor type of {node.name} is {str(res.dtype)}. Only support float32/double/float16 quantization.",
             )
             return res_save if res_save is not None else res
 
         if not is_valid_tensor_for_quantizer(res):
-            GtxScreenLogger().warning2user_once(
+            ScreenLogger().warning2user_once(
                 QWarning.TENSOR_VALUE_INVALID,
                 f'The tensor type of {node.name} have "inf" or "nan" value.The quantization for this tensor is ignored.Please check it.',
             )
@@ -155,7 +155,7 @@ class QuantizerImpl(ABC):
 
         blob_save = None
         if isinstance(blob.values, torch.Tensor):
-            if GtxOption.gtx_quant_off.value:
+            if Option.quant_off.value:
                 if self.inplace:
                     return blob
                 else:
@@ -163,7 +163,7 @@ class QuantizerImpl(ABC):
             blob_save = blob
             blob = blob.values.data
         else:
-            if GtxOption.gtx_quant_off.value:
+            if Option.quant_off.value:
                 if self.inplace:
                     return blob
                 else:
@@ -174,14 +174,14 @@ class QuantizerImpl(ABC):
             and blob.dtype != torch.double
             and blob.dtype != torch.float16
         ):
-            GtxScreenLogger().warning2user_once(
+            ScreenLogger().warning2user_once(
                 QWarning.TENSOR_TYPE_NOT_QUANTIZABLE,
                 f"The tensor type of {node.name} is {str(blob.dtype)}. Only support float32/double/float16 quantization.",
             )
             return blob_save if blob_save is not None else blob
 
         if not is_valid_tensor_for_quantizer(blob):
-            GtxScreenLogger().warning2user_once(
+            ScreenLogger().warning2user_once(
                 QWarning.TENSOR_VALUE_INVALID,
                 f'The tensor type of {node.name} have "inf" or "nan" value. The quantization is ignored. Please check it.',
             )
@@ -199,9 +199,9 @@ class QuantizerImpl(ABC):
             blob = blob.to(convert_dtype)
             blob = blob.to(origin_dtype)
 
-        # update param to gtx graph
+        # update param to  graph
         if tensor_type == "param" and not self.exporting:
-            self.update_param_to_gtx(node, name, blob.cpu().detach().numpy())
+            self.update_param_to_(node, name, blob.cpu().detach().numpy())
 
         if blob_save is not None:
             blob_save.values.data = blob
@@ -223,11 +223,11 @@ class QuantizerImpl(ABC):
         else:
             _reset_param_quantized(self._quant_model)
 
-    def update_param_to_gtx(self, node, param_name, param_data):
+    def update_param_to_(self, node, param_name, param_data):
         for param_type, tensor in node.op.params.items():
             if tensor.name == param_name:
                 if (
-                    node.op.type in [GTX_OP.CONVTRANSPOSE2D, GTX_OP.CONVTRANSPOSE3D]
+                    node.op.type in [OP.CONVTRANSPOSE2D, OP.CONVTRANSPOSE3D]
                     and param_type == node.op.ParamName.WEIGHTS
                 ):
                     param_data = np.copy(param_data).swapaxes(1, 0)
@@ -235,7 +235,7 @@ class QuantizerImpl(ABC):
 
                 if (
                     node.op.type
-                    in [GTX_OP.DEPTHWISE_CONV2D, GTX_OP.DEPTHWISE_CONV3D]
+                    in [OP.DEPTHWISE_CONV2D, OP.DEPTHWISE_CONV3D]
                     and param_type == node.op.ParamName.WEIGHTS
                 ):
                     in_channels = node.node_config("in_channels")
@@ -249,8 +249,8 @@ class QuantizerImpl(ABC):
                 if (
                     node.op.type
                     in [
-                        GTX_OP.DEPTHWISE_CONVTRANSPOSE2D,
-                        GTX_OP.DEPTHWISE_CONVTRANSPOSE3D,
+                        OP.DEPTHWISE_CONVTRANSPOSE2D,
+                        OP.DEPTHWISE_CONVTRANSPOSE3D,
                     ]
                     and param_type == node.op.ParamName.WEIGHTS
                 ):
@@ -267,14 +267,14 @@ class QuantizerImpl(ABC):
                 origin_shape = tensor.shape
 
                 tensor.from_ndarray(param_data)
-                if node.op.type != GTX_OP.LAYER_NORM:
+                if node.op.type != OP.LAYER_NORM:
                     tensor_util.convert_parameter_tensor_format(
                         tensor,
                         key_names.FrameworkType.TORCH,
-                        key_names.FrameworkType.GTX,
+                        key_names.FrameworkType.BRIDGE,
                     )
 
-                GtxScreenLogger().check2user(
+                ScreenLogger().check2user(
                     QError.SHAPE_MISMATCH,
                     f"The shape of data '{tensor.shape}' must be consistent with that of original data '{origin_shape}' for {tensor.name}",
                     origin_shape == tensor.shape,

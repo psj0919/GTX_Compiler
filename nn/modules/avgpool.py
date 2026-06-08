@@ -18,9 +18,9 @@ import math
 import torch
 from torch.autograd import Variable
 
-from gtx_shared.quantization import maybe_get_quantizer, quantize_tensors
-from gtx_shared.utils import GtxOption
-import gtx_utils as py_utils
+from shared.quantization import maybe_get_quantizer, quantize_tensors
+from shared.utils import Option
+import utils as py_utils
 
 __all__ = ["avgPool2d"]
 
@@ -38,7 +38,7 @@ class AvgPool2d(torch.nn.modules.AvgPool2d):
         output = super().forward(qinput)
 
         # scale to DPU accuracy
-        if GtxOption.gtx_avg_pool_approximate.value:
+        if Option.avg_pool_approximate.value:
             scale = 1.0
             if self.node.node_attr(self.node.op.AttrName.KERNEL) == [3, 3]:
                 scale = 9.0 * 7.0 / 64.0
@@ -82,6 +82,22 @@ class AvgPool2d(torch.nn.modules.AvgPool2d):
 @py_utils.register_quant_op
 def avgPool2d(*args, **kwargs):
     quant_mode, _ = maybe_get_quantizer()
-    if quant_mode is None or GtxOption.gtx_quant_off.value:
+    if quant_mode is None or Option.quant_off.value:
         return torch.nn.AvgPool2d(*args, **kwargs)
     return AvgPool2d(*args, **kwargs)
+
+
+# --- ggml/vision.cpp codegen (render) ---
+from shared.compile.render_api import register_render as _register_render
+from shared.base import OP as _OP
+
+
+@_register_render(_OP.AVG_POOL)
+def render(node, ctx):
+    k = ctx.scalar(ctx.attr(node, "kernel_size", [2, 2]))
+    s = ctx.scalar(ctx.attr(node, "stride", [k, k]))
+    p = ctx.scalar(ctx.attr(node, "padding", [0, 0]))
+    return ctx.out(
+        node,
+        f"ggml_pool_2d(m, {ctx.inp(node)}, GGML_OP_POOL_AVG, {k}, {k}, {s}, {s}, {p}, {p})",
+    )

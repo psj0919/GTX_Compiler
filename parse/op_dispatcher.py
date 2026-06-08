@@ -19,14 +19,14 @@ import sys
 import torch
 import numpy as np
 from typing import Callable, Dict
-from gtx_shared.gtx_graph import Node, Tensor, Operation
-from gtx_shared.base import GLOBAL_MAP, gtx_KEYS
-from gtx_shared.utils import tensor_util, GtxScreenLogger
+from shared.graph import Node, Tensor, Operation
+from shared.base import GLOBAL_MAP, KEYS
+from shared.utils import tensor_util, ScreenLogger
 from .torch_op_def import *
 from .parse_utils import *
-from gtx_utils import SchemaHelper, TorchOpClassType, convert_type_str
-from gtx_utils.jit_utils import *
-from gtx_utils.torch_utils import CmpFlag, compare_torch_version
+from utils import SchemaHelper, TorchOpClassType, convert_type_str
+from utils.jit_utils import *
+from utils.torch_utils import CmpFlag, compare_torch_version
 
 
 class OpCreator(object):
@@ -49,16 +49,16 @@ class OpCreator(object):
     }
 
     def __init__(self):
-        self._device_type = GLOBAL_MAP.get_ele(gtx_KEYS.DEVICE)
+        self._device_type = GLOBAL_MAP.get_ele(KEYS.DEVICE)
 
     # torch function should always add 'input' config
     # nn.function, nn.Module and torch.Tensor can ignore 'input'
 
     def Param(self, *args):
         if "tuple" in args[0].dtype:
-            op = TorchUnaryOp(GTX_OP.TUPLE_INPUT, "input", force_to_primitive=True)
+            op = TorchUnaryOp(OP.TUPLE_INPUT, "input", force_to_primitive=True)
         else:
-            op = TorchUnaryOp(GTX_OP.INPUT, "input", force_to_primitive=True)
+            op = TorchUnaryOp(OP.INPUT, "input", force_to_primitive=True)
         input_name = f"args[{args[0].node.name.split('_')[-1]}]"
         op.set_config("input", input_name)
         return op
@@ -98,16 +98,16 @@ class OpCreator(object):
             weight_size[0], weight_size[1] = weight_size[1], weight_size[0]
             if weight_size[0] == 1 and groups == weight_size[1]:
                 if weight.ndim == 4:
-                    op = TorchConvTranspose2d(GTX_OP.DEPTHWISE_CONVTRANSPOSE2D)
+                    op = TorchConvTranspose2d(OP.DEPTHWISE_CONVTRANSPOSE2D)
                 elif weight.ndim == 5:
-                    op = TorchConvTranspose3d(GTX_OP.DEPTHWISE_CONVTRANSPOSE3D)
+                    op = TorchConvTranspose3d(OP.DEPTHWISE_CONVTRANSPOSE3D)
                 elif weight.ndim == 3:
                     raise NotImplementedError("Depthwise_ConvTranpose1D is unsupported")
             else:
                 if weight.ndim == 4:
-                    op = TorchConvTranspose2d(GTX_OP.CONVTRANSPOSE2D)
+                    op = TorchConvTranspose2d(OP.CONVTRANSPOSE2D)
                 elif weight.ndim == 5:
-                    op = TorchConvTranspose3d(GTX_OP.CONVTRANSPOSE3D)
+                    op = TorchConvTranspose3d(OP.CONVTRANSPOSE3D)
                 elif weight.ndim == 3:
                     raise NotImplementedError("ConvTranpose1D is unsupported")
 
@@ -124,18 +124,18 @@ class OpCreator(object):
                 and weight_size[0] % input_channel == 0
             ):
                 if weight.ndim == 4:
-                    op = TorchConv2d(GTX_OP.DEPTHWISE_CONV2D)
+                    op = TorchConv2d(OP.DEPTHWISE_CONV2D)
                 elif weight.ndim == 5:
-                    op = TorchConv3d(GTX_OP.DEPTHWISE_CONV3D)
+                    op = TorchConv3d(OP.DEPTHWISE_CONV3D)
                 elif weight.ndim == 3:
-                    op = TorchConv1d(GTX_OP.DEPTHWISE_CONV1D)
+                    op = TorchConv1d(OP.DEPTHWISE_CONV1D)
             else:
                 if weight.ndim == 4:
-                    op = TorchConv2d(GTX_OP.CONV2D)
+                    op = TorchConv2d(OP.CONV2D)
                 elif weight.ndim == 5:
-                    op = TorchConv3d(GTX_OP.CONV3D)
+                    op = TorchConv3d(OP.CONV3D)
                 elif weight.ndim == 3:
-                    op = TorchConv1d(GTX_OP.CONV1D)
+                    op = TorchConv1d(OP.CONV1D)
 
             op.set_config("in_channels", input_channel)
             op.set_config("out_channels", weight_size[0])
@@ -366,7 +366,7 @@ class OpCreator(object):
         return op
 
     def addmm(self, input, mat1, mat2, beta=None, alpha=None):
-        op = TorchBaseOperation(GTX_OP.ADDMM, "addmm")
+        op = TorchBaseOperation(OP.ADDMM, "addmm")
         op.set_config("input", input)
         op.set_config("mat1", mat1)
         op.set_config("mat2", mat2)
@@ -457,12 +457,12 @@ class OpCreator(object):
         return op
 
     def sqrt(self, input):
-        op = TorchUnaryOp(GTX_OP.SQRT, "sqrt")
+        op = TorchUnaryOp(OP.SQRT, "sqrt")
         op.set_config("input", input)
         return op
 
     def sqrt_(self, input):
-        op = TorchUnaryOp(GTX_OP.SQRT, "sqrt")
+        op = TorchUnaryOp(OP.SQRT, "sqrt")
         op.set_config("input", input)
         return op
 
@@ -535,7 +535,7 @@ class OpCreator(object):
         if schema_handler.toString() not in support_schemas:
             return self.default(self.cur_node, "aten::mean", *args)
 
-        op = TorchPermuteInvarOp(GTX_OP.MEAN, "mean")
+        op = TorchPermuteInvarOp(OP.MEAN, "mean")
         op.set_config("input", args[0])
         op.set_config("dim", args[1])
         op.set_config("keepdim", args[2])
@@ -543,7 +543,7 @@ class OpCreator(object):
         return op
 
     def relu6(self, input, inplace=False):
-        op = TorchUnaryOp(GTX_OP.RELU6, "ReLU6")
+        op = TorchUnaryOp(OP.RELU6, "ReLU6")
         op.set_config("input", input)
         op.set_config("inplace", inplace)
         return op
@@ -612,9 +612,9 @@ class OpCreator(object):
             if mode == "trilinear":
                 op = TorchResizeTrilinear()
             elif mode == "nearest":
-                op = TorchBaseOperation(GTX_OP.RESIZE_NEAREST_3D, "interpolate")
+                op = TorchBaseOperation(OP.RESIZE_NEAREST_3D, "interpolate")
         else:
-            op = TorchBaseOperation(GTX_OP.INTERPOLATE, "interpolate")
+            op = TorchBaseOperation(OP.INTERPOLATE, "interpolate")
 
         op.set_config("input", input)
         op.set_config("mode", f"'{mode}'")
@@ -696,7 +696,7 @@ class OpCreator(object):
             and 0 in tensor.shape[:-1]
         ):
             op = TorchBaseOperation(
-                GTX_OP.CONSTANT_WITH_RESHAPE, "ConstantWithReshape"
+                OP.CONSTANT_WITH_RESHAPE, "ConstantWithReshape"
             )
             op.set_config("data_shape", tensor.data.shape)
         else:
@@ -731,7 +731,7 @@ class OpCreator(object):
 
         schema_handler = SchemaHelper(self.cur_node.schema)
         if schema_handler.toString() in supported_schemas:
-            op = TorchBinaryOp(GTX_OP.MULTIPLY, "mul")
+            op = TorchBinaryOp(OP.MULTIPLY, "mul")
             op.set_config("input", args[0])
             op.set_config("other", args[1])
             return op
@@ -741,7 +741,7 @@ class OpCreator(object):
     def _to_device(
         self, input, device, dtype, non_blocking=False, copy=False, memory_format=None
     ):
-        op = TorchUnaryOp(GTX_OP.CAST, "to")
+        op = TorchUnaryOp(OP.CAST, "to")
         op.set_config("input", input)
         if isinstance(device, str):
             op.set_config("device", f"'{device}'")
@@ -755,7 +755,7 @@ class OpCreator(object):
     def _to_dtype(
         self, input, dtype, non_blocking=False, copy=False, memory_format=None
     ):
-        op = TorchUnaryOp(GTX_OP.CAST, "to")
+        op = TorchUnaryOp(OP.CAST, "to")
         op.set_config("input", input)
         op.set_config("dtype", scalar_type_to_pytorch_type[dtype])
         op.set_config("non_blocking", bool(non_blocking))
@@ -765,7 +765,7 @@ class OpCreator(object):
     def _to_other(
         self, input, other, non_blocking=False, copy=False, memory_format=None
     ):
-        op = TorchUnaryOp(GTX_OP.CAST, "to")
+        op = TorchUnaryOp(OP.CAST, "to")
         op.set_config("input", input)
         op.set_config("other", other)
         op.set_config("dtype", scalar_type_to_pytorch_type[dtype])
@@ -784,7 +784,7 @@ class OpCreator(object):
         copy=False,
         memory_format=None,
     ):
-        op = TorchUnaryOp(GTX_OP.CAST, "to")
+        op = TorchUnaryOp(OP.CAST, "to")
         op.set_config("input", input)
         if dtype is not None:
             op.set_config("dtype", scalar_type_to_pytorch_type[dtype])
@@ -814,12 +814,12 @@ class OpCreator(object):
 
     def floor(self, input):
         # op = TorchFloor()
-        op = TorchUnaryOp(GTX_OP.FLOOR, "floor")
+        op = TorchUnaryOp(OP.FLOOR, "floor")
         op.set_config("input", input)
         return op
 
     def Int(self, *args):
-        op = TorchUnaryOp(GTX_OP.INT, "int", force_to_primitive=True)
+        op = TorchUnaryOp(OP.INT, "int", force_to_primitive=True)
         op.set_config("input", args[0])
         return op
 
@@ -851,7 +851,7 @@ class OpCreator(object):
 
         schema_handler = SchemaHelper(self.cur_node.schema)
         if schema_handler.toString() in supported_schemas:
-            op = TorchBinaryOp(GTX_OP.DIV, "div")
+            op = TorchBinaryOp(OP.DIV, "div")
             op.set_config("input", args[0])
             op.set_config("other", args[1])
             return op
@@ -868,25 +868,25 @@ class OpCreator(object):
         return op
 
     def hardswish(self, input):
-        op = TorchUnaryOp(GTX_OP.HSWISH, "Hardswish")
+        op = TorchUnaryOp(OP.HSWISH, "Hardswish")
         op.set_config("inplace", False)
         op.set_config("input", input)
         return op
 
     def hardswish_(self, input):
-        op = TorchUnaryOp(GTX_OP.HSWISH, "Hardswish")
+        op = TorchUnaryOp(OP.HSWISH, "Hardswish")
         op.set_config("inplace", True)
         op.set_config("input", input)
         return op
 
     def hardsigmoid(self, input):
-        op = TorchUnaryOp(GTX_OP.HSIGMOID, "Hardsigmoid")
+        op = TorchUnaryOp(OP.HSIGMOID, "Hardsigmoid")
         op.set_config("inplace", False)
         op.set_config("input", input)
         return op
 
     def hardsigmoid_(self, input):
-        op = TorchUnaryOp(GTX_OP.HSIGMOID, "Hardsigmoid")
+        op = TorchUnaryOp(OP.HSIGMOID, "Hardsigmoid")
         op.set_config("inplace", True)
         op.set_config("input", input)
         return op
@@ -913,7 +913,7 @@ class OpCreator(object):
         return op
 
     def sub(self, *args):
-        op = TorchBinaryOp(GTX_OP.SUB, "sub", force_to_primitive=True)
+        op = TorchBinaryOp(OP.SUB, "sub", force_to_primitive=True)
         op.set_config("input", args[0])
         op.set_config("other", args[1])
         if args[2] is not None:
@@ -921,7 +921,7 @@ class OpCreator(object):
         return op
 
     def rsub(self, *args):
-        op = TorchBinaryOp(GTX_OP.RSUB, "rsub", force_to_primitive=True)
+        op = TorchBinaryOp(OP.RSUB, "rsub", force_to_primitive=True)
         op.set_config("input", args[0])
         op.set_config("other", args[1])
         if args[2] is not None:
@@ -959,7 +959,7 @@ class OpCreator(object):
         return op
 
     def expand(self, input, size, *args):
-        op = TorchBaseOperation(GTX_OP.EXPAND, "expand", force_to_primitive=True)
+        op = TorchBaseOperation(OP.EXPAND, "expand", force_to_primitive=True)
         op.set_config("input", input)
         op.set_config("size", size)
         return op
@@ -1188,7 +1188,7 @@ class OpCreator(object):
 
     def slice_tensor_inplace_copy(self, input, src, non_blocking, dim, index):
         op = TorchBaseOperation(
-            GTX_OP.SLICE_TENSOR_INPLACE_COPY,
+            OP.SLICE_TENSOR_INPLACE_COPY,
             "slice_tensor_inplace_copy",
             force_to_primitive=True,
         )
@@ -1201,7 +1201,7 @@ class OpCreator(object):
     def norm(self, input, p, dim, keepdim):
         if str(p) in ["-inf", "inf"]:
             p = f"float('{p}')"
-        op = TorchBaseOperation(GTX_OP.NORM, "norm")
+        op = TorchBaseOperation(OP.NORM, "norm")
         op.set_config("input", input)
         op.set_config("dim", dim)
         op.set_config("keepdim", bool(keepdim))
@@ -1213,15 +1213,15 @@ class OpCreator(object):
 
     def expand_as(self, input, other):
         op = TorchBaseOperation(
-            GTX_OP.EXPAND_AS, "expand_as", force_to_primitive=True
+            OP.EXPAND_AS, "expand_as", force_to_primitive=True
         )
         op.set_config("input", input)
         op.set_config("other", other)
         return op
 
     def max(self, input, dim=None, keepdim=None):
-        op = TorchPermuteInvarOp(GTX_OP.MAX, "max")
-        # op = TorchBaseOperation(GTX_OP.MAX, "max")
+        op = TorchPermuteInvarOp(OP.MAX, "max")
+        # op = TorchBaseOperation(OP.MAX, "max")
         op.set_config("input", input)
         if dim is not None:
             op.set_config("dim", dim)
@@ -1230,7 +1230,7 @@ class OpCreator(object):
         return op
 
     def min(self, input, dim=None, keepdim=None):
-        op = TorchPermuteInvarOp(GTX_OP.MIN, "min")
+        op = TorchPermuteInvarOp(OP.MIN, "min")
         op.set_config("input", input)
         if dim is not None:
             op.set_config("dim", dim)
@@ -1239,7 +1239,7 @@ class OpCreator(object):
         return op
 
     def squeeze(self, input, dim=None):
-        # op = TorchBaseOperation(GTX_OP.SQUEEZE, "squeeze")
+        # op = TorchBaseOperation(OP.SQUEEZE, "squeeze")
         op = TorchSqueeze()
         op.set_config("input", input)
         if dim is not None:
@@ -1257,7 +1257,7 @@ class OpCreator(object):
         ]
 
         schema_handler = SchemaHelper(self.cur_node.schema)
-        op = TorchBaseOperation(GTX_OP.QUANTILE, "quantile")
+        op = TorchBaseOperation(OP.QUANTILE, "quantile")
         op.set_config("input", args[0])
         q_tensor = args[1]
         if isinstance(args[1], Tensor):
@@ -1280,7 +1280,7 @@ class OpCreator(object):
         ]
 
         schema_handler = SchemaHelper(self.cur_node.schema)
-        op = TorchBaseOperation(GTX_OP.QUANTILE, "quantile")
+        op = TorchBaseOperation(OP.QUANTILE, "quantile")
         op.set_config("input", args[0])
         q_tensor = args[1]
         if isinstance(args[1], Tensor):
@@ -1296,28 +1296,28 @@ class OpCreator(object):
 
     def eq(self, input, other):
         # TODO:
-        # op = TorchBaseOperation(GTX_OP.EQUAL, "eq")
+        # op = TorchBaseOperation(OP.EQUAL, "eq")
         if (isinstance(input, Tensor) and input.is_real_tensor()) or (
             isinstance(other, Tensor) and other.is_real_tensor()
         ):
-            op = TorchBaseOperation(GTX_OP.EQUAL, "eq")
+            op = TorchBaseOperation(OP.EQUAL, "eq")
         else:
             op = TorchBaseOperation(
-                GTX_OP.SCALAR_EQUAL, GTX_OP.SCALAR_EQUAL, force_to_primitive=False
+                OP.SCALAR_EQUAL, OP.SCALAR_EQUAL, force_to_primitive=False
             )
         op.set_config("input", input)
         op.set_config("other", other)
         return op
 
     def index(self, input, index):
-        op = TorchBaseOperation(GTX_OP.INDEX, "index", force_to_primitive=True)
+        op = TorchBaseOperation(OP.INDEX, "index", force_to_primitive=True)
         op.set_config("input", input)
         op.set_config("index", index)
         return op
 
     def index_put_(self, input, indices, value, accumulate, *args):
         op = TorchBaseOperation(
-            GTX_OP.INDEX_INPUT_INPLACE, "index_put_", force_to_primitive=True
+            OP.INDEX_INPUT_INPLACE, "index_put_", force_to_primitive=True
         )
         op.set_config("input", input)
         indices = ["slice(None)" if idx is None else idx for idx in indices]
@@ -1327,7 +1327,7 @@ class OpCreator(object):
         return op
 
     def stack(self, input, dim):
-        op = TorchBaseOperation(GTX_OP.STACK, "stack")
+        op = TorchBaseOperation(OP.STACK, "stack")
         op.set_config("tensors", input)
         op.set_config("dim", dim)
         return op
@@ -1368,26 +1368,26 @@ class OpCreator(object):
         return self.dropout(*args)
 
     def QuantStubF(self, input, *args):
-        op = TorchUnaryOp(GTX_OP.QUANT_STUB, "quant_input", force_to_primitive=True)
+        op = TorchUnaryOp(OP.QUANT_STUB, "quant_input", force_to_primitive=True)
         op.set_config("input", input)
         return op
 
     def DeQuantStubF(self, input, *args):
         op = TorchUnaryOp(
-            GTX_OP.DEQUANT_STUB, "dequant_output", force_to_primitive=True
+            OP.DEQUANT_STUB, "dequant_output", force_to_primitive=True
         )
         op.set_config("input", input)
         return op
 
     def RelukF(self, input, inplace, channel_max=6.0):
-        op = TorchBaseOperation(GTX_OP.RELUK, "Reluk", force_to_primitive=True)
+        op = TorchBaseOperation(OP.RELUK, "Reluk", force_to_primitive=True)
         op.set_config("input", input)
         op.set_config("channel_max", channel_max)
         return op
 
     def ChannelScaleF(self, input, inplace, channel_scale=1.0):
         op = TorchBaseOperation(
-            GTX_OP.CHANNEL_SCALE, "Channel_Scale", force_to_primitive=True
+            OP.CHANNEL_SCALE, "Channel_Scale", force_to_primitive=True
         )
         op.set_config("input", input)
         op.set_config("channel_scale", channel_scale)
@@ -1395,13 +1395,13 @@ class OpCreator(object):
 
     def strided_slice_inplace_copy(self, des, dim, start, end, step, src):
         op = TorchBaseOperation(
-            GTX_OP.STRIDED_SLICE_INPLACE_COPY,
-            GTX_OP.STRIDED_SLICE_INPLACE_COPY,
+            OP.STRIDED_SLICE_INPLACE_COPY,
+            OP.STRIDED_SLICE_INPLACE_COPY,
             force_to_primitive=False,
         )
 
         # begin = [0] * len(dim)
-        # last = [gtx_CONSTANT.INT_MAX] * len(dim)
+        # last = [CONSTANT.INT_MAX] * len(dim)
         # stride = [1] * len(dim)
         # for i, pos in enumerate(dim):
         #  begin[pos] = start[i]
@@ -1429,7 +1429,7 @@ class OpCreator(object):
         return op
 
     def Loop(self, max_trip_count, initial_condition, *args):
-        op = TorchBaseOperation(GTX_OP.LOOP, GTX_OP.LOOP, force_to_primitive=False)
+        op = TorchBaseOperation(OP.LOOP, OP.LOOP, force_to_primitive=False)
         if isinstance(max_trip_count, int) and max_trip_count == sys.maxsize:
             op.set_config("is_while_loop", True)
         else:
@@ -1480,7 +1480,7 @@ class OpCreator(object):
         ]
         schema_handler = SchemaHelper(self.cur_node.schema)
         if schema_handler.toString() in supported_schemas:
-            op = TorchUnaryOp(GTX_OP.NEG, "neg")
+            op = TorchUnaryOp(OP.NEG, "neg")
             op.set_config("input", args[0])
             return op
         else:
@@ -1493,7 +1493,7 @@ class OpCreator(object):
         }
         padding_mod_map = {0: "zeros", 1: "border", 2: "reflection"}
 
-        op = TorchBaseOperation(GTX_OP.GRID_SAMPLE, "grid_sample")
+        op = TorchBaseOperation(OP.GRID_SAMPLE, "grid_sample")
         op.set_config("input", input)
         op.set_config("grid", grid)
         op.set_config("mode", f"'{mode_map[mode]}'")
@@ -1502,7 +1502,7 @@ class OpCreator(object):
         return op
 
     def sum(self, input, dim=None, keepdim=False, dtype=None):
-        op = TorchPermuteInvarOp(GTX_OP.SUM, "sum")
+        op = TorchPermuteInvarOp(OP.SUM, "sum")
         op.set_config("input", input)
         if dim is not None:
             op.set_config("dim", dim)
@@ -1511,16 +1511,16 @@ class OpCreator(object):
 
     def tuple_unpack(self, input):
         op = TorchBaseOperation(
-            GTX_OP.TUPLE_UNPACK, "TupleUnpack", force_to_primitive=True
+            OP.TUPLE_UNPACK, "TupleUnpack", force_to_primitive=True
         )
-        # op = TorchBaseOperation(GTX_OP.TUPLE_UNPACK, GTX_OP.TUPLE_UNPACK)
+        # op = TorchBaseOperation(OP.TUPLE_UNPACK, OP.TUPLE_UNPACK)
         op.set_config("input", input)
         return op
 
     def derive_loop_index(self, index, start, step):
         op = TorchBaseOperation(
-            GTX_OP.DERIVE_LOOP_INDEX,
-            GTX_OP.DERIVE_LOOP_INDEX,
+            OP.DERIVE_LOOP_INDEX,
+            OP.DERIVE_LOOP_INDEX,
             force_to_primitive=False,
         )
         op.set_config("input", index)
@@ -1538,13 +1538,13 @@ class OpCreator(object):
         return self._to_dtype(input, 11)
 
     def ceil(self, input):
-        op = TorchBaseOperation(GTX_OP.CEIL, "ceil")
+        op = TorchBaseOperation(OP.CEIL, "ceil")
         op.set_config("input", input)
         return op
 
     def len(self, input):
         op = TorchBaseOperation(
-            GTX_OP.LENGTH, GTX_OP.LENGTH, force_to_primitive=False
+            OP.LENGTH, OP.LENGTH, force_to_primitive=False
         )
         op.set_config("input", input)
         return op
@@ -1552,8 +1552,8 @@ class OpCreator(object):
     def lt(self, input, other):
         # TODO:
         op = TorchBaseOperation(
-            GTX_OP.SCALAR_LESS_THAN,
-            GTX_OP.SCALAR_LESS_THAN,
+            OP.SCALAR_LESS_THAN,
+            OP.SCALAR_LESS_THAN,
             force_to_primitive=False,
         )
         op.set_config("input", input)
@@ -1561,7 +1561,7 @@ class OpCreator(object):
         return op
 
     def If(self, condition):
-        op = TorchBaseOperation(GTX_OP.IF, GTX_OP.IF, force_to_primitive=False)
+        op = TorchBaseOperation(OP.IF, OP.IF, force_to_primitive=False)
         op.set_config("condition", condition)
         return op
 
@@ -1584,7 +1584,7 @@ class OpCreator(object):
         return op
 
     def item(self, input):
-        op = TorchBaseOperation(GTX_OP.TENSOR_TO_SCALAR, "item")
+        op = TorchBaseOperation(OP.TENSOR_TO_SCALAR, "item")
         return op
 
     def stft(
@@ -1598,7 +1598,7 @@ class OpCreator(object):
         onesided,
         return_complex,
     ):
-        op = TorchBaseOperation(GTX_OP.STFT, "stft")
+        op = TorchBaseOperation(OP.STFT, "stft")
         op.set_config("input", input)
         op.set_config("n_fft", n_fft)
         op.set_config("hop_length", hop_length)
@@ -1621,7 +1621,7 @@ class OpCreator(object):
         """
         inline ::std::tuple<at::Tensor,at::Tensor,at::Tensor> unique_dim(const at::Tensor & self, int64_t dim, bool sorted=true, bool return_inverse=false, bool return_counts=false)
         """
-        op = TorchBaseOperation(GTX_OP.UNIQUE_DIM, "unique")
+        op = TorchBaseOperation(OP.UNIQUE_DIM, "unique")
         op.set_config("input", input)
         op.set_config("dim", dim)
         op.set_config("sorted", bool(sorted))
@@ -1634,7 +1634,7 @@ class OpCreator(object):
         """
         inline ::std::tuple<at::Tensor,at::Tensor,at::Tensor> _unique2(const at::Tensor & self, bool sorted=true, bool return_inverse=false, bool return_counts=false)
         """
-        op = TorchBaseOperation(GTX_OP._UNIQUE2, "unique")
+        op = TorchBaseOperation(OP._UNIQUE2, "unique")
         op.set_config("input", input)
         op.set_config("sorted", bool(sorted))
         # force set return number as max return
@@ -1646,7 +1646,7 @@ class OpCreator(object):
         """
         inline ::std::tuple<at::Tensor,at::Tensor> _unique(const at::Tensor & self, bool sorted=true, bool return_inverse=false)
         """
-        op = TorchBaseOperation(GTX_OP._UNIQUE, "unique")
+        op = TorchBaseOperation(OP._UNIQUE, "unique")
         op.set_config("input", input)
         op.set_config("sorted", bool(sorted))
         # force set return number as max return
@@ -1660,10 +1660,10 @@ class OpCreator(object):
 
         schema_handler = SchemaHelper(node.schema)
         op_caller = get_operation_caller_by_schema_name(node.schema.name)
-        node2caller = GLOBAL_MAP.get_ele(gtx_KEYS.NODE_CALLER_MAP)
+        node2caller = GLOBAL_MAP.get_ele(KEYS.NODE_CALLER_MAP)
         if node2caller is None:
             node2caller: Dict[str, Callable] = {}
-            GLOBAL_MAP.set_map(gtx_KEYS.NODE_CALLER_MAP, node2caller)
+            GLOBAL_MAP.set_map(KEYS.NODE_CALLER_MAP, node2caller)
 
         if op_caller is None:
             op = TorchUnknownOperation(op_type)
@@ -1711,7 +1711,7 @@ class OpCreator(object):
         if node.schema is None:
             op = TorchUnknownOperation(op_type)
             return op
-        schema2torchop = GLOBAL_MAP.get_ele(gtx_KEYS.TORCH_SCHEMA_OP_TABLE)
+        schema2torchop = GLOBAL_MAP.get_ele(KEYS.TORCH_SCHEMA_OP_TABLE)
         schema_handler = SchemaHelper(node.schema)
         torchop = schema2torchop.get(schema_handler.toString(), None)
 
@@ -1722,10 +1722,10 @@ class OpCreator(object):
             op = TorchUnknownOperation(op_type)
             return
 
-        node2caller = GLOBAL_MAP.get_ele(gtx_KEYS.NODE_CALLER_MAP)
+        node2caller = GLOBAL_MAP.get_ele(KEYS.NODE_CALLER_MAP)
         if node2caller is None:
             node2caller: Dict[str, Callable] = {}
-            GLOBAL_MAP.set_map(gtx_KEYS.NODE_CALLER_MAP, node2caller)
+            GLOBAL_MAP.set_map(KEYS.NODE_CALLER_MAP, node2caller)
         node2caller[node.name] = torchop.caller
 
         op = TorchBaseOperation(
@@ -1761,15 +1761,15 @@ class OpCreator(object):
         return op
 
     def custom_op(self, node, op_type, *args):
-        node2caller = GLOBAL_MAP.get_ele(gtx_KEYS.NODE_CALLER_MAP)
+        node2caller = GLOBAL_MAP.get_ele(KEYS.NODE_CALLER_MAP)
         if node2caller is None:
             node2caller: Dict[str, Callable] = {}
-            GLOBAL_MAP.set_map(gtx_KEYS.NODE_CALLER_MAP, node2caller)
+            GLOBAL_MAP.set_map(KEYS.NODE_CALLER_MAP, node2caller)
         node2caller[node.name] = node.caller
         op = TorchCustomOperation(op_type, op_type)
         for i, arg in enumerate(args):
             op.set_config(str(i), arg)
-        attrs = GLOBAL_MAP.get_ele(gtx_KEYS.CUSTOM_OP_ATTRS_MAP).get(op_type, None)
+        attrs = GLOBAL_MAP.get_ele(KEYS.CUSTOM_OP_ATTRS_MAP).get(op_type, None)
         if attrs:
             attr_vals = args[len(args) - len(attrs) :]
             for name, val in zip(attrs, attr_vals):
@@ -1811,9 +1811,9 @@ class OpCreator(object):
         )
 
     def Correlation1DElemwiseF(self, input_1, input_2, pad_size):
-        # op = TorchBaseOperation(GTX_OP.CORRELATION1D_ELEMWISE, "Correlation1d_Elemwise", force_to_primitive=True)
+        # op = TorchBaseOperation(OP.CORRELATION1D_ELEMWISE, "Correlation1d_Elemwise", force_to_primitive=True)
         op = TorchCorrelationOperation(
-            GTX_OP.CORRELATION1D_ELEMWISE,
+            OP.CORRELATION1D_ELEMWISE,
             "Correlation1d_Elemwise",
             force_to_primitive=True,
         )
@@ -1823,9 +1823,9 @@ class OpCreator(object):
         return op
 
     def Correlation2DElemwiseF(self, input_1, input_2, pad_size):
-        # op = TorchBaseOperation(GTX_OP.CORRELATION2D_ELEMWISE, "Correlation2d_Elemwise", force_to_primitive=True)
+        # op = TorchBaseOperation(OP.CORRELATION2D_ELEMWISE, "Correlation2d_Elemwise", force_to_primitive=True)
         op = TorchCorrelationOperation(
-            GTX_OP.CORRELATION2D_ELEMWISE,
+            OP.CORRELATION2D_ELEMWISE,
             "Correlation2d_Elemwise",
             force_to_primitive=True,
         )
@@ -1836,7 +1836,7 @@ class OpCreator(object):
 
     def CostVolumeF(self, input_1, input_2, maxdisp):
         op = TorchCostVolumeOperation(
-            GTX_OP.COST_VOLUME, "CostVolume", force_to_primitive=True
+            OP.COST_VOLUME, "CostVolume", force_to_primitive=True
         )
         op.set_config("input_1", input_1)
         op.set_config("input_2", input_2)
@@ -1849,7 +1849,7 @@ class OpCreator(object):
         return op
 
     def list_construct(self, *args):
-        op = TorchBaseOperation(GTX_OP.LIST, GTX_OP.LIST)
+        op = TorchBaseOperation(OP.LIST, OP.LIST)
         if self.cur_node.in_tensors:
             op.set_config("input", list(args))
         else:
@@ -1857,7 +1857,7 @@ class OpCreator(object):
         return op
 
     def tuple_construct(self, *args):
-        op = TorchBaseOperation(GTX_OP.TUPLE, GTX_OP.TUPLE)
+        op = TorchBaseOperation(OP.TUPLE, OP.TUPLE)
         if self.cur_node.in_tensors:
             op.set_config("input", list(args))
         else:
@@ -1865,18 +1865,18 @@ class OpCreator(object):
         return op
 
     def tuple_index(self, input, index):
-        op = TorchBaseOperation(GTX_OP.TUPLE_INDEX, GTX_OP.TUPLE_INDEX)
+        op = TorchBaseOperation(OP.TUPLE_INDEX, OP.TUPLE_INDEX)
         op.set_config("input", input)
         op.set_config("index", index)
         return op
 
     # def device(self, input):
-    #  op = TorchBaseOperation(GTX_OP.DEVICE, ".device")
+    #  op = TorchBaseOperation(OP.DEVICE, ".device")
     #  op.set_config("input", input)
     #  return op
 
     def dtype(self, input):
-        op = TorchBaseOperation(GTX_OP.DTYPE, ".dtype")
+        op = TorchBaseOperation(OP.DTYPE, ".dtype")
         op.set_config("input", input)
         return op
 
@@ -1884,14 +1884,14 @@ class OpCreator(object):
         if dim is not None and keepdim == True:
             op = TorchArgMax_DIM()
         else:
-            op = TorchBaseOperation(GTX_OP.ARGMAX, "argmax")
+            op = TorchBaseOperation(OP.ARGMAX, "argmax")
         op.set_config("input", input)
         op.set_config("dim", dim)
         op.set_config("keepdim", bool(keepdim))
         return op
 
     def _shape_as_tensor(self, input):
-        op = TorchBaseOperation(GTX_OP.SHAPE_AS_TENSOR, "_shape_as_tensor")
+        op = TorchBaseOperation(OP.SHAPE_AS_TENSOR, "_shape_as_tensor")
         op.set_config("input", input)
         return op
 

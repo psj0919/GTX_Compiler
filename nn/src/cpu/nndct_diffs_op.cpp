@@ -18,9 +18,9 @@
 
 
 #include <ATen/ATen.h>
-#include "../../include/gtx_diffs_op.h"
+#include "../../include/diffs_op.h"
 #include "c10/util/ArrayRef.h"
-#include "../../../../../include/cpu/gtx_fix_kernels_cpu.h"
+#include "../../../../../include/cpu/fix_kernels_cpu.h"
 //#include <iostream>
 
 template <typename Dtype>

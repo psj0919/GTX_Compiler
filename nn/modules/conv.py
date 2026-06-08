@@ -18,11 +18,11 @@ import torch
 from torch.autograd import Variable
 import math
 
-from gtx_shared.utils import GtxOption, GtxScreenLogger, QError, QWarning
-from gtx_shared.quantization import maybe_get_quantizer
-from gtx_shared.quantization import quantize_tensors
+from shared.utils import Option, ScreenLogger, QError, QWarning
+from shared.quantization import maybe_get_quantizer
+from shared.quantization import quantize_tensors
 from .quant_noise import eval_qnoise
-from gtx_utils.op_register import register_quant_op
+from utils.op_register import register_quant_op
 import torch.nn.functional as F
 
 __all__ = ["conv2d"]
@@ -43,12 +43,12 @@ class Conv2d(torch.nn.modules.conv.Conv2d):
         self.weight_bak = None  # backup of float bias for bias correction
         self.bias_bak = None  # backup of float bias for bias correction
         self.stop = False
-        self.rate = GtxOption.gtx_param_corr_rate.value
+        self.rate = Option.param_corr_rate.value
         self.efficency = 0.0
         self.deviation = 0.0
 
     def forward(self, input):
-        if self.quantizer is None or GtxOption.gtx_quant_off.value is True:
+        if self.quantizer is None or Option.quant_off.value is True:
             return self.fp32_forward(input)
         else:
             return self.fake_quantize_forward(input)
@@ -59,7 +59,7 @@ class Conv2d(torch.nn.modules.conv.Conv2d):
     def fake_quantize_forward(self, input):
         # backup bias for bias correction feature
         if not self.param_saved:
-            if GtxOption.gtx_param_corr.value > 0:
+            if Option.param_corr.value > 0:
                 # backup orignal float parameters
                 if self.quant_mode == 1:
                     self.weight_bak = self.weight.detach().clone()
@@ -68,7 +68,7 @@ class Conv2d(torch.nn.modules.conv.Conv2d):
                 # adjust bias
                 if self.quant_mode == 2 and self.bias is not None:
                     if not self.quantizer.has_bias_corr(self.node):
-                        GtxScreenLogger().error2user(
+                        ScreenLogger().error2user(
                             QError.BIAS_CORRECTION,
                             f"Bias correction file in quantization result directory does not match current model.",
                         )
@@ -87,7 +87,7 @@ class Conv2d(torch.nn.modules.conv.Conv2d):
         qweight = None
         qbias = None
         inplace = (
-            GtxOption.gtx_quant_off.value
+            Option.quant_off.value
             or self.quantizer is not None
             and self.quantizer.inplace
         )
@@ -122,7 +122,7 @@ class Conv2d(torch.nn.modules.conv.Conv2d):
                         tensor_names=[self.params_name[1]],
                         tensor_type="param",
                     )[0]
-            if not GtxOption.gtx_quant_off.value:
+            if not Option.quant_off.value:
                 self.param_quantized = True
         else:
             qweight = self.weight
@@ -142,8 +142,8 @@ class Conv2d(torch.nn.modules.conv.Conv2d):
         output = quantize_tensors([output], self.node)[0]
 
         # correct weights and bias in calibation
-        if GtxOption.gtx_param_corr.value > 0:
-            # rate = GtxOption.gtx_param_corr_rate.value
+        if Option.param_corr.value > 0:
+            # rate = Option.param_corr_rate.value
             # statistic of quantization error
             if self.quant_mode == 1 and not self.stop:
                 res_f = torch.nn.functional.conv2d(
@@ -179,3 +179,17 @@ def conv2d(*args, **kwargs):
     if quant_mode == None:
         return torch.nn.Conv2d(*args, **kwargs)
     return Conv2d(*args, **kwargs)
+
+
+# --- ggml/vision.cpp codegen (render) ---
+from shared.compile.render_api import register_render as _register_render
+from shared.base import OP as _OP
+
+
+@_register_render(_OP.CONV2D)
+def render(node, ctx):
+    has_bias = bool(ctx.attr(node, "bias", False))
+    key = ctx.weight(node, ["weight"] + (["bias"] if has_bias else []))
+    s = ctx.scalar(ctx.attr(node, "stride", [1, 1]))
+    p = ctx.scalar(ctx.attr(node, "padding", [0, 0]))
+    return ctx.out(node, f"conv_2d({key}, {ctx.inp(node)}, {s}, {p})")

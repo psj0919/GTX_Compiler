@@ -22,11 +22,11 @@ import types
 import torch
 from torch.utils._python_dispatch import _disable_current_modes
 
-from gtx_shared.base import GLOBAL_MAP, gtx_KEYS, GTX_OP
+from shared.base import GLOBAL_MAP, KEYS, OP
 
-from gtx_shared.gtx_graph import Block, Graph, Node, convert_graph_to_block_node
-from gtx_shared.gtx_graph import operator_definition as base_op
-import gtx_shared.utils as gtx_utils
+from shared.graph import Block, Graph, Node, convert_graph_to_block_node
+from shared.graph import operator_definition as base_op
+import shared.utils as utils
 
 from .ModuleHooker import ModuleHooker
 from .utils import (
@@ -38,9 +38,9 @@ from .utils import (
 from quantization.torch_qconfig import TorchQConfig
 from quantization.fakequantizer import FakeQuantizer
 from quantization.torchquantizer import TORCHQuantizer
-from gtx_shared.utils import (
-    GtxOption,
-    GtxScreenLogger,
+from shared.utils import (
+    Option,
+    ScreenLogger,
     option_util,
     QError,
     QWarning,
@@ -51,10 +51,10 @@ from torch._dynamo.backends.common import fake_tensor_unsupported
 
 def build_root_graph():
     root_graph = Graph("root")
-    op = base_op.CustomOp(GTX_OP.PLACEHOLDER)
+    op = base_op.CustomOp(OP.PLACEHOLDER)
     input_node = Node(name="input_placeholder", op=op, in_quant_part=False)
     input_node.owning_graph = root_graph
-    op = base_op.CustomOp(GTX_OP.PLACEHOLDER)
+    op = base_op.CustomOp(OP.PLACEHOLDER)
     return_node = Node(name="return_placeholder", op=op, in_quant_part=False)
     return_node.owning_graph = root_graph
 
@@ -65,11 +65,11 @@ def build_root_graph():
 
 def init_graph_counter():
     counter = itertools.count(0)
-    GLOBAL_MAP.set_map(gtx_KEYS.GRAPH_COUNTER, counter)
+    GLOBAL_MAP.set_map(KEYS.GRAPH_COUNTER, counter)
 
 
 def get_graph_id():
-    return next(GLOBAL_MAP.get_ele(gtx_KEYS.GRAPH_COUNTER))
+    return next(GLOBAL_MAP.get_ele(KEYS.GRAPH_COUNTER))
 
 
 def convert_gm_to_quantizable_module(
@@ -199,7 +199,7 @@ def init_wego_dynamo_env(
     output_dir, device=torch.device("cpu"), quant_config_file=None
 ):
     torch._dynamo.reset()
-    gtx_utils.create_work_dir(output_dir)
+    utils.create_work_dir(output_dir)
 
     # Parse the quant config file
     QConfiger = TorchQConfig()
@@ -210,7 +210,7 @@ def init_wego_dynamo_env(
     qconfig = QConfiger.qconfig
     quantizer, qmode = init_quant_env("test", output_dir, qconfig)
     # device = torch.device("")
-    GLOBAL_MAP.set_map(gtx_KEYS.QUANT_DEVICE, device)
+    GLOBAL_MAP.set_map(KEYS.QUANT_DEVICE, device)
     root_graph = build_root_graph()
     init_graph_counter()
     quant_model_lst = []
@@ -221,20 +221,20 @@ def init_wego_dynamo_env(
         quant_model_lst=quant_model_lst,
         device=device,
     )
-    GLOBAL_MAP.set_map(gtx_KEYS.WEGO_DYNAMO_SCRIPTER, _wego_traced_script_fn)
+    GLOBAL_MAP.set_map(KEYS.WEGO_DYNAMO_SCRIPTER, _wego_traced_script_fn)
 
 
 # WEGO API
 @torch.no_grad()
 def get_traced_quantized_script(gm, example_inputs, graph_id):
-    scripter_fn = GLOBAL_MAP.get_ele(gtx_KEYS.WEGO_DYNAMO_SCRIPTER)
+    scripter_fn = GLOBAL_MAP.get_ele(KEYS.WEGO_DYNAMO_SCRIPTER)
     script_model = scripter_fn(gm, example_inputs, graph_id=graph_id)
     return script_model
 
 
 def init_quant_env(quant_mode, output_dir, quant_strategy_info, is_lstm=False):
     if isinstance(quant_mode, int):
-        GtxScreenLogger().warning(
+        ScreenLogger().warning(
             f"quant_mode will not support integer value in future version. It supports string values 'calib' and 'test'."
         )
         qmode = quant_mode
@@ -244,23 +244,23 @@ def init_quant_env(quant_mode, output_dir, quant_strategy_info, is_lstm=False):
         elif quant_mode == "test":
             qmode = 2
         else:
-            GtxScreenLogger().warning(
+            ScreenLogger().warning(
                 f"quant_mode supported values are 'calib' and 'test'. Change it to 'calib' as calibration mode."
             )
             qmode = 1
     else:
-        GtxScreenLogger().warning(
+        ScreenLogger().warning(
             f"quant_mode supported values are string 'calib' and 'test'. Change it to 'calib' as calibration mode."
         )
         qmode = 1
 
-    if GtxOption.gtx_quant_mode.value > 0:
-        qmode = GtxOption.gtx_quant_mode.value
+    if Option.quant_mode.value > 0:
+        qmode = Option.quant_mode.value
 
     if qmode == 1:
-        GtxScreenLogger().info(f"Quantization calibration process start up...")
+        ScreenLogger().info(f"Quantization calibration process start up...")
     elif qmode == 2:
-        GtxScreenLogger().info(f"Quantization test process start up...")
+        ScreenLogger().info(f"Quantization test process start up...")
 
     target_device = quant_strategy_info["target_device"]
     if target_device == "DPU":
@@ -271,7 +271,7 @@ def init_quant_env(quant_mode, output_dir, quant_strategy_info, is_lstm=False):
         quantizer = FakeQuantizer.create_from_strategy(
             qmode, output_dir, quant_strategy_info, is_lstm=is_lstm
         )
-    GLOBAL_MAP.set_map(gtx_KEYS.QUANTIZER, quantizer)
-    GLOBAL_MAP.set_map(gtx_KEYS.QUANT_MODE, qmode)
-    GLOBAL_MAP.set_map(gtx_KEYS.QUANT_CONFIG, quant_strategy_info)
+    GLOBAL_MAP.set_map(KEYS.QUANTIZER, quantizer)
+    GLOBAL_MAP.set_map(KEYS.QUANT_MODE, qmode)
+    GLOBAL_MAP.set_map(KEYS.QUANT_CONFIG, quant_strategy_info)
     return quantizer, qmode

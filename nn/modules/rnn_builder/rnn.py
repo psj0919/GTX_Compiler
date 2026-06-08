@@ -79,7 +79,7 @@ class StackedLstm(torch.nn.Module):
                 hidden_states = list(
                     zip(initial_state[0].split(1, 0), initial_state[1].split(1, 0))
                 )
-        # print(f"gtx_inputs:{inputs}")
+        # print(f"inputs:{inputs}")
         output_sequence = inputs
 
         if self.stack_mode in ["bidirectional"]:
@@ -130,13 +130,13 @@ class StackedLstm(torch.nn.Module):
 
                 output_sequence, final_state = layer(output_sequence, state)
 
-                # print(f"gtx_layer{i} output:{output_sequence}")
+                # print(f"layer{i} output:{output_sequence}")
                 final_states.append(final_state)
 
             final_hidden_state, final_cell_state = tuple(
                 torch.cat(state_list, 0) for state_list in zip(*final_states)
             )
-        # print(f"gtx_final_output:{output_sequence}")
+        # print(f"final_output:{output_sequence}")
         return output_sequence, (final_hidden_state, final_cell_state)
 
 
@@ -234,7 +234,7 @@ class StackedGru(torch.nn.Module):
                 hidden_states = list(
                     zip(initial_state.split(1, 0), initial_state.split(1, 0))
                 )
-        # print(f"gtx_inputs:{inputs}")
+        # print(f"inputs:{inputs}")
         output_sequence = inputs
 
         if self.stack_mode in ["bidirectional"]:
@@ -281,14 +281,14 @@ class StackedGru(torch.nn.Module):
 
                 output_sequence, final_state = layer(output_sequence, state)
 
-                #   print(f"gtx_layer{i} output:{output_sequence}")
+                #   print(f"layer{i} output:{output_sequence}")
                 final_states.append(final_state)
 
             final_hidden_state = tuple(
                 torch.cat(state_list, 0) for state_list in zip(*final_states)
             )
 
-        #  print(f"gtx_final_output:{output_sequence}")
+        #  print(f"final_output:{output_sequence}")
         return output_sequence, (final_hidden_state)
 
 

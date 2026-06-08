@@ -15,10 +15,10 @@
 #
 
 import torch
-from gtx_shared.utils import GtxOption
-from gtx_shared.quantization import maybe_get_quantizer
-from gtx_shared.quantization import quantize_tensors
-import gtx_utils as py_utils
+from shared.utils import Option
+from shared.quantization import maybe_get_quantizer
+from shared.quantization import quantize_tensors
+import utils as py_utils
 
 __all__ = ["embedding"]
 
@@ -41,7 +41,7 @@ class Embedding(torch.nn.modules.sparse.Embedding):
             )
 
         inplace = (
-            GtxOption.gtx_quant_off.value
+            Option.quant_off.value
             or self.quantizer is not None
             and self.quantizer.inplace
         )
@@ -71,7 +71,7 @@ class Embedding(torch.nn.modules.sparse.Embedding):
                     tensor_names=[self.params_name[0]],
                     tensor_type="param",
                 )
-            if not GtxOption.gtx_quant_off.value:
+            if not Option.quant_off.value:
                 self.param_quantized = True
         else:
             qparams = [self.weight]

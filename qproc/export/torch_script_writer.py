@@ -17,13 +17,13 @@
 import abc
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List
-import gtx_utils as py_utils
-from gtx_shared.base.key_names import FrameworkType, GTX_OP
-from gtx_shared.gtx_graph import Graph, Node, Tensor
-from gtx_utils import TorchOpClassType, TorchSymbol
+import utils as py_utils
+from shared.base.key_names import FrameworkType, OP
+from shared.graph import Graph, Node, Tensor
+from utils import TorchOpClassType, TorchSymbol
 
 from .op_descriptor import MISC_OP_DISCR_MAP
-from gtx_shared.utils import GtxOption
+from shared.utils import Option
 
 class TorchBaseScriptWriter(metaclass=abc.ABCMeta):
     def __init__(self):
@@ -46,7 +46,7 @@ class TorchBaseScriptWriter(metaclass=abc.ABCMeta):
         self._write_graph(f, graph)
 
     def _write_header(self, f: Callable, graph: Graph):
-        f.write(f"# GENETARED BY SuperGate GTX Compiler, DO NOT EDIT!\n\n")
+        f.write(f"# GENETARED BY SuperGate  Compiler, DO NOT EDIT!\n\n")
         f.write(f"import torch\nfrom torch import tensor\n")
 
     def _write_graph(self, f: Callable, graph: Graph):
@@ -122,7 +122,7 @@ class TorchBaseScriptWriter(metaclass=abc.ABCMeta):
         def dfs():
             pass
 
-        if GtxOption.gtx_traversal_graph_mode.value == 1:
+        if Option.traversal_graph_mode.value == 1:
             dfs = dfs_recursion
         else:
             dfs = dfs_iteration
@@ -131,7 +131,7 @@ class TorchBaseScriptWriter(metaclass=abc.ABCMeta):
             return
 
         visited = []
-        input_nodes = [node for node in graph.nodes if node.op.type == GTX_OP.INPUT]
+        input_nodes = [node for node in graph.nodes if node.op.type == OP.INPUT]
         for node in input_nodes:
             dfs(node, visited)
 
@@ -462,8 +462,15 @@ class TorchQuantScriptWriter(TorchBaseScriptWriter):
             )
 
         if not is_defined_op:
+            # op-type 은 대문자로 내보낸다 (예: 'conv2d' -> 'CONV2D').
+            # 프레임워크 접두사 'ATEN::' 와 in-place 표식 trailing '_' 는 제거한다
+            # (전부 ggml 로 실행하므로 깔끔한 op 명으로: 'aten::silu_' -> 'SILU').
+            op_str = str(node.op.type).upper()
+            if op_str.startswith("ATEN::"):
+                op_str = op_str[len("ATEN::"):]
+            op_str = op_str.rstrip("_")
             attrs_str = (
-                f"'{node.op.type}',{attrs_str}" if attrs_str else f"'{node.op.type}'"
+                f"'{op_str}',{attrs_str}" if attrs_str else f"'{op_str}'"
             )
 
         return op_name, attrs_str
@@ -567,4 +574,4 @@ class TorchQuantScriptWriter(TorchBaseScriptWriter):
     def _write_header(self, f, graph):
         super()._write_header(f, graph)
         f.write(f"import nn\n")
-        f.write("\nclass {}(nn.GTX_QuantModel):\n".format(graph.name))
+        f.write("\nclass {}(nn.QuantModel):\n".format(graph.name))

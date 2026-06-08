@@ -4,10 +4,10 @@ import math
 import functools
 
 #
-from gtx_shared.utils import (
+from shared.utils import (
     AddXopError,
-    GtxOption,
-    GtxScreenLogger,
+    Option,
+    ScreenLogger,
     option_util,
     QError,
     QWarning,
@@ -15,7 +15,7 @@ from gtx_shared.utils import (
 
 
 def logging_warn(message):
-    GtxScreenLogger().warning2user(QWarning.FLOAT_OP, message)
+    ScreenLogger().warning2user(QWarning.FLOAT_OP, message)
 
 
 # -----------------------------------------------------------------------------
@@ -179,7 +179,7 @@ def chunk(input: TraceTensor, chunks: int, dim: int = 0):
 
 
 def check_big_pooling(kernel_size, stride, padding):
-    if not GtxOption.gtx_pooling_split_mode.value:
+    if not Option.pooling_split_mode.value:
         return False
 
     if isinstance(kernel_size, int):

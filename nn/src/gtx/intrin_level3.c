@@ -1,7 +1,7 @@
 //==================================================================
 // Copyright   : (C) Supergate - All Rights Reserved
 // Project     : GSF / VTS
-// Description : GTX intrinsic function description (level 3)
+// Description :  intrinsic function description (level 3)
 //				 complex operation intrinsic function consisting of compound instructions
 // Author      : mh.kim ( NPU Div - NPU Core Team )    
 // Last Update : 2025/12/15
@@ -13,7 +13,7 @@
 #include "intrin_level1.h"
 #include "intrin_level2.h"
 #include "intrin_level3.h"
-#include "gtx_csr.h"
+#include "csr.h"
 
 
 //=================================

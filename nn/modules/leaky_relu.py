@@ -15,10 +15,10 @@
 #
 
 import torch
-from gtx_shared.quantization import maybe_get_quantizer
-from gtx_shared.quantization import quantize_tensors
-import gtx_utils as py_utils
-from gtx_shared.utils import GtxOption
+from shared.quantization import maybe_get_quantizer
+from shared.quantization import quantize_tensors
+import utils as py_utils
+from shared.utils import Option
 
 __all__ = ["leakyReLU"]
 
@@ -29,7 +29,7 @@ class LeakyReLU(torch.nn.LeakyReLU):
     def __init__(self, *args, **kwargs):
         # only support the specified slope and inplace operation
         super().__init__(*args, **kwargs)
-        if GtxOption.gtx_leaky_relu_approximate.value:
+        if Option.leaky_relu_approximate.value:
             self.negative_slope = 0.1015625
         self.quant_mode, self.quantizer = maybe_get_quantizer()
         self.node = None
@@ -44,6 +44,6 @@ class LeakyReLU(torch.nn.LeakyReLU):
 @py_utils.register_quant_op
 def leakyReLU(*args, **kwargs):
     quant_mode, _ = maybe_get_quantizer()
-    if quant_mode is None or GtxOption.gtx_quant_off.value:
+    if quant_mode is None or Option.quant_off.value:
         return torch.nn.LeakyReLU(*args, **kwargs)
     return LeakyReLU(*args, **kwargs)
