@@ -33,7 +33,10 @@ from shared.base import OP as _OP
 # ------------------------------------------------------------- 활성화
 @_rr(_OP.GELU)
 def render_gelu(node, ctx):
-    return ctx.out(node, f"ggml_gelu(m, {ctx.inp(node)})", hint="gelu")
+    # approximate: 'none'(erf, 정확) / 'tanh'(기본) / 'quick'(sigmoid 근사)
+    approx = str(ctx.attr(node, "approximate", "tanh")).lower()
+    fn = {"none": "ggml_gelu_erf", "quick": "ggml_gelu_quick"}.get(approx, "ggml_gelu")
+    return ctx.out(node, f"{fn}(m, {ctx.inp(node)})", hint="gelu")
 
 
 @_rr(_OP.TANH)

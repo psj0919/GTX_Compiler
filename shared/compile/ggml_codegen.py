@@ -39,8 +39,22 @@ class VispCodeGenerator:
         # op 렌더러 등록 트리거 (nn/modules/*.py 의 @register_render)
         import nn.modules  # noqa: F401
 
+        # op 시퀀스 → 단일 fused ggml op 융합 (SwiGLU/RMS_NORM/FLASH_ATTN 등)
+        from shared.compile.ggml_fusion import detect_fusions
+
+        anchor_emit, skip = detect_fusions(self.graph)
+
         last_var = "x"
         for node in self.graph.nodes:
+            nid = id(node)
+            # --- fused 패턴: 내부 노드는 스킵, anchor 에서 단일 ggml 호출 emit ---
+            if nid in skip:
+                continue
+            if nid in anchor_emit:
+                spec, roles = anchor_emit[nid]
+                last_var = ctx.out(node, spec.emit(ctx, roles), hint=spec.name)
+                continue
+
             ot = op_value(node)
 
             # --- 구조적 op (전용 모듈 파일 없음) ---

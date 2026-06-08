@@ -101,4 +101,5 @@ def emitted_builders(roots=None):
             for m in re.findall(r"\bggml_[a-z0-9_]+", txt):
                 out.add(m)
                 out.add(re.sub(r"_(1|2|3|4)d$", "", m))  # reshape_2d → reshape (별칭도)
+                out.add(re.sub(r"_split$", "", m))       # geglu_split → geglu (GLU 융합)
     return out

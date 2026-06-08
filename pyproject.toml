@@ -9,6 +9,7 @@ dependencies = [
     "torchvision>=0.20.1",
     "tqdm",
     "ultralytics",
+    "networkx",            # shared/inspector SubgraphMatcher (fused op 패턴 매칭)
 ]
 
 [project.scripts]
