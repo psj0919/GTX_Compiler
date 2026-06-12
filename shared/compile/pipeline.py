@@ -430,7 +430,13 @@ def build_model(model_spec: str, pth: str = None, input_shape=None):
     else:
         import torchvision.models as tvm
 
-        model = getattr(tvm, model_spec)()
+        fn = getattr(tvm, model_spec)
+        try:
+            model = fn(weights="DEFAULT")   # 기본: pretrained 가중치
+            print(f"  → torchvision {model_spec}: pretrained(DEFAULT) 가중치 로드")
+        except Exception as e:
+            print(f"  ⚠ {model_spec} pretrained 로드 실패({e}) → random 가중치")
+            model = fn()
 
     model = model.cpu().eval()
 
