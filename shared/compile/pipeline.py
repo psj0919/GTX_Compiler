@@ -48,31 +48,194 @@ if project_root not in sys.path:
 # --------------------------------------------------------------------------
 # codegen / weight 직렬화
 # --------------------------------------------------------------------------
-def generate_ggml_code(graph, output_dir: str, model_name: str = "model"):
-    """Graph → vision.cpp(ggml) arch 스타일 C++ 소스코드 생성. 설계: docs/ggml_codegen.md"""
+def generate_ggml_code(graph, output_dir: str, model_name: str = "model", quant_plan=None):
+    """Graph → vision.cpp(ggml) arch 스타일 C++ 소스코드 생성. 설계: docs/ggml_codegen.md
+
+    quant_plan: build_quant_plan 결과. 양자 conv 노드는 conv_2d_q 로 emit + 헬퍼 주입.
+    """
     from shared.compile.ggml_codegen import VispCodeGenerator
 
-    codegen = VispCodeGenerator(graph, output_dir=output_dir, model_name=model_name)
+    codegen = VispCodeGenerator(graph, output_dir=output_dir, model_name=model_name,
+                                quant_plan=quant_plan)
     return codegen.generate()
 
 
-def generate_gguf(graph, output_dir: str, model_name: str, arch_id: str):
-    """그래프의 (Conv-BN folded) 파라미터를 fp16 GGUF 로 직렬화한다.
+# ── 양자화 두 갈래 ──────────────────────────────────────────────────────────
+# (A) in-process: gguf-py 가 순수 파이썬으로 quantize 를 구현한 legacy 타입(block=32).
+#     arch 무관, 외부 의존 없음. 자격되는 2D Linear 가중치에만 적용.
+_GGUF_QUANTS = {"q8_0", "q4_0", "q4_1", "q5_0", "q5_1"}
+_GGUF_QUANT_BLOCK = 32
+# (B) 외부 llama-quantize 경유: k-quant / IQ-quant (gguf-py 에 quantize 미구현).
+#     fp16 GGUF 를 먼저 쓰고 `llama-quantize <in> <out> <TYPE>` 로 변환. 바이너리 필요.
+#     주의: llama-quantize 는 general.architecture 로 모델을 로드 → vision arch
+#     ('resnet'/'yolo')를 llama.cpp 가 모르면 실패할 수 있음(LLM 전용 도구).
+_LLAMA_QUANTS = {
+    "q2_k", "q2_k_s", "q3_k_s", "q3_k_m", "q3_k_l", "q4_k_s", "q4_k_m",
+    "q5_k_s", "q5_k_m", "q6_k", "q8_k",
+    "iq1_s", "iq1_m", "iq2_xxs", "iq2_xs", "iq2_s", "iq2_m",
+    "iq3_xxs", "iq3_xs", "iq3_s", "iq3_m", "iq4_xs", "iq4_nl",
+}
+
+
+def _resolve_quant(gguf, quant):
+    """quant 문자열 → (kind, payload, block).
+
+      kind 'py'    : payload=GGMLQuantizationType (in-process), block=32
+      kind 'llama' : payload=대문자 타입명(예 'Q4_K_M'), block=None
+      kind 'none'  : fp16 (payload/block=None)
+    """
+    if not quant:
+        return "none", None, None
+    q = quant.lower()
+    if q in ("none", "fp16", "f16"):
+        return "none", None, None
+    if q in _GGUF_QUANTS:
+        return "py", getattr(gguf.GGMLQuantizationType, q.upper()), _GGUF_QUANT_BLOCK
+    if q in _LLAMA_QUANTS:
+        return "llama", quant.upper(), None
+    print(f"  ⚠ --quantize '{quant}' 미지원 → fp16. "
+          f"(in-process: {sorted(_GGUF_QUANTS)} / llama-quantize: {sorted(_LLAMA_QUANTS)})")
+    return "none", None, None
+
+
+def _find_llama_quantize():
+    """llama-quantize 바이너리 탐색: $LLAMA_QUANTIZE → PATH → vision.cpp 빌드 디렉토리."""
+    import shutil
+
+    env = os.environ.get("LLAMA_QUANTIZE")
+    if env and os.path.isfile(env) and os.access(env, os.X_OK):
+        return env
+    for name in ("llama-quantize", "quantize"):
+        p = shutil.which(name)
+        if p:
+            return p
+    for cand in (
+        os.path.join(project_root, "vision.cpp", "build", "bin", "llama-quantize"),
+        os.path.join(project_root, "vision.cpp", "depend", "llama", "build", "bin", "llama-quantize"),
+    ):
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return None
+
+
+def _llama_quantize_file(src_gguf, dst_gguf, type_name):
+    """fp16 GGUF(src)를 llama-quantize 로 type_name(k/IQ-quant) 변환 → dst. 성공 시 True."""
+    import subprocess
+
+    binpath = _find_llama_quantize()
+    if not binpath:
+        print(f"  ⚠ k-quant '{type_name}' 요청이지만 llama-quantize 바이너리를 못 찾음 "
+              f"→ fp16 유지.\n"
+              f"      llama.cpp 빌드 후 PATH 또는 $LLAMA_QUANTIZE 로 지정하세요:\n"
+              f"      llama-quantize {src_gguf} <out.gguf> {type_name}")
+        return False
+    try:
+        print(f"  → llama-quantize ({binpath}) {type_name} …")
+        subprocess.run([binpath, src_gguf, dst_gguf, type_name], check=True)
+        return os.path.isfile(dst_gguf)
+    except subprocess.CalledProcessError as e:
+        print(f"  ⚠ llama-quantize 실패(exit {e.returncode}) → fp16 유지. "
+              f"vision arch 를 llama.cpp 가 인식 못 했을 수 있음(--pure 또는 arch 지원 필요).")
+        return False
+
+
+# conv/linear op 식별 (build_quant_plan 용). depthwise conv 는 row=KH*KW 가 작아 제외.
+_PLAN_CONV = {"conv2d"}
+_PLAN_LINEAR = {"linear", "dense", "addmm", "matmul"}
+
+
+def _node_weight_tensor(node):
+    """노드의 .weight 파라미터 텐서 반환(없으면 None)."""
+    params = getattr(getattr(node, "op", None), "params", None) or {}
+    try:
+        items = list(params.values())
+    except AttributeError:
+        return None
+    for t in items:
+        nm = (getattr(t, "name", "") or "").split("::")[-1]
+        if nm.endswith(".weight"):
+            return t
+    return None
+
+
+def build_quant_plan(graph, quant):
+    """양자화 단일 진실원천: (kind, payload, plan).
+
+    plan = {weight_key: {"qtype", "kind"('conv'|'linear'), "kh", "kw"}} — gguf(저장 형태)와
+    codegen(conv_2d_q emit 여부) 가 **같은 plan** 을 본다. conv-as-matmul 양자화(커널을
+    2D [OC, IC*KH*KW] 로 보고 mul_mat)는 in-process legacy quant('py') 에서만. 'llama'/'none'
+    은 plan 비움(conv 4D 유지 + 후처리/fp16).
+
+    자격: conv 는 row=IC*KH*KW % block==0, linear 는 in_features % block==0.
+    그래프 conv weight 레이아웃은 [OC,KH,KW,IC] (generate_gguf 의 OIHW transpose 전).
+    """
+    import numpy as _np
+
+    gguf_py = os.path.join(project_root, "vision.cpp", "depend", "llama", "gguf-py")
+    if gguf_py not in sys.path:
+        sys.path.insert(0, gguf_py)
+    try:
+        import gguf
+    except Exception:
+        return "none", None, {}
+
+    from shared.compile.render_api import weight_key
+
+    kind, payload, qblock = _resolve_quant(gguf, quant)
+    plan = {}
+    if kind != "py":
+        return kind, payload, plan
+
+    for node in getattr(graph, "nodes", []):
+        ot = str(getattr(getattr(node, "op", None), "type", "")).lower()
+        is_conv = ot in _PLAN_CONV
+        is_lin = ot in _PLAN_LINEAR
+        if not (is_conv or is_lin):
+            continue
+        wt = _node_weight_tensor(node)
+        if wt is None:
+            continue
+        shp = tuple(int(d) for d in _np.asarray(wt.data).shape)
+        wk = weight_key(node)
+        if is_conv and len(shp) == 4:
+            _oc, kh, kw, ic = shp                 # 그래프 conv weight = [OC,KH,KW,IC]
+            if (ic * kh * kw) % qblock == 0:
+                plan[wk] = {"qtype": payload, "kind": "conv", "kh": kh, "kw": kw}
+        elif is_lin and len(shp) == 2:
+            if shp[1] % qblock == 0:               # [out, in]
+                plan[wk] = {"qtype": payload, "kind": "linear"}
+    return kind, payload, plan
+
+
+def generate_gguf(graph, output_dir: str, model_name: str, arch_id: str,
+                  quant=None, plan=None):
+    """그래프의 (Conv-BN folded) 파라미터를 GGUF 로 직렬화한다(기본 fp16).
 
     weight 는 `model.state_dict()` 가 아니라 **그래프 node.op.params** 에서 모은다 →
     `fold_conv_bn_graph` 의 fold 결과(folded conv weight/bias, BN 제거)가 GGUF 에 반영된다.
     텐서명은 param 이름에서 `<GraphName>::` prefix 를 떼 state_dict 키(`layer1.0.conv1.weight`)
     로 만든다 → 생성 .cpp 의 weight_key(`m["layer1.0.conv1"]`)와 정합. metadata
     `general.architecture = arch_id`. GGUF writer 는 vision.cpp 에 vendor 된 gguf-py 사용.
+
+    quant: None/'fp16' → 전부 fp16. 'q8_0'/'q4_0'/'q4_1'/'q5_0'/'q5_1' → ggml 블록 양자화를
+    **자격 텐서에만** 적용(per-tensor 혼합). 자격: 2D weight(Linear) & 마지막 차원 % 32 == 0.
+    conv 4D 커널은 GGUF 연속 차원이 KW 라 블록 정합 불가 + ggml conv 가 양자 커널 미소비 →
+    제외(fp16 유지). 나머지(bias/BN/scale)도 fp16. 자격 안 되면 조용히 fp16 폴백 후 리포트.
     """
     gguf_py = os.path.join(project_root, "vision.cpp", "depend", "llama", "gguf-py")
     if gguf_py not in sys.path:
         sys.path.insert(0, gguf_py)
     try:
         import gguf
+        from gguf import quants as gguf_quants
     except Exception as e:
         print(f"  ⚠ gguf 로드 실패 ({e}) — GGUF 생략")
         return None
+
+    kind, payload, qblock = _resolve_quant(gguf, quant)
+    if plan is None:
+        _, _, plan = build_quant_plan(graph, quant)
+    from shared.compile.render_api import weight_key
 
     # 그래프 파라미터 수집(이름 dedup). conv/bn/linear 등 weight-bearing 노드의 param.
     # TorchParser 는 conv weight 를 PyTorch 와 다른 레이아웃으로 저장 → GGUF/.cpp/eager 가
@@ -81,7 +244,7 @@ def generate_gguf(graph, output_dir: str, model_name: str, arch_id: str):
     #   depthwise    : graph [1,KH,KW,C]   → [C,1,KH,KW]             = (3,0,1,2)
     _CONV_REG = {"conv2d", "conv1d", "conv3d"}
     _CONV_DW = {"depthwise_conv2d", "depthwise_conv1d", "depthwise_conv3d"}
-    weights = {}
+    weights = {}        # gguf_key -> (arr, weight_key)
     for node in getattr(graph, "nodes", []):
         op = getattr(node, "op", None)
         op_type = getattr(op, "type", None)
@@ -90,6 +253,7 @@ def generate_gguf(graph, output_dir: str, model_name: str, arch_id: str):
             items = list(params.values())
         except AttributeError:
             continue
+        wk = weight_key(node)
         for tensor in items:
             name = getattr(tensor, "name", None)
             data = getattr(tensor, "data", None)
@@ -105,20 +269,56 @@ def generate_gguf(graph, output_dir: str, model_name: str, arch_id: str):
                 elif op_type in _CONV_DW:
                     arr = np.transpose(arr, (3, 0, 1, 2))   # [1,KH,KW,C] → [C,1,KH,KW]
             if key not in weights:
-                weights[key] = arr.astype(np.float16)
+                weights[key] = (arr, wk)   # raw(보통 f32) 유지 — 양자화/ f16 은 write 시 결정
 
     path = os.path.join(output_dir, f"{model_name}.gguf")
     writer = gguf.GGUFWriter(path, arch=arch_id)
     writer.add_architecture()  # general.architecture = arch_id
 
-    for key, arr in weights.items():
-        writer.add_tensor(key, arr)
+    n_quant = 0
+    for key, (arr, wk) in weights.items():
+        entry = plan.get(wk) if key.endswith(".weight") else None
+        if entry is not None:
+            a = np.ascontiguousarray(arr, dtype=np.float32)
+            if entry["kind"] == "conv":
+                # conv 커널 [OC,IC,KH,KW] → 2D [OC, IC*KH*KW] (conv-as-matmul). ggml 의
+                # im2col 컬럼 순서(kw 가장 빠름)와 numpy row-major 가 일치 → mul_mat 정합.
+                a = a.reshape(a.shape[0], -1)
+            qbytes = gguf_quants.quantize(a, entry["qtype"])
+            writer.add_tensor(key, qbytes, raw_dtype=entry["qtype"])
+            n_quant += 1
+        else:
+            writer.add_tensor(key, np.ascontiguousarray(arr).astype(np.float16))
 
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
     writer.write_tensors_to_file()
     writer.close()
-    print(f"  → gguf: {path} ({len(weights)} tensors, fp16, general.architecture='{arch_id}')")
+    size_mb = os.path.getsize(path) / (1024 * 1024)
+    if kind == "py":
+        n_f16 = len(weights) - n_quant
+        n_conv = sum(1 for e in plan.values() if e["kind"] == "conv")
+        n_lin = sum(1 for e in plan.values() if e["kind"] == "linear")
+        print(f"  → gguf: {path} ({len(weights)} tensors: {n_quant}×{quant.lower()}"
+              f"(conv {n_conv}+linear {n_lin}) + {n_f16}×fp16, {size_mb:.1f} MB, "
+              f"general.architecture='{arch_id}')")
+        if n_quant == 0:
+            print(f"      ⚠ 양자화 자격(conv row%{qblock}==0 / linear in%{qblock}==0) 텐서 없음.")
+    elif kind == "llama":
+        # fp16 으로 쓴 GGUF 를 llama-quantize 로 k/IQ-quant 변환(in-place 교체).
+        print(f"  → gguf(fp16 중간): {path} ({len(weights)} tensors, {size_mb:.1f} MB)")
+        tmp = path + ".kq.tmp"
+        if _llama_quantize_file(path, tmp, payload):
+            os.replace(tmp, path)
+            print(f"  → gguf: {path} ({payload} via llama-quantize, "
+                  f"{os.path.getsize(path)/(1024*1024):.1f} MB, "
+                  f"general.architecture='{arch_id}')")
+        else:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+    else:
+        print(f"  → gguf: {path} ({len(weights)} tensors, fp16, {size_mb:.1f} MB, "
+              f"general.architecture='{arch_id}')")
     return path
 
 
@@ -276,7 +476,7 @@ def fold_conv_bn_graph(graph):
     return graph
 
 
-def compile_model(model, name: str, input_shape, output_dir: str):
+def compile_model(model, name: str, input_shape, output_dir: str, quant=None):
     """모델을 vision.cpp(ggml) arch C++ + GGUF 로 컴파일한다.
 
     반환: 생성 파일 dict (source/header/weights_manifest) 또는 None(파싱 실패).
@@ -310,12 +510,15 @@ def compile_model(model, name: str, input_shape, output_dir: str):
         traceback.print_exc()
         return None
 
+    # 양자화 단일 진실원천 — codegen(conv_2d_q emit)·gguf(2D 양자 저장) 가 같은 plan 사용.
+    _, _, quant_plan = build_quant_plan(graph, quant)
+
     print("[g2c] Generating visp/ggml arch C++...", flush=True)
-    files = generate_ggml_code(graph, output_dir, name)
+    files = generate_ggml_code(graph, output_dir, name, quant_plan=quant_plan)
     for ftype, fpath in files.items():
         print(f"  → {ftype}: {fpath}")
 
-    generate_gguf(graph, output_dir, name, name.lower())
+    generate_gguf(graph, output_dir, name, name.lower(), quant=quant, plan=quant_plan)
 
     from utils import TorchSymbol as _TS
 
@@ -352,6 +555,12 @@ def main(argv=None):
         "--input-shape", default=None,
         help="입력 shape (예: 1,3,640,640). 미지정 시 yolo→640, 그 외→224",
     )
+    ap.add_argument(
+        "--quantize", default=None, metavar="TYPE",
+        help="GGUF 가중치 양자화. (A) in-process(외부 의존 없음): q8_0/q4_0/q4_1/q5_0/q5_1 — "
+             "자격되는 2D Linear 가중치만, 나머지 fp16. (B) llama-quantize 경유: q4_k_m/q6_k/iq4_xs "
+             "등 — $LLAMA_QUANTIZE/PATH 의 바이너리 필요(vision arch 인식 가능해야). 미지정=fp16.",
+    )
     args = ap.parse_args(argv)
 
     shape = None
@@ -363,7 +572,7 @@ def main(argv=None):
     name = args.name or name
     print(f"[g2c] Model: {args.model} → {model._get_name()} (name={name})", flush=True)
 
-    compile_model(model, name, shape, args.output)
+    compile_model(model, name, shape, args.output, quant=args.quantize)
     print("=" * 60)
     print("완료!", flush=True)
 
