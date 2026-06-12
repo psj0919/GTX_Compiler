@@ -183,6 +183,7 @@ def conv2d(*args, **kwargs):
 
 # --- ggml/vision.cpp codegen (render) ---
 from shared.compile.render_api import register_render as _register_render
+from shared.compile.render_api import weight_key as _weight_key
 from shared.base import OP as _OP
 
 
@@ -192,4 +193,12 @@ def render(node, ctx):
     key = ctx.weight(node, ["weight"] + (["bias"] if has_bias else []))
     s = ctx.scalar(ctx.attr(node, "stride", [1, 1]))
     p = ctx.scalar(ctx.attr(node, "padding", [0, 0]))
+    # 양자 conv: GGUF 에 커널이 2D [IC*KH*KW, OC] 양자 형태로 저장됨 → conv_2d 대신
+    # conv_2d_q(im2col+mul_mat) emit (헬퍼는 codegen 이 .cpp 상단에 주입). KH/KW 는 plan 에서.
+    entry = (getattr(ctx, "quant_plan", None) or {}).get(_weight_key(node))
+    if entry is not None and entry.get("kind") == "conv":
+        return ctx.out(
+            node,
+            f"conv_2d_q({key}, {ctx.inp(node)}, {s}, {p}, {entry['kh']}, {entry['kw']})",
+        )
     return ctx.out(node, f"conv_2d({key}, {ctx.inp(node)}, {s}, {p})")
