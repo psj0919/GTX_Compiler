@@ -56,12 +56,14 @@ def generate_ggml_code(graph, output_dir: str, model_name: str = "model"):
     return codegen.generate()
 
 
-def generate_gguf(model, output_dir: str, model_name: str, arch_id: str):
-    """모델 state_dict 를 fp16 GGUF 로 직렬화한다.
+def generate_gguf(graph, output_dir: str, model_name: str, arch_id: str):
+    """그래프의 (Conv-BN folded) 파라미터를 fp16 GGUF 로 직렬화한다.
 
-    텐서명은 PyTorch state_dict 키(`conv1.weight`, `layer1.0.conv1.weight`...)를 그대로
-    쓴다 → 생성된 .cpp 의 `m["conv1"]` 와 정합. metadata `general.architecture = arch_id`.
-    GGUF writer 는 vision.cpp 에 vendor 된 gguf-py 를 사용한다.
+    weight 는 `model.state_dict()` 가 아니라 **그래프 node.op.params** 에서 모은다 →
+    `fold_conv_bn_graph` 의 fold 결과(folded conv weight/bias, BN 제거)가 GGUF 에 반영된다.
+    텐서명은 param 이름에서 `<GraphName>::` prefix 를 떼 state_dict 키(`layer1.0.conv1.weight`)
+    로 만든다 → 생성 .cpp 의 weight_key(`m["layer1.0.conv1"]`)와 정합. metadata
+    `general.architecture = arch_id`. GGUF writer 는 vision.cpp 에 vendor 된 gguf-py 사용.
     """
     gguf_py = os.path.join(project_root, "vision.cpp", "depend", "llama", "gguf-py")
     if gguf_py not in sys.path:
@@ -72,23 +74,51 @@ def generate_gguf(model, output_dir: str, model_name: str, arch_id: str):
         print(f"  ⚠ gguf 로드 실패 ({e}) — GGUF 생략")
         return None
 
+    # 그래프 파라미터 수집(이름 dedup). conv/bn/linear 등 weight-bearing 노드의 param.
+    # TorchParser 는 conv weight 를 PyTorch 와 다른 레이아웃으로 저장 → GGUF/.cpp/eager 가
+    # 기대하는 PyTorch 레이아웃으로 4D weight 만 되돌린다:
+    #   regular conv : graph [OC,KH,KW,IC] → OIHW [OC,IC,KH,KW]      = (0,3,1,2)
+    #   depthwise    : graph [1,KH,KW,C]   → [C,1,KH,KW]             = (3,0,1,2)
+    _CONV_REG = {"conv2d", "conv1d", "conv3d"}
+    _CONV_DW = {"depthwise_conv2d", "depthwise_conv1d", "depthwise_conv3d"}
+    weights = {}
+    for node in getattr(graph, "nodes", []):
+        op = getattr(node, "op", None)
+        op_type = getattr(op, "type", None)
+        params = getattr(op, "params", None) or {}
+        try:
+            items = list(params.values())
+        except AttributeError:
+            continue
+        for tensor in items:
+            name = getattr(tensor, "name", None)
+            data = getattr(tensor, "data", None)
+            if not name or data is None:
+                continue
+            key = name.split("::")[-1]            # "<GraphName>::layer1.0.conv1.weight" → 뒤만
+            if key.endswith("num_batches_tracked"):
+                continue
+            arr = np.asarray(data)
+            if arr.ndim == 4 and key.endswith(".weight"):
+                if op_type in _CONV_REG:
+                    arr = np.transpose(arr, (0, 3, 1, 2))   # OHWI → OIHW
+                elif op_type in _CONV_DW:
+                    arr = np.transpose(arr, (3, 0, 1, 2))   # [1,KH,KW,C] → [C,1,KH,KW]
+            if key not in weights:
+                weights[key] = arr.astype(np.float16)
+
     path = os.path.join(output_dir, f"{model_name}.gguf")
     writer = gguf.GGUFWriter(path, arch=arch_id)
     writer.add_architecture()  # general.architecture = arch_id
 
-    n = 0
-    for key, tensor in model.state_dict().items():
-        if key.endswith("num_batches_tracked"):  # BN 카운터는 추론에 불필요
-            continue
-        arr = tensor.detach().cpu().numpy().astype(np.float16)
+    for key, arr in weights.items():
         writer.add_tensor(key, arr)
-        n += 1
 
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
     writer.write_tensors_to_file()
     writer.close()
-    print(f"  → gguf: {path} ({n} tensors, fp16, general.architecture='{arch_id}')")
+    print(f"  → gguf: {path} ({len(weights)} tensors, fp16, general.architecture='{arch_id}')")
     return path
 
 
@@ -221,6 +251,31 @@ def build_model(model_spec: str, pth: str = None, input_shape=None):
 # --------------------------------------------------------------------------
 # 컴파일 (parse → export → ggml cpp/h + gguf + runner)
 # --------------------------------------------------------------------------
+def fold_conv_bn_graph(graph):
+    """Conv-BN folding (그래프 레벨, repo 자체 패스 — FX/model.fuse() 불요).
+
+    vision.cpp 의 `batch_norm_2d` 는 BN 이 conv 로 fused 됐다고 가정하고
+    `running_mean`/`running_var` 가 GGUF 에 있으면 ASSERT 실패한다. repo 의
+    `OptimizeCommander` 로 그래프에서 직접 fold:
+    - `FuseBnToConv`: conv→BN 패턴을 찾아 conv params(weight/bias)에 BN 을 흡수하고
+      BN 노드 제거(ConvBnHandler 가 numpy 데이터 직접 갱신).
+    - `ConvertBNParams`: 잔여 standalone BN 을 weight/bias affine 으로 변환(running stats 제거)
+      → vision.cpp `batch_norm_2d`(mul+add) 와 정합.
+    folded weight 는 graph param 에 들어가며 generate_gguf 가 거기서 GGUF 를 쓴다.
+    실패해도 best-effort(원본 그래프 유지). 모든 모델(resnet/yolo) 일관 적용.
+    """
+    try:
+        from shared.optimization.commander import OptimizeCommander
+        cmd = OptimizeCommander(graph=graph)
+        cmd.FuseBnToConv()
+        cmd.ConvertBNParams()
+        n_bn = sum(getattr(n.op, "type", None) == "batch_norm" for n in graph.nodes)
+        print(f"[g2c] Conv-BN fold (graph, repo pass) — 남은 batch_norm 노드={n_bn}", flush=True)
+    except Exception as e:
+        print(f"[g2c] Conv-BN fold 생략 ({type(e).__name__}: {e}); 원본 그래프 사용", flush=True)
+    return graph
+
+
 def compile_model(model, name: str, input_shape, output_dir: str):
     """모델을 vision.cpp(ggml) arch C++ + GGUF 로 컴파일한다.
 
@@ -240,6 +295,7 @@ def compile_model(model, name: str, input_shape, output_dir: str):
     try:
         print("[g2c] Parsing graph (TorchParser)...", flush=True)
         graph = TorchParser()(name, model, StandardInputData((inputs,), {}))
+        fold_conv_bn_graph(graph)   # vision.cpp 정합: BN 을 conv 로 흡수(export·.cpp·GGUF 일관)
         print(f"[g2c] Graph nodes: {len(list(getattr(graph, 'nodes', [])))}", flush=True)
 
         from qproc.export import get_script_writer
@@ -259,7 +315,7 @@ def compile_model(model, name: str, input_shape, output_dir: str):
     for ftype, fpath in files.items():
         print(f"  → {ftype}: {fpath}")
 
-    generate_gguf(model, output_dir, name, name.lower())
+    generate_gguf(graph, output_dir, name, name.lower())
 
     from utils import TorchSymbol as _TS
 
