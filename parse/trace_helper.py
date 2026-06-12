@@ -116,6 +116,17 @@ class TorchGraphHandler(object):
 
     def build_torch_graph(self, graph_name, module, input_args, train=False):
         # self._module = module
+        # 기본 경로는 jit. 실험용 __torch_dispatch__ 트레이서는 GTX_DISPATCH_TRACER=1 일 때만
+        # 활성화(opt-in, 기본 False). resnet/yolov8/yolov9 는 jit 과 ggml 출력 완전 동일 검증됨,
+        # v10~v12(어텐션 head)는 미정합 → 기본 jit 유지.
+        import os
+        if os.environ.get("GTX_DISPATCH_TRACER") == "1":
+            from .dispatch_tracer import trace as _dtrace, build_torch_graph as _dbuild
+            args = getattr(input_args, "args", None) or (
+                input_args if isinstance(input_args, tuple) else (input_args,))
+            ScreenLogger().info("Tracing via __torch_dispatch__ (jit-free)...")
+            tr = _dtrace(module, *args)
+            return _dbuild(tr, module, graph_name, *args)
         ScreenLogger().info("Start to trace and freeze model...")
         if Option.parse_debug.value != 0:
             DebugLogger.write("####Parser Debug Info:\n")
