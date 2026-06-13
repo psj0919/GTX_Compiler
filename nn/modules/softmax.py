@@ -234,14 +234,25 @@ def softmax(*args, **kwargs):
 
 
 # --- ggml/vision.cpp codegen (render) ---
-from shared.compile.render_api import register_render as _rr
+from shared.compile.render_api import register_render as _rr, out_shape, ggml_axis
 from shared.base import OP as _OP
 
 
 @_rr(_OP.SOFTMAX)
 def render(node, ctx):
-    # ggml_soft_max 는 ne0(행) 축에 대해 정규화. torch dim=-1 (마지막 축)이면 ne0 와
-    # 일치하므로 정확. 다른 축이면 ggml_soft_max_ext / transpose 필요(TODO).
-    axis = ctx.attr(node, "dim", -1)
-    note = "" if int(axis) in (-1,) else f" /* TODO(ggml): softmax axis={axis} != last */"
-    return ctx.out(node, f"ggml_soft_max(m, {ctx.inp(node)}){note}", hint="sm")
+    # ggml_soft_max 는 ne0(행) 축에 대해서만 정규화. torch dim 을 ggml 축으로 변환해
+    # 그 축이 ne0 가 아니면 permute 로 ne0 로 옮긴 뒤 softmax, 다시 되돌린다(DFL 등).
+    a = ctx.inp(node)
+    sh = out_shape(node)
+    ndim = len(sh) if sh else 4
+    axis = int(ctx.attr(node, "dim", -1))
+    g = ggml_axis(axis, ndim)           # 정규화할 ggml 축
+    if g == 0:
+        return ctx.out(node, f"ggml_soft_max(m, {a})", hint="sm")
+    # ne0 <-> ne_g 스왑 permute (ggml_permute(src_axis→dst_axis)).
+    p = [0, 1, 2, 3]
+    p[0], p[g] = g, 0
+    perm = f"{p[0]}, {p[1]}, {p[2]}, {p[3]}"
+    expr = (f"ggml_cont(m, ggml_permute(m, "
+            f"ggml_soft_max(m, ggml_cont(m, ggml_permute(m, {a}, {perm}))), {perm}))")
+    return ctx.out(node, expr, hint="sm")

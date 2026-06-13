@@ -48,15 +48,17 @@ if project_root not in sys.path:
 # --------------------------------------------------------------------------
 # codegen / weight 직렬화
 # --------------------------------------------------------------------------
-def generate_ggml_code(graph, output_dir: str, model_name: str = "model", quant_plan=None):
+def generate_ggml_code(graph, output_dir: str, model_name: str = "model", quant_plan=None,
+                       baked=None, skip=None):
     """Graph → vision.cpp(ggml) arch 스타일 C++ 소스코드 생성. 설계: docs/ggml_codegen.md
 
     quant_plan: build_quant_plan 결과. 양자 conv 노드는 conv_2d_q 로 emit + 헬퍼 주입.
+    baked/skip: const_fold.fold_constants 결과 (상수 subgraph → baked weight 로드).
     """
     from shared.compile.ggml_codegen import VispCodeGenerator
 
     codegen = VispCodeGenerator(graph, output_dir=output_dir, model_name=model_name,
-                                quant_plan=quant_plan)
+                                quant_plan=quant_plan, baked=baked, skip=skip)
     return codegen.generate()
 
 
@@ -208,7 +210,7 @@ def build_quant_plan(graph, quant):
 
 
 def generate_gguf(graph, output_dir: str, model_name: str, arch_id: str,
-                  quant=None, plan=None):
+                  quant=None, plan=None, baked=None):
     """그래프의 (Conv-BN folded) 파라미터를 GGUF 로 직렬화한다(기본 fp16).
 
     weight 는 `model.state_dict()` 가 아니라 **그래프 node.op.params** 에서 모은다 →
@@ -289,6 +291,13 @@ def generate_gguf(graph, output_dir: str, model_name: str, arch_id: str,
             n_quant += 1
         else:
             writer.add_tensor(key, np.ascontiguousarray(arr).astype(np.float16))
+
+    # const-fold baked 텐서(anchor/stride/scalar) — 정적 상수라 f32 로 보존(.cpp 의
+    # m.weights("const.foldN") 와 정합). 작은 텐서라 용량 영향 미미.
+    n_baked = 0
+    for _tid, (bkey, barr) in (baked or {}).items():
+        writer.add_tensor(bkey, np.ascontiguousarray(barr, dtype=np.float32))
+        n_baked += 1
 
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
@@ -519,12 +528,23 @@ def compile_model(model, name: str, input_shape, output_dir: str, quant=None):
     # 양자화 단일 진실원천 — codegen(conv_2d_q emit)·gguf(2D 양자 저장) 가 같은 plan 사용.
     _, _, quant_plan = build_quant_plan(graph, quant)
 
+    # 입력 무관 상수 subgraph(anchor/stride/scalar) → numpy 평가 후 GGUF baking.
+    # codegen 과 gguf 가 같은 fold 결과(키)를 공유해야 정합 → 여기서 한 번만 계산.
+    from shared.compile.const_fold import fold_constants
+
+    baked, skip = fold_constants(graph, (input_shape[-2], input_shape[-1]))
+    if baked:
+        print(f"[g2c] const-fold: {len(baked)} baked tensor(s), {len(skip)} node(s) skipped",
+              flush=True)
+
     print("[g2c] Generating visp/ggml arch C++...", flush=True)
-    files = generate_ggml_code(graph, output_dir, name, quant_plan=quant_plan)
+    files = generate_ggml_code(graph, output_dir, name, quant_plan=quant_plan,
+                               baked=baked, skip=skip)
     for ftype, fpath in files.items():
         print(f"  → {ftype}: {fpath}")
 
-    generate_gguf(graph, output_dir, name, name.lower(), quant=quant, plan=quant_plan)
+    generate_gguf(graph, output_dir, name, name.lower(), quant=quant, plan=quant_plan,
+                  baked=baked)
 
     from utils import TorchSymbol as _TS
 

@@ -72,6 +72,8 @@ _ATTR_ALIASES = {
     "min": ("min", "min_val", "clamp_min"),  # clamp
     "max": ("max", "max_val", "clamp_max"),
     "num_groups": ("num_groups", "groups", "group"),  # group_norm
+    "begin": ("begin", "start"),     # strided_slice 시작 인덱스(per-dim)
+    "slice_dims": ("dims",),         # strided_slice 대상 축 리스트
 }
 
 

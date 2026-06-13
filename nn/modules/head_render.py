@@ -55,13 +55,17 @@ def _perm_args(order, ndim):
 
 
 def _reshape_to_out(node, ctx, hint):
-    """정적 출력 shape 로 ggml_reshape_Nd (reshape/unsqueeze 공용). >4D 면 cont 폴백."""
+    """정적 출력 shape 로 ggml_reshape_Nd (reshape/unsqueeze 공용). >4D 면 cont 폴백.
+
+    ggml_reshape 는 contiguous 입력을 요구한다(view/permute 결과 불가) → 항상 ggml_cont 로
+    감싼다. torch 의 reshape-after-transpose 가 .contiguous() 를 요구하는 것과 동치.
+    """
     sh = out_shape(node)
     a = ctx.inp(node)
     if not sh or len(sh) > 4:
         return ctx.out(node, f"ggml_cont(m, {a}) /* reshape to {sh} (>4D) */", hint=hint)
     _, args = _ne_args(sh)
-    return ctx.out(node, f"ggml_reshape_{len(sh)}d(m, {a}, {args})", hint=hint)
+    return ctx.out(node, f"ggml_reshape_{len(sh)}d(m, ggml_cont(m, {a}), {args})", hint=hint)
 
 
 def _permute_expr(a, order, ndim):
@@ -178,7 +182,7 @@ def render_repeat(node, ctx):
     if not sh or len(sh) > 4:
         return ctx.out(node, f"ggml_cont(m, {a}) /* repeat {sh} */", hint="rep")
     _, args = _ne_args(sh)
-    ref = f"ggml_new_tensor_{len(sh)}d(m_ctx(m), GGML_TYPE_F32, {args})"
+    ref = f"ggml_new_tensor_{len(sh)}d(m, GGML_TYPE_F32, {args})"
     return ctx.out(node, f"ggml_repeat(m, {a}, {ref})", hint="rep")
 
 
@@ -200,15 +204,31 @@ def render_gather(node, ctx):
 
 @_rr(_OP.STRIDED_SLICE)
 def render_strided_slice(node, ctx):
-    # ggml_view_Nd: 정적 출력 ne + 입력 nb(연속 가정) + offset 0.
+    # ggml_view_Nd: 정적 출력 ne + 입력 nb(슬라이스는 축 stride 보존) + byte offset.
+    # offset = Σ_d begin[d] * a->nb[ggml_axis(d)]  (torch dim d → ggml 축 ndim-1-d).
     sh = out_shape(node)
     a = ctx.inp(node)
     if not sh or len(sh) > 4:
         return ctx.out(node, f"ggml_cont(m, {a}) /* slice {sh} */", hint="sl")
+    ndim = len(sh)
     ne, ne_args = _ne_args(sh)
     nb = ", ".join(f"{a}->nb[{i}]" for i in range(1, len(ne)))
     nb = (nb + ", ") if nb else ""
-    return ctx.out(node, f"ggml_view_{len(ne)}d(m, {a}, {ne_args}, {nb}0)", hint="sl")
+    begin = ctx.attr(node, "begin", None)
+    dims = ctx.attr(node, "slice_dims", None)
+    terms = []
+    if isinstance(begin, (list, tuple)):
+        dlist = dims if isinstance(dims, (list, tuple)) else list(range(len(begin)))
+        for d, b in zip(dlist, begin):
+            try:
+                bi = int(b)
+            except (TypeError, ValueError):
+                continue
+            if bi > 0:
+                g = ggml_axis(int(d), ndim)
+                terms.append(f"{bi}*{a}->nb[{g}]")
+    off = " + ".join(terms) if terms else "0"
+    return ctx.out(node, f"ggml_view_{len(ne)}d(m, {a}, {ne_args}, {nb}{off})", hint="sl")
 
 
 @_rr(_OP.SHAPE)
@@ -225,8 +245,8 @@ def render_const(node, ctx):
     sh = out_shape(node)
     if sh and len(sh) <= 4:
         _, args = _ne_args(sh)
-        return ctx.out(node, f"ggml_new_tensor_{len(sh)}d(m_ctx(m), GGML_TYPE_F32, {args})", hint="const")
-    return ctx.out(node, "ggml_new_f32(m_ctx(m), 0.0f)", hint="const")
+        return ctx.out(node, f"ggml_new_tensor_{len(sh)}d(m, GGML_TYPE_F32, {args})", hint="const")
+    return ctx.out(node, "ggml_new_f32(m, 0.0f)", hint="const")
 
 
 @_rr("aten::full", "full")
@@ -236,8 +256,8 @@ def render_full(node, ctx):
     sh = out_shape(node)
     if sh and len(sh) <= 4:
         _, args = _ne_args(sh)
-        return ctx.out(node, f"ggml_new_tensor_{len(sh)}d(m_ctx(m), GGML_TYPE_F32, {args})", hint="full")
-    return ctx.out(node, "ggml_new_f32(m_ctx(m), 0.0f)", hint="full")
+        return ctx.out(node, f"ggml_new_tensor_{len(sh)}d(m, GGML_TYPE_F32, {args})", hint="full")
+    return ctx.out(node, "ggml_new_f32(m, 0.0f)", hint="full")
 
 
 @_rr("aten::meshgrid", "meshgrid")
@@ -247,7 +267,7 @@ def render_meshgrid(node, ctx):
     a = ctx.inp(node, 0)
     if sh and len(sh) <= 4:
         _, args = _ne_args(sh)
-        ref = f"ggml_new_tensor_{len(sh)}d(m_ctx(m), GGML_TYPE_F32, {args})"
+        ref = f"ggml_new_tensor_{len(sh)}d(m, GGML_TYPE_F32, {args})"
         var = ctx.out(node, f"ggml_repeat(m, {a}, {ref})", hint="mg")
     else:
         var = ctx.out(node, f"ggml_cont(m, {a})", hint="mg")

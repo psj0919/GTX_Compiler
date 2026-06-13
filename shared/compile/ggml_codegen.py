@@ -24,16 +24,34 @@ Graph IR 를 순회하며 `RENDERERS` 로 디스패치하고, 구조적 op(INPUT
 
 import os
 
-from shared.compile.render_api import RENDERERS, RenderContext, op_value
+from shared.compile.render_api import RENDERERS, RenderContext, op_value, out_shape
 
 
 class VispCodeGenerator:
-    def __init__(self, graph, output_dir, model_name="model", arch=None, quant_plan=None):
+    def __init__(self, graph, output_dir, model_name="model", arch=None, quant_plan=None,
+                 baked=None, skip=None):
         self.graph = graph
         self.output_dir = output_dir
         self.model_name = model_name
         self.arch = arch or model_name
         self.quant_plan = quant_plan or {}
+        # const-fold 결과: baked={id(tensor):(gguf_key,arr)} 는 m.weights 로 로드,
+        # skip={id(node)} 상수영역 노드는 emit 생략. (shared/compile/const_fold.py)
+        self.baked = baked or {}
+        self.skip = skip or set()
+
+    # ------------------------------------------------------------ const baking
+    def _bind_baked_inputs(self, node, ctx):
+        """노드 입력 중 const-fold 로 baked 된 텐서를 m.weights("key") 로 로드해 바인딩."""
+        for t in (node.in_tensors or []):
+            if t is None:
+                continue
+            tid = id(t)
+            if tid in self.baked and tid not in ctx._var:
+                key, _ = self.baked[tid]
+                var = ctx.new_var("cf")
+                ctx.line(f'    tensor {var} = m.weights("{key}");')
+                ctx._var[tid] = var
 
     # ----------------------------------------------------------------- driver
     def _walk(self, ctx):
@@ -45,15 +63,56 @@ class VispCodeGenerator:
 
         anchor_emit, skip = detect_fusions(self.graph)
 
+        # NMS-free(v10) 후처리(top-k/gather/index `//`·`%`)는 ggml 그래프로 표현 불가
+        # (정수 div/mod·값기반 top-k·gather 의미 mismatch) — CPU 후처리 영역(vision.cpp 도
+        # NMS 를 host 에서 수행). 그래프에 그런 op 이 있으면 **자동으로** dense 예측 (1,C,A)
+        # 까지만 출력한다(런타임 크래시 방지). top-k/NMS 는 harness 등 CPU 에서.
+        # env GTX_DENSE_OUT=1 로 강제도 가능, GTX_DENSE_OUT=0 로 비활성도 가능.
+        import os as _os
+        _PP_OPS = {"max", "argmax", "topk", "aten::topk", "gather", "aten::gather", "index"}
+        _env = _os.environ.get("GTX_DENSE_OUT")
+        if _env == "0":
+            dense_out = False
+        elif _env:
+            dense_out = True
+        else:
+            dense_out = any(op_value(n) in _PP_OPS for n in self.graph.nodes)
+        if dense_out:
+            print("[g2c] NMS-free postprocess detected → emitting dense output "
+                  "(top-k/NMS is CPU-side)", flush=True)
+        dense_var = None
+
+        # 중간 텐서 탭(env GTX_DEBUG_TAPS="all" | "12,45,..."): 노드별 출력을
+        # compute_graph_output 으로 추가 표시 → harness 가 dump, eager 백엔드와 노드별 대조.
+        # tap 이름 tap{node_idx} = 생성 .py 의 module_{node_idx} 와 정렬(동일 IR 노드 순서).
+        _taps = _os.environ.get("GTX_DEBUG_TAPS")
+        _tap_set = (None if not _taps or _taps == "all"
+                    else {int(i) for i in _taps.split(",") if i.strip().isdigit()})
+
+        def _tap(idx, var):
+            if not _taps or var in (None, "x"):
+                return
+            if _tap_set is not None and idx not in _tap_set:
+                return
+            ctx.line(f'    compute_graph_output(m, ggml_cont(m, {var}), "tap{idx}");')
+
         last_var = "x"
-        for node in self.graph.nodes:
+        for _idx, node in enumerate(self.graph.nodes):
             nid = id(node)
+            if dense_out and dense_var is not None and op_value(node) in _PP_OPS:
+                break  # 후처리 시작 → dense 까지만
+            # --- const-fold: 상수영역 노드는 emit 생략(값은 baked weight 로 로드) ---
+            if nid in self.skip:
+                continue
+            # --- 입력 중 baked 상수 텐서는 m.weights 로 lazy 로드 후 바인딩 ---
+            self._bind_baked_inputs(node, ctx)
             # --- fused 패턴: 내부 노드는 스킵, anchor 에서 단일 ggml 호출 emit ---
             if nid in skip:
                 continue
             if nid in anchor_emit:
                 spec, roles = anchor_emit[nid]
                 last_var = ctx.out(node, spec.emit(ctx, roles), hint=spec.name)
+                _tap(_idx, last_var)
                 continue
 
             ot = op_value(node)
@@ -65,15 +124,27 @@ class VispCodeGenerator:
             if ot == "return":
                 continue
             if ot == "flatten":
-                # flatten(start_dim=1): WHCN 에서 배치(ne[3])는 유지하고 W*H*C 를
-                # dim0 으로 모아 [C', N] 를 만든다 → 뒤의 linear(ne[0]=in_features) 와 정합.
+                # flatten 은 정적 출력 shape 로 reshape 한다(start_dim 보존). 예:
+                #   flatten(1): (B,C,H,W)→(B,C*H*W)   flatten(2): (B,C,H,W)→(B,C,H*W).
+                # ggml_reshape 는 contiguous 요구 → cont 로 감싼다(torch reshape 와 동치).
                 a = ctx.inp(node)
-                last_var = ctx.out(
-                    node,
-                    f"ggml_reshape_2d(m, {a}, "
-                    f"{a}->ne[0] * {a}->ne[1] * {a}->ne[2], {a}->ne[3])",
-                    hint="flat",
-                )
+                sh = out_shape(node)
+                if sh and len(sh) <= 4:
+                    ne = list(reversed([int(d) for d in sh]))
+                    args = ", ".join(str(d) for d in ne)
+                    last_var = ctx.out(
+                        node, f"ggml_reshape_{len(ne)}d(m, ggml_cont(m, {a}), {args})",
+                        hint="flat",
+                    )
+                else:
+                    # 폴백: 배치(ne[3]) 유지하고 W*H*C 를 dim0 으로 (start_dim=1 가정).
+                    last_var = ctx.out(
+                        node,
+                        f"ggml_reshape_2d(m, {a}, "
+                        f"{a}->ne[0] * {a}->ne[1] * {a}->ne[2], {a}->ne[3])",
+                        hint="flat",
+                    )
+                _tap(_idx, last_var)
                 continue
 
             render = RENDERERS.get(node.op.type) or RENDERERS.get(ot)
@@ -91,6 +162,14 @@ class VispCodeGenerator:
             res = render(node, ctx)
             if res is not None:
                 last_var = res
+                _tap(_idx, res)
+            # dense 후보: head 의 concat (1,C,A) (A=anchor 총수). 마지막 것이 최종 dense.
+            if dense_out and res is not None and ot == "concat":
+                sh = out_shape(node)
+                if sh and len(sh) == 3 and sh[0] == 1 and sh[1] >= 5 and sh[2] >= 64:
+                    dense_var = res
+        if dense_out and dense_var is not None:
+            last_var = dense_var
         return last_var
 
     # --------------------------------------------------------------- emitters
