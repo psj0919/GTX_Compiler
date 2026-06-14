@@ -13,14 +13,25 @@ from utils.torch_utils import CmpFlag, compare_torch_version
 _cur_dir = os.path.dirname(os.path.realpath(__file__))
 _aot = False
 
-for name in os.listdir(_cur_dir):
+# 단일 .so(Nuitka --module) 배포 시 nn/ 가 디스크 디렉토리가 아니므로 listdir 가 실패한다.
+# 그 경우 AOT 커널/소스 빌드는 불필요(CPU 경로) → 빈 목록으로 간주하고 kernels=None.
+try:
+    _entries = os.listdir(_cur_dir)
+except (FileNotFoundError, NotADirectoryError):
+    _entries = None
+
+for name in (_entries or []):
     if name.split(".")[-1] == "so":
         _aot = True
         break
 
 new_kernel = False
+kernels = None
 
-if _aot:
+if _entries is None:
+    # nn/ 디렉토리 부재(임베드 .so) — 커널 로드/빌드 생략.
+    ScreenLogger().info("Loading SuperGate  kernels... (embedded, none)")
+elif _aot:
     try:
         if not new_kernel:
             from nn import _kernels
