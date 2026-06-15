@@ -46,6 +46,7 @@ from .prelu import *
 from .head_render import *
 from .vision_ops_render import *
 from .lstm_render import *
+from .gru_render import *
 
 # from .clamp import *
 from .sqrt import *
