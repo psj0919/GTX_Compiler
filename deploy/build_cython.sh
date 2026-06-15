@@ -33,6 +33,18 @@ done
 # 소스 트리에서 따라온 stale __pycache__ 제거 (bytecode 유출 방지)
 find "$STAGE" -type d -name '__pycache__' -prune -exec rm -rf {} +
 
+# 0b) ggml codegen(g2c) 런타임에 불필요한 항목 제외(배포본 슬림화):
+#   - HW(GTX/DPU) 백엔드 C 헤더/소스: load_kernels 의 C-빌드 경로가 전부 주석 → 런타임 미사용
+#   - DPU/xmodel 전용 모듈: g2c(ggml) 경로 미사용(dpu_pattern_match 만 ggml_fusion 이 사용 → 유지).
+#     device_allocator 는 target_quant_info(DPU 양자화)에서 lazy import 라 g2c 엔 안 걸림.
+rm -rf "$STAGE/nn/include" "$STAGE/nn/src"
+rm -f "$STAGE/shared/inspector/dpu_pattern_handle.py" \
+      "$STAGE/shared/inspector/dpu_pattern_transform.py" \
+      "$STAGE/shared/inspector/device_allocator.py"
+# 배포본에 문서 잔재 미포함
+rm -f "$STAGE/shared/compile/TODO.md"
+find "$STAGE" -maxdepth 2 -name 'README.md' -delete
+
 # 1) cythonize → build_ext --inplace (제외목록은 setup_cython.py 가 처리)
 ( cd "$STAGE" && PKGS="$PKGS" "$PY" "$ROOT/deploy/setup_cython.py" )
 
