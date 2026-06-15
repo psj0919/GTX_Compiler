@@ -3,6 +3,14 @@
 PyTorch 모델을 **vision.cpp(ggml) arch 스타일 C++ + GGUF 가중치**로 변환하는 컴파일러.
 생성물은 ggml(libggml.so) 위에서 그대로 실행/검증된다.
 
+**검증된 모델** (생성 C++ 를 vision.cpp 로 빌드·실행 → PyTorch 대비 cosine ≈ 1.0):
+
+| 종류 | 모델 | 비고 |
+|------|------|------|
+| 분류 | ResNet18/50 | Conv-BN fold |
+| 검출 | YOLO v8 / v10 / v11 / v12 | detection head 포함 |
+| 시퀀스 | **LSTM / GRU** | 단·양방향, 멀티레이어 (시퀀스 정적 unroll) |
+
 ## 컴파일 파이프라인
 
 ```
@@ -50,12 +58,18 @@ uv run g2c --model "ultralytics.YOLO('yolo11n')" --output output/yolo11n
 uv run g2c --model resnet18 --output output/resnet18
 uv run g2c --model torchvision.models.resnet50 --name r50 --output output/r50
 
+# RNN (LSTM/GRU) — 입력은 3D 시퀀스라 --input-shape 1,seq,feat 필수
+uv run g2c --model "torch.nn.LSTM(10,20,batch_first=True)" --input-shape 1,8,10 --output output/lstm
+uv run g2c --model "torch.nn.GRU(10,20,num_layers=2,bidirectional=True,batch_first=True)" \
+           --input-shape 1,8,10 --output output/gru
+
 # .pt/.pth 가중치 로드 / 입력 shape 지정
 uv run g2c --model "ultralytics.YOLO('yolov8n')" --pth weights.pth \
            --input-shape 1,3,640,640 --output output/
 
 # 옵션: --model(필수, 표현식/이름/.pt) --pth --output --name --input-shape
 #   input shape 미지정 시 yolo→(1,3,640,640), 그 외→(1,3,224,224)
+#   RNN(LSTM/GRU)은 4D 이미지 기본값과 달라 반드시 --input-shape 1,seq,feat 지정
 ```
 
 생성된 `output/<Model>.cpp/.h` 는 vision.cpp 의 `src/visp/arch/` 에 두면 ggml 로 빌드/실행된다.

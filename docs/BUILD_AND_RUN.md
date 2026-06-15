@@ -132,10 +132,14 @@ OMP_NUM_THREADS=1 uv run python output/yolo11n/DetectionModel.py     # [ggml] ou
 ### (D) 생성 C++ 를 vision.cpp 빌드로 실행 (E2E 검증)
 
 생성 `.cpp` 를 vision.cpp 빌드로 컴파일·실행해 torch 와 수치 비교한다(검증된 모델:
-yolov8/11/12 cos 1.0, yolov10 dense, resnet18).
+yolov8/11/12 cos 1.0, yolov10 dense, resnet18, LSTM/GRU).
 
 ```bash
-# 1) vision.cpp 빌드 (최초 1회): cmake -G Ninja -DVISP_VULKAN=OFF -DVISP_TESTS=OFF
+# 1) vision.cpp 빌드 (최초 1회)
+cmake -B vision.cpp/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DVISP_FMT_LIB=ON vision.cpp
+cmake --build vision.cpp/build
+#   VISP_FMT_LIB=ON: gcc<13 은 C++20 <format> 미지원 → fmt 라이브러리(depend/fmt) 사용 (필수).
+#   sam3 브랜치는 ggml 헤더가 depend/llama/ggml/include 로 이동(빌드 스크립트가 처리).
 # 2) 참조 입력/출력 생성 → 컴파일 → 실행 → 비교
 uv run python tools/yolo_cpp_ref.py yolov8n tools/v8n          # torch 참조 (.bin)
 bash tools/build_yolo_cpp.sh output/yolov8n                    # g++ + vision.cpp 링크
@@ -145,6 +149,17 @@ uv run python tools/yolo_cpp_cmp.py tools/v8n_out.bin tools/v8n_ref.bin     # co
 
 NMS-free(yolov10)는 그래프가 dense 까지만 출력하고 top-k 는 CPU 후처리:
 `run_yolo_cpp ... 640 v10` → (300,6). 비교: `tools/yolo_v10_cmp.py`, 실이미지: `tools/yolo_v10_img_ref.py`.
+
+**RNN (LSTM/GRU)** — 입력이 3D 시퀀스 `[feat,seq,batch]` 라 전용 하네스를 쓴다
+(`run_rnn_cpp` / `build_rnn_cpp.sh`, ggml 경로·VISP_FMT_LIB 반영됨):
+
+```bash
+OMP_NUM_THREADS=1 uv run g2c --model "torch.nn.LSTM(10,20,batch_first=True)" \
+    --input-shape 1,8,10 --output output/lstm
+bash tools/build_rnn_cpp.sh output/lstm                        # g++ + vision.cpp 링크
+uv run python tools/rnn_cpp_verify.py output/lstm             # 생성 C++ ↔ torch cos (GRU 는 --gru)
+# eager(ggml) ↔ torch 만 비교하려면: uv run python tools/rnn_verify.py output/lstm
+```
 
 ### (E) 중간 텐서 탭 디버거 — emission 버그 국소화
 
