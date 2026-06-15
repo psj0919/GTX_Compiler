@@ -41,6 +41,9 @@ rm -rf "$STAGE/nn/include" "$STAGE/nn/src"
 rm -f "$STAGE/shared/inspector/dpu_pattern_handle.py" \
       "$STAGE/shared/inspector/dpu_pattern_transform.py" \
       "$STAGE/shared/inspector/device_allocator.py"
+#   - rnn_builder: jit.script 용 평문 .py(Cython 미컴파일) — RNN/LSTM 전용. resnet/yolo(g2c
+#     ggml 경로) 미사용 → 평문 소스 유출 차단 위해 배포본에서 제외.
+rm -rf "$STAGE/nn/modules/rnn_builder"
 # 배포본에 문서 잔재 미포함
 rm -f "$STAGE/shared/compile/TODO.md"
 find "$STAGE" -maxdepth 2 -name 'README.md' -delete
@@ -129,7 +132,7 @@ python -c "from shared.compile.pipeline import compile_model"
 ## 주의
 - `.so` 는 빌드 시점 Python minor(3.12)에서만 로드됩니다.
 - glibc 호환: 빌드한 배포판과 같거나 더 새 버전의 Linux 에서 동작합니다.
-- `nn/modules/rnn_builder/*.py` 는 jit.script 용으로 의도적으로 평문 유지됩니다.
+- 핵심 로직은 `.so` 입니다. 정적 컴파일 불가 모듈 일부만 평문 `.py` 로 남습니다.
 EOF
 
 echo

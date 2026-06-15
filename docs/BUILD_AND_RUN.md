@@ -52,13 +52,30 @@ OMP_NUM_THREADS=1 uv run python deploy/build_so.py            # 단일 스레드
 
 ### (C) Cython 파일별 `.so` — 소스 보호 배포본
 
-각 `.py` 를 같은 위치의 `.so` 로 in-place 컴파일(200개). `__file__` 경로가 보존돼 동적 import/
+각 `.py` 를 같은 위치의 `.so` 로 in-place 컴파일(193개). `__file__` 경로가 보존돼 동적 import/
 데이터 접근이 안전하다. 상세·소스 패치·제외 목록은 [`DISTRIBUTION.md`](../deploy/DISTRIBUTION.md).
 
 ```bash
-bash deploy/build_cython.sh                                  # → deploy/dist_cython/ 배포본
-STAGE=/tmp/dist PY=python bash deploy/build_cython.sh        # 출력/인터프리터 지정
+# 단일스레드 빌드 권장 (WSL 등에서 thread 폭주 hang 방지)
+CYTHON_JOBS=1 OMP_NUM_THREADS=1 bash deploy/build_cython.sh   # → deploy/dist_cython/ 배포본
+STAGE=/tmp/dist PY=python bash deploy/build_cython.sh         # 출력/인터프리터 지정
 ```
+
+- **`CYTHON_JOBS`** — cythonize/`build_ext` 동시 작업 수(미지정 시 `cpu_count`). 무거운 머신에서
+  hang 이 나면 `CYTHON_JOBS=1` 로 순차 빌드. 빌드 시간↑ 이지만 안정적.
+- **슬림화(g2c ggml 경로 전용):** 빌드 스크립트가 런타임 미사용 항목을 자동 제외한다 —
+  HW 백엔드 C 헤더/소스(`nn/include`·`nn/src`), DPU/xmodel 전용 모듈(`dpu_pattern_handle`·
+  `dpu_pattern_transform`·`device_allocator`), RNN/LSTM 전용 `nn/modules/rnn_builder`(jit.script 평문
+  소스 → 유출 차단), 문서 잔재(`README.md`·`TODO.md`). 결과: `.so` 193 + 정적 컴파일 불가 평문 5개.
+- **격리 실행 검증** (소스 트리 영향 없이 `.so` 만으로 동작 확인):
+
+  ```bash
+  cd deploy/dist_cython
+  PYTHONPATH= OMP_NUM_THREADS=1 <repo>/.venv/bin/python g2c.py --model resnet18 --output /tmp/v
+  PYTHONPATH= OMP_NUM_THREADS=1 <repo>/.venv/bin/python g2c.py --model "ultralytics.YOLO('yolo11n')" --output /tmp/v
+  ```
+
+- **메일 전달용 압축:** `tar czf deploy/compiler_dist.tar.gz -C deploy dist_cython` (≈15 MB).
 
 ---
 

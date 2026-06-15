@@ -20,8 +20,10 @@ try:
 except (FileNotFoundError, NotADirectoryError):
     _entries = None
 
+# AOT 커널은 _kernels 확장(.so) 로만 판별. Cython 소스보호 배포에선 nn/ 의 모든 모듈이
+# .so 라 "임의의 .so" 판별은 오탐(=실재하지 않는 _kernels import 시도) → _kernels 전용으로 좁힌다.
 for name in (_entries or []):
-    if name.split(".")[-1] == "so":
+    if name.startswith("_kernels") and name.split(".")[-1] == "so":
         _aot = True
         break
 

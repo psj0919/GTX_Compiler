@@ -14,6 +14,7 @@
 # limitations under the License.
 #
 
+import builtins
 import inspect
 from typing import Callable, Dict, Tuple
 
@@ -358,7 +359,7 @@ def _get_global_builtins():
             # aten_schema = SchemaWrapper(f"{op_name}", s)
             torchop = TorchOp(
                 name=op_name,
-                caller=__builtins__[fn],
+                caller=getattr(builtins, fn),
                 op_class_type=TorchOpClassType.GLOBAL_BUILTIN_FUNCTION,
             )
             _make_pair(s, torchop)

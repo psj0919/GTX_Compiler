@@ -226,6 +226,10 @@ export1/
 MEM_DUMP.hex
 COMMAND_DUMP.hex
 
+# Deploy artifacts (build_cython.sh 재생성 산출물 — 커밋 금지)
+deploy/dist_cython/
+deploy/compiler_dist.tar.gz
+
 # AI tool caches
 .serena/
 .claude/

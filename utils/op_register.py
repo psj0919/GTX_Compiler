@@ -51,7 +51,7 @@ _QUANT_MODULES = []  # List[str]
 
 
 def register_quant_op(func):
-    if not inspect.isfunction(func):
+    if not callable(func) or not hasattr(func, "__name__"):
         raise RuntimeError("Only decorate function")
     global _QUANT_MODULES
     _QUANT_MODULES.append(func.__name__)
@@ -92,7 +92,7 @@ def register_custom_op(
                 f"'{op_type}' has been defined in , please use other type name.",
             )
             exit(1)
-        if not inspect.isfunction(func):
+        if not callable(func) or not hasattr(func, "__name__"):
             RuntimeError("This api only decorate a function object")
 
         custom_op_attr_map = GLOBAL_MAP.get_ele(KEYS.CUSTOM_OP_ATTRS_MAP)

@@ -2,7 +2,10 @@ from .conv import *
 from .conv1d import *
 from .linear import *
 from .matmul import *
-from .rnn_builder import *
+try:
+    from .rnn_builder import *  # RNN/LSTM 전용; 소스보호 배포본에선 제외될 수 있음
+except ImportError:
+    pass
 from .add import *
 from .sub import *
 from .maxpool import *
