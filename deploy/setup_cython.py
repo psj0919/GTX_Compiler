@@ -36,7 +36,8 @@ for p in PKGS:
 if not files:
     raise SystemExit("컴파일할 .py 없음 — 스테이징 복사가 됐는지 확인")
 
-nthreads = multiprocessing.cpu_count()
+# CYTHON_JOBS 로 빌드 스레드 제한(머신 hang 방지). 미지정 시 cpu_count.
+nthreads = int(os.environ.get("CYTHON_JOBS") or multiprocessing.cpu_count())
 print(f"[cython] {len(files)} files, nthreads={nthreads}, pkgs={PKGS}")
 
 # 파일별로 cythonize 하여 한 파일이 실패해도 나머지를 끝까지 컴파일한다.
