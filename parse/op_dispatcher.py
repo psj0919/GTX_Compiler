@@ -1036,6 +1036,10 @@ class OpCreator(object):
         return op
 
     def gru(self, *args):
+        # lstm 과 동일하게 generic(default) 경로 사용 — params(weight_ih_l0 등)가 raw 텐서로
+        # 유지돼 GGUF/eager 바인딩이 LSTM 과 균일해진다. (_gru_full 구조화 경로는 params 가
+        # GGUF 로 연결되지 않아 미사용; 아래는 dead-code 로 보존.)
+        return self.default(self.cur_node, "aten::gru", *args)
         if isinstance(args[3], list):
             raise NotImplementedError("Unimplement packed gri")
         else:

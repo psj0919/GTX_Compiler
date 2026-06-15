@@ -320,6 +320,113 @@ def _op_reshape(x, shape):
     return np.asarray(x, dtype=np.float32).reshape([_iscalar(s) for s in shape])
 
 
+def _sigmoid(z):
+    return 1.0 / (1.0 + np.exp(-z))
+
+
+def _rnn_layout(x, h0, c0, batch_first):
+    """입력/초기상태를 [T, N, in] / [L*D, N, H] 로 정규화. (T,N,in) 반환."""
+    x = _f32(x)
+    if batch_first:
+        x = np.transpose(x, (1, 0, 2))  # [N,T,in] → [T,N,in]
+    return x
+
+
+def _op_lstm(d):
+    """numpy LSTM (PyTorch aten::lstm 정확 매칭) — eager 검증 ground truth.
+    params 순서(PyTorch): layer/direction 마다 [w_ih, w_hh, (b_ih, b_hh)].
+    gate chunk 순서: i, f, g, o. 반환: (output, h_n, c_n)."""
+    x = _f32(_unwrap(d["input"]))
+    h0 = _f32(_unwrap(d["hx"][0]))
+    c0 = _f32(_unwrap(d["hx"][1]))
+    params = [_f32(_unwrap(p)) for p in d["params"]]
+    num_layers = int(d["num_layers"])
+    has_bias = bool(d["has_biases"])
+    bidir = bool(d["bidirectional"])
+    batch_first = bool(d["batch_first"])
+    ndir = 2 if bidir else 1
+    per = 4 if has_bias else 2
+
+    x = _rnn_layout(x, h0, c0, batch_first)  # [T, N, in]
+    T, N, _ = x.shape
+    layer_in = x
+    h_n, c_n = [], []
+    pi = 0
+    for layer in range(num_layers):
+        dir_outs = []
+        for dirn in range(ndir):
+            w_ih = params[pi]; w_hh = params[pi + 1]
+            b_ih = params[pi + 2] if has_bias else 0.0
+            b_hh = params[pi + 3] if has_bias else 0.0
+            pi += per
+            idx = layer * ndir + dirn
+            h = h0[idx]; c = c0[idx]
+            H = w_hh.shape[1]
+            seq = range(T) if dirn == 0 else range(T - 1, -1, -1)
+            outs = [None] * T
+            for t in seq:
+                g = layer_in[t] @ w_ih.T + b_ih + h @ w_hh.T + b_hh  # [N, 4H]
+                i = _sigmoid(g[:, 0:H]); f = _sigmoid(g[:, H:2 * H])
+                gg = np.tanh(g[:, 2 * H:3 * H]); o = _sigmoid(g[:, 3 * H:4 * H])
+                c = f * c + i * gg
+                h = o * np.tanh(c)
+                outs[t] = h
+            h_n.append(h); c_n.append(c)
+            dir_outs.append(np.stack(outs, axis=0))  # [T, N, H]
+        layer_in = np.concatenate(dir_outs, axis=-1) if bidir else dir_outs[0]
+    output = layer_in  # [T, N, H*ndir]
+    if batch_first:
+        output = np.transpose(output, (1, 0, 2))  # [N, T, H*ndir]
+    return output, np.stack(h_n, axis=0), np.stack(c_n, axis=0)
+
+
+def _op_gru(d):
+    """numpy GRU (PyTorch aten::gru 정확 매칭). gate chunk 순서: r, z, n.
+    n = tanh(W_in x + b_in + r * (W_hn h + b_hn)). 반환: (output, h_n)."""
+    x = _f32(_unwrap(d["input"]))
+    h0 = _f32(_unwrap(d["hx"]) if not isinstance(d["hx"], (list, tuple)) else _unwrap(d["hx"][0]))
+    params = [_f32(_unwrap(p)) for p in d["params"]]
+    num_layers = int(d["num_layers"])
+    has_bias = bool(d["has_biases"])
+    bidir = bool(d["bidirectional"])
+    batch_first = bool(d["batch_first"])
+    ndir = 2 if bidir else 1
+    per = 4 if has_bias else 2
+
+    x = _rnn_layout(x, h0, None, batch_first)
+    T, N, _ = x.shape
+    layer_in = x
+    h_n = []
+    pi = 0
+    for layer in range(num_layers):
+        dir_outs = []
+        for dirn in range(ndir):
+            w_ih = params[pi]; w_hh = params[pi + 1]
+            b_ih = params[pi + 2] if has_bias else 0.0
+            b_hh = params[pi + 3] if has_bias else 0.0
+            pi += per
+            idx = layer * ndir + dirn
+            h = h0[idx]
+            H = w_hh.shape[1]
+            seq = range(T) if dirn == 0 else range(T - 1, -1, -1)
+            outs = [None] * T
+            for t in seq:
+                gx = layer_in[t] @ w_ih.T + b_ih   # [N, 3H]
+                gh = h @ w_hh.T + b_hh
+                r = _sigmoid(gx[:, 0:H] + gh[:, 0:H])
+                z = _sigmoid(gx[:, H:2 * H] + gh[:, H:2 * H])
+                n = np.tanh(gx[:, 2 * H:3 * H] + r * gh[:, 2 * H:3 * H])
+                h = (1.0 - z) * n + z * h
+                outs[t] = h
+            h_n.append(h)
+            dir_outs.append(np.stack(outs, axis=0))
+        layer_in = np.concatenate(dir_outs, axis=-1) if bidir else dir_outs[0]
+    output = layer_in
+    if batch_first:
+        output = np.transpose(output, (1, 0, 2))
+    return output, np.stack(h_n, axis=0)
+
+
 def _op_transpose(x, d0, d1):
     return np.ascontiguousarray(np.swapaxes(np.asarray(x, dtype=np.float32), d0, d1))
 
@@ -413,6 +520,9 @@ def _norm_optype(type):
 def _unwrap(v):
     if isinstance(v, dict):
         return v.get("self", v.get("input", next(iter(v.values()), None)))
+    # nn.Parameter(requires_grad=True) 는 numpy() 직접 호출 불가 → detach.
+    if hasattr(v, "detach") and hasattr(v, "numpy"):
+        return v.detach()
     return v
 
 
@@ -514,6 +624,12 @@ class GgmlModule:
         if t == "FULL":
             d = args[0] if args else kwargs
             return _op_full(d["size"], d["fill_value"])
+        if t == "ZEROS":
+            return _op_full(kwargs.get("size", a.get("size")), 0.0)
+        if t == "LSTM":
+            return _op_lstm(args[0] if args else kwargs)
+        if t == "GRU":
+            return _op_gru(args[0] if args else kwargs)
         if t == "STRIDED_SLICE":
             return _op_strided_slice(self._in(args, kwargs), kwargs["dim"],
                                      kwargs["start"], kwargs["end"], kwargs["step"])
@@ -605,6 +721,16 @@ def bind_gguf(model, gguf_path, export_path):
             if w:
                 mod.weights = w
                 n_bound += 1
+    # 모델 직속 Parameter(LSTM/GRU 의 weight_ih_l0/weight_hh_l0/bias_*_l0 ...)는 GgmlModule 이
+    # 아니라 모델 속성으로 export 된다(export 시 nn.Parameter 로 선언, forward 에 params 리스트로
+    # 전달). GGUF 텐서명이 PyTorch param 이름과 동일하므로 이름 매칭으로 채운다.
+    import torch
+    for name, p in model.named_parameters():
+        if name in tensors:
+            arr = np.ascontiguousarray(tensors[name])
+            if tuple(p.shape) == arr.shape:
+                p.data = torch.from_numpy(arr.copy())
+                n_bound += 1
     return n_bound
 
 
@@ -613,4 +739,12 @@ def run_gguf(model, gguf_path, export_path, x):
     if hasattr(model, "from_script"):
         model.from_script(True)
     bind_gguf(model, gguf_path, export_path)
-    return model(_as4d(x))
+    # RNN(LSTM/GRU) 입력은 3D [N,T,feat] 로 의도된 것 — feature-map 4D 정규화(_as4d) 우회.
+    is_rnn = False
+    try:
+        with open(export_path) as f:
+            src = f.read()
+        is_rnn = ("nn.Module('LSTM'" in src) or ("nn.Module('GRU'" in src)
+    except OSError:
+        pass
+    return model(_f32(x) if is_rnn else _as4d(x))
