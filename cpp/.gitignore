@@ -1,0 +1,7 @@
+build/
+out/
+assets/*.pt
+assets/*.meta.json
+assets/*.ir.*.json
+assets/*.gguf
+compile_commands.json
