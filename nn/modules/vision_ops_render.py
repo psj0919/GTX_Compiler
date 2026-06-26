@@ -109,10 +109,35 @@ def render_sum(node, ctx):
     return ctx.out(node, f"ggml_sum(m, {ctx.inp(node)})", hint="sum")
 
 
+def _mean_in_shape(node, i=0):
+    ins = [t for t in (getattr(node, "in_tensors", None) or []) if t is not None]
+    if i < len(ins):
+        try:
+            return [int(x) for x in ins[i].shape]
+        except Exception:
+            return None
+    return None
+
+
 @_rr(_OP.MEAN)
 def render_mean(node, ctx):
-    # ggml_mean: ne0(행) 평균. torch dim 의미와 다르면 후처리 필요.
-    return ctx.out(node, f"ggml_mean(m, {ctx.inp(node)})", hint="mean")
+    # ggml_mean 은 ne0(행)만 평균 → torch dim 의미와 다르면 틀린다.
+    # mean([2,3]) (= [B,C,H,W] 공간평균 = global avg pool) 은 ne0,ne1 둘 다 reduce 필요 →
+    # ggml AVG pool 로 [1,1,C,B] 후 keepdim 에 맞춰 reshape. (ShuffleNet classifier 전 GAP)
+    dims = ctx.attr(node, "dim", None)
+    insh = _mean_in_shape(node)
+    a = ctx.inp(node)
+    if dims is not None and insh and len(insh) == 4:
+        dd = sorted(int(x) % 4 for x in (dims if isinstance(dims, (list, tuple)) else [dims]))
+        if dd == [2, 3]:
+            B, C, H, W = insh
+            g = ctx.new_var("gap")
+            ctx.line(f"    tensor {g} = ggml_pool_2d(m, {a}, GGML_OP_POOL_AVG, "
+                     f"{W}, {H}, {W}, {H}, 0, 0);")          # → ne=[1,1,C,B]
+            if ctx.attr(node, "keepdim", False):
+                return ctx.out(node, f"ggml_cont(m, {g})", hint="gap")
+            return ctx.out(node, f"ggml_reshape_2d(m, ggml_cont(m, {g}), {C}, {B})", hint="gap")
+    return ctx.out(node, f"ggml_mean(m, {a})", hint="mean")
 
 
 # ------------------------------------------------------------- 추가 unary
