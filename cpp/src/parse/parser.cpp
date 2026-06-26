@@ -926,9 +926,15 @@ class Parser {
     auto bias = resolve(n->input(2));
     int64_t out_f = w.t->shape[0];
     int64_t in_f = w.t->shape[1];
-    auto s = in.t->shape;
-    std::vector<int64_t> out(s.begin(), s.end());
-    out.back() = out_f;
+    // 입력 shape 미상(예: 앞 reduce op 의 shape 추론 누락)일 때 segfault 방지:
+    // 알려진 shape 면 마지막 축을 out_f 로, 아니면 [1, out_f] 로 best-effort.
+    std::vector<int64_t> out;
+    if (in.t && in.t->shape_known && !in.t->shape.empty()) {
+      out.assign(in.t->shape.begin(), in.t->shape.end());
+      out.back() = out_f;
+    } else {
+      out = {1, out_f};
+    }
 
     auto node = begin_node(n, "dense", out);
     node->in_tensors = {in.t, w.t};
