@@ -530,6 +530,11 @@ class OpCreator(object):
         support_schemas = [
             "aten::mean(Tensor self, int[] dim, bool keepdim=False, int? dtype) -> Tensor",
             "aten::mean(Tensor self, int[] dim, bool keepdim=False, int? dtype, Tensor out) -> Tensor",
+            # modern `aten::mean.dim` overload: dim is the nullable `int[]?` form
+            # (Tensor.mean([2,3]) for global pooling). Without this the schema match
+            # fails and a valid reduction falls back to a raw `aten::mean` op.
+            "aten::mean(Tensor self, int[]? dim, bool keepdim=False, int? dtype) -> Tensor",
+            "aten::mean(Tensor self, int[]? dim, bool keepdim=False, int? dtype, Tensor out) -> Tensor",
         ]
 
         if schema_handler.toString() not in support_schemas:
