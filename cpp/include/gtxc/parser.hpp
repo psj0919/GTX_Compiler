@@ -18,7 +18,9 @@ void write_gguf(const std::string& pt_path, const std::string& graph_name,
                 const std::string& arch);
 
 // E2E 컴파일: parse → Conv-BN fold → vision.cpp arch C++(.cpp/.h) + folded GGUF 출력.
+// quant: ""=fp16, "q8_0"=linear weight 양자화.
 void compile_model(const std::string& pt_path, const std::string& graph_name,
-                   const std::vector<int64_t>& input_shape, const std::string& out_dir);
+                   const std::vector<int64_t>& input_shape, const std::string& out_dir,
+                   const std::string& quant = "");
 
 }  // namespace gtxc

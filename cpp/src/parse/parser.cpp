@@ -147,6 +147,9 @@ class Parser {
   std::unordered_map<JValue*, TensorPtr> val2tensor_;
   std::unordered_map<JValue*, int64_t> val2int_;  // aten::size 등 정수 산출값 추적
   std::unordered_map<std::string, at::Tensor> param_map_;  // full name → 파라미터 텐서
+ public:
+  std::unordered_map<std::string, at::Tensor> constants_;  // const tensor name → 데이터(baking)
+ private:
 
   // prim::GetAttr 체인 → state_dict full name (예: weight / conv1.weight).
   static std::string getattr_name(JNode* gn) {
@@ -213,6 +216,11 @@ class Parser {
     std::string name = scope_ + strip_self(n->output()->debugName());
     auto tp = make_tensor(name, shape, true, scalar_type_str(t.scalar_type()), "");
     val2tensor_[n->output()] = tp;
+    // const-fold baking 대상: trace 가 head anchor/stride/scalar 를 단일 상수 텐서로
+    // 접었으므로(Python const_fold.py 와 동등) 그 데이터를 캡처한다. conv weight(ndim4)
+    // 는 param 경로로 별도 바인딩되므로 제외(중복/대용량 회피).
+    if (t.dim() != 4)
+      constants_[name] = t.detach().to(at::kFloat).contiguous().clone();
   }
 
   // 스칼라 정수 산출 op 추적(both 입력이 정수일 때만). 추적 시 true → 노드 생략.
@@ -945,7 +953,8 @@ class Parser {
 // load→freeze(preserveParameters)→optimize→parse. params(name→tensor)도 함께 반환.
 Graph do_parse(const std::string& pt_path, const std::string& graph_name,
                       const std::vector<int64_t>& input_shape,
-                      std::unordered_map<std::string, at::Tensor>& params) {
+                      std::unordered_map<std::string, at::Tensor>& params,
+                      std::unordered_map<std::string, at::Tensor>* constants_out) {
   torch::jit::Module module = torch::jit::load(pt_path);
   module.eval();
   // preserveParameters=true: 파라미터를 상수로 fold 하지 않고 prim::GetAttr 로 유지 →
@@ -961,7 +970,15 @@ Graph do_parse(const std::string& pt_path, const std::string& graph_name,
   for (const auto& b : frozen.named_buffers(/*recurse=*/true)) params[b.name] = b.value;
 
   Parser parser(graph_name, input_shape, params);
-  return parser.run(graph);
+  Graph g = parser.run(graph);
+  if (constants_out) *constants_out = std::move(parser.constants_);
+  return g;
+}
+
+Graph do_parse(const std::string& pt_path, const std::string& graph_name,
+               const std::vector<int64_t>& input_shape,
+               std::unordered_map<std::string, at::Tensor>& params) {
+  return do_parse(pt_path, graph_name, input_shape, params, nullptr);
 }
 
 Graph parse_traced(const std::string& pt_path, const std::string& graph_name,

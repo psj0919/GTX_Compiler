@@ -6,7 +6,9 @@
 #include <torch/script.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -160,19 +162,199 @@ int64_t config_int(const Node& n, const std::string& key, int64_t def) {
 
 }  // namespace
 
+// RNN(lstm/gru) 시퀀스 정적 unroll render — Python nn/modules/lstm_render·gru_render 포트.
+// 입력 x ne=[feat,seq,batch]. 게이트는 timestep 마다 ggml primitive 로 emit(C++ 루프 아님).
+// 단/양방향·멀티레이어 지원. weight 는 GGUF 텐서명(weight_ih_l{n}[_reverse]) 으로 접근.
+static std::string render_rnn(const Node& n, bool is_gru, const std::string& xvar,
+                              int& counter, std::string& last_out) {
+  std::string body;
+  char buf[700];
+  auto nv = [&](const char* p) { return std::string(p) + std::to_string(++counter); };
+  auto L = [&](const std::string& s) { body += "    " + s + "\n"; };
+
+  const auto& xs = n.in_tensors[0]->shape;  // torch [batch, seq, feat]
+  int64_t batch = xs.size() > 0 ? xs[0] : 1;
+  int64_t seq = xs.size() > 1 ? xs[1] : 1;
+  int64_t feat0 = xs.size() > 2 ? xs[2] : 1;
+
+  // weight 파라미터: key → shape. layer/dir/H 유도.
+  std::unordered_map<std::string, const Tensor*> w;
+  for (const auto& p : n.op.params)
+    if (!p.tensors.empty()) w[p.key] = p.tensors[0].get();
+  bool bidir = false;
+  int num_layers = 1;
+  for (const auto& kv : w) {
+    if (kv.first.find("_reverse") != std::string::npos) bidir = true;
+    if (kv.first.rfind("weight_ih_l", 0) == 0) {
+      int lid = std::atoi(kv.first.c_str() + 11);  // after "weight_ih_l"
+      if (lid + 1 > num_layers) num_layers = lid + 1;
+    }
+  }
+  int ndir = bidir ? 2 : 1;
+  int64_t H = w.count("weight_hh_l0") && w["weight_hh_l0"]->shape.size() > 1
+                  ? w["weight_hh_l0"]->shape[1] : 0;
+
+  std::string layer_in = xvar;
+  int64_t in_size = feat0;
+  for (int layer = 0; layer < num_layers; ++layer) {
+    std::vector<std::string> dir_outs;
+    for (int d = 0; d < ndir; ++d) {
+      std::string suf = d == 1 ? "_reverse" : "";
+      std::string ls = std::to_string(layer) + suf;
+      std::string wih = "m.weights(\"weight_ih_l" + ls + "\")";
+      std::string whh = "m.weights(\"weight_hh_l" + ls + "\")";
+      std::string bih = "m.weights(\"bias_ih_l" + ls + "\")";
+      std::string bhh = "m.weights(\"bias_hh_l" + ls + "\")";
+      std::vector<std::string> h_at(seq);
+      std::string h_var, c_var;
+      bool first = true;
+      for (int64_t step = 0; step < seq; ++step) {
+        int64_t t = d == 1 ? seq - 1 - step : step;  // reverse 방향
+        std::string xt = nv("xt");
+        std::snprintf(buf, sizeof(buf),
+            "tensor %s = ggml_cont(m, ggml_view_2d(m, %s, %lld, %lld, %s->nb[2], (size_t)%lld*%s->nb[1]));",
+            xt.c_str(), layer_in.c_str(), (long long)in_size, (long long)batch,
+            layer_in.c_str(), (long long)t, layer_in.c_str());
+        L(buf);
+        auto chunk = [&](const std::string& src, int64_t k, const char* name) {
+          std::string v = nv(name);
+          std::snprintf(buf, sizeof(buf),
+              "tensor %s = ggml_cont(m, ggml_view_2d(m, %s, %lld, %lld, %s->nb[1], (size_t)%lld*%lld*sizeof(float)));",
+              v.c_str(), src.c_str(), (long long)H, (long long)batch, src.c_str(),
+              (long long)k, (long long)H);
+          L(buf);
+          return v;
+        };
+        if (!is_gru) {
+          // LSTM: gate chunk 순서 i,f,g,o. c=f*c+i*g; h=o*tanh(c). h0=c0=0 첫 step 특수.
+          std::string g = nv("g");
+          std::snprintf(buf, sizeof(buf),
+              "tensor %s = ggml_add(m, ggml_mul_mat(m, %s, %s), ggml_add(m, %s, %s));",
+              g.c_str(), wih.c_str(), xt.c_str(), bih.c_str(), bhh.c_str());
+          L(buf);
+          if (!first) {
+            std::snprintf(buf, sizeof(buf),
+                "%s = ggml_add(m, %s, ggml_mul_mat(m, %s, %s));",
+                g.c_str(), g.c_str(), whh.c_str(), h_var.c_str());
+            L(buf);
+          }
+          std::string si = nv("si");
+          L("tensor " + si + " = ggml_sigmoid(m, " + chunk(g, 0, "ig") + ");");
+          std::string tg = nv("tg");
+          L("tensor " + tg + " = ggml_tanh(m, " + chunk(g, 2, "gg") + ");");
+          std::string so = nv("so");
+          L("tensor " + so + " = ggml_sigmoid(m, " + chunk(g, 3, "og") + ");");
+          std::string c_new = nv("c");
+          if (first) {
+            L("tensor " + c_new + " = ggml_mul(m, " + si + ", " + tg + ");");
+          } else {
+            std::string sf = nv("sf");
+            L("tensor " + sf + " = ggml_sigmoid(m, " + chunk(g, 1, "fg") + ");");
+            std::snprintf(buf, sizeof(buf),
+                "tensor %s = ggml_add(m, ggml_mul(m, %s, %s), ggml_mul(m, %s, %s));",
+                c_new.c_str(), sf.c_str(), c_var.c_str(), si.c_str(), tg.c_str());
+            L(buf);
+          }
+          std::string h_new = nv("h");
+          L("tensor " + h_new + " = ggml_mul(m, " + so + ", ggml_tanh(m, " + c_new + "));");
+          c_var = c_new; h_var = h_new; first = false;
+        } else {
+          // GRU: gate chunk 순서 r,z,n. h=(1-z)*n+z*h_prev. b_hh 첫 step 도 유효→h0=0 일반경로.
+          std::string gx = nv("gx");
+          std::snprintf(buf, sizeof(buf),
+              "tensor %s = ggml_add(m, ggml_mul_mat(m, %s, %s), %s);",
+              gx.c_str(), wih.c_str(), xt.c_str(), bih.c_str());
+          L(buf);
+          if (first) {
+            h_var = nv("h0");
+            std::snprintf(buf, sizeof(buf),
+                "tensor %s = ggml_scale(m, ggml_cont(m, ggml_view_2d(m, %s, %lld, %lld, %s->nb[1], (size_t)0)), 0.0f);",
+                h_var.c_str(), gx.c_str(), (long long)H, (long long)batch, gx.c_str());
+            L(buf);
+          }
+          std::string gh = nv("gh");
+          std::snprintf(buf, sizeof(buf),
+              "tensor %s = ggml_add(m, ggml_mul_mat(m, %s, %s), %s);",
+              gh.c_str(), whh.c_str(), h_var.c_str(), bhh.c_str());
+          L(buf);
+          std::string gxr = chunk(gx, 0, "gxr"), gxz = chunk(gx, 1, "gxz"), gxn = chunk(gx, 2, "gxn");
+          std::string ghr = chunk(gh, 0, "ghr"), ghz = chunk(gh, 1, "ghz"), ghn = chunk(gh, 2, "ghn");
+          std::string r = nv("r");
+          L("tensor " + r + " = ggml_sigmoid(m, ggml_add(m, " + gxr + ", " + ghr + "));");
+          std::string z = nv("z");
+          L("tensor " + z + " = ggml_sigmoid(m, ggml_add(m, " + gxz + ", " + ghz + "));");
+          std::string nn_ = nv("n");
+          L("tensor " + nn_ + " = ggml_tanh(m, ggml_add(m, " + gxn + ", ggml_mul(m, " + r + ", " + ghn + ")));");
+          std::string h_new = nv("h");
+          L("tensor " + h_new + " = ggml_add(m, " + nn_ + ", ggml_mul(m, " + z + ", ggml_sub(m, " + h_var + ", " + nn_ + ")));");
+          h_var = h_new; first = false;
+        }
+        std::string hr = nv("hr");
+        std::snprintf(buf, sizeof(buf), "tensor %s = ggml_reshape_3d(m, %s, %lld, 1, %lld);",
+                      hr.c_str(), h_var.c_str(), (long long)H, (long long)batch);
+        L(buf);
+        h_at[t] = hr;
+      }
+      std::string out = h_at[0];
+      for (int64_t t = 1; t < seq; ++t) {
+        std::string nx = nv("seqcat");
+        L("tensor " + nx + " = ggml_concat(m, " + out + ", " + h_at[t] + ", 1);");
+        out = nx;
+      }
+      dir_outs.push_back(out);
+    }
+    if (ndir == 2) {
+      std::string lo = nv("dircat");
+      L("tensor " + lo + " = ggml_concat(m, " + dir_outs[0] + ", " + dir_outs[1] + ", 0);");
+      layer_in = lo;
+    } else {
+      layer_in = dir_outs[0];
+    }
+    in_size = H * ndir;
+  }
+  // 마지막 layer_in 을 반환변수로(호출측이 last 로 사용).
+  last_out = layer_in;
+  return body;
+}
+
 // resnet op 체인 → vision.cpp arch 스타일 forward C++.
+// constants: trace 가 상수로 fold 한 head anchor/stride/scalar(name→데이터).
+// baked_out: codegen 이 const.foldN 키로 baking 한 텐서(gguf writer 가 수록).
 static std::string generate_arch_cpp(const Graph& g, const std::string& model,
-                                     const std::unordered_map<std::string, std::string>& alias) {
+                                     const std::unordered_map<std::string, std::string>& alias,
+                                     const std::unordered_map<std::string, at::Tensor>& constants,
+                                     std::unordered_map<std::string, at::Tensor>& baked_out) {
   std::string body;
   std::unordered_map<std::string, std::string> tvar;  // 텐서명 → C++ var
-  int counter = 0;
+  std::unordered_map<std::string, std::string> const_key;  // 상수 텐서명 → const.foldN
+  int counter = 0, const_counter = 0;
   std::string last;
   char buf[512];
+
+  // RNN(lstm/gru) 모델: 시퀀스 입력 [feat,seq,batch] — cwhn 변환 생략.
+  bool is_rnn = false;
+  for (const auto& np : g.nodes)
+    if (np->op.type == "aten::lstm" || np->op.type == "aten::gru") is_rnn = true;
 
   auto invar = [&](const std::shared_ptr<Tensor>& t) -> std::string {
     std::string nm = resolve_alias(alias, t->name);
     auto it = tvar.find(nm);
-    return it != tvar.end() ? it->second : "x";  // 미정의(입력) → x
+    if (it != tvar.end()) return it->second;
+    // const-fold: trace 가 접은 head 상수(anchor/stride/2.0)는 const.foldN GGUF weight 로
+    // baking 해 m.weights 로 로드(Python const_fold.py 와 동등). 입력만 x 로 남는다.
+    auto ci = constants.find(nm);
+    if (ci != constants.end()) {
+      auto bk = const_key.find(nm);
+      std::string key;
+      if (bk != const_key.end()) key = bk->second;
+      else {
+        key = "const.fold" + std::to_string(++const_counter);
+        const_key[nm] = key;
+        baked_out[key] = ci->second;
+      }
+      return "m.weights(\"" + key + "\")";
+    }
+    return "x";  // 미정의(입력) → x
   };
 
   for (const auto& np : g.nodes) {
@@ -180,8 +362,21 @@ static std::string generate_arch_cpp(const Graph& g, const std::string& model,
     if (n.op.type == "input" || n.op.type == "return") continue;
     if (n.op.type == "batch_norm") continue;  // folded
     if (n.op.type == "shape") continue;       // 스칼라(reshape dim) — 텐서 op 아님
+    if (n.op.type == "zeros") continue;       // RNN h0/c0 — render_rnn 내부 처리
 
-    // chunk/split: 다중 출력 → 각 조각을 ggml_view_4d 로(채널 오프셋 누적).
+    // RNN(lstm/gru): 시퀀스 정적 unroll(cwhn 변환 없음).
+    if (n.op.type == "aten::lstm" || n.op.type == "aten::gru") {
+      std::string rnn_last;
+      body += render_rnn(n, n.op.type == "aten::gru", invar(n.in_tensors[0]), counter,
+                         rnn_last);
+      if (!n.out_tensors.empty()) tvar[n.out_tensors[0]->name] = rnn_last;
+      last = rnn_last;
+      continue;
+    }
+
+    // chunk/split: 다중 출력 → 각 조각을 ggml_view_<rank>d 로(분할 축 오프셋 누적).
+    // rank-general: ne=reversed(torch shape), 분할축 gd=ggml_dim(tdim,rank),
+    // offset=accum*nb[gd]. 3d(DFL distance) / 4d(backbone) 모두 정합.
     if (n.op.type == "chunk" || n.op.type == "split") {
       std::string iv = invar(n.in_tensors[0]);
       int64_t rank = n.in_tensors[0]->shape_known ? (int64_t)n.in_tensors[0]->shape.size() : 4;
@@ -190,18 +385,29 @@ static std::string generate_arch_cpp(const Graph& g, const std::string& model,
       int64_t accum = 0;
       for (const auto& ot : n.out_tensors) {
         std::string var = "sl" + std::to_string(++counter);
-        auto& s = ot->shape;  // [N,C,H,W]
-        int64_t ne0 = s.size() > 3 ? s[3] : 1, ne1 = s.size() > 2 ? s[2] : 1;
-        int64_t ne2 = s.size() > 1 ? s[1] : 1, ne3 = s.size() > 0 ? s[0] : 1;
+        auto& s = ot->shape;
+        int64_t R = (int64_t)s.size();
+        if (R < 1 || R > 4) R = 4;
+        // ne = reversed torch shape (R dims)
+        std::vector<int64_t> ne(R, 1);
+        for (int64_t k = 0; k < R; ++k) ne[k] = s[(size_t)(R - 1 - k)];
+        // strides nb[1..R-1] + offset
+        std::string strides;
+        for (int64_t k = 1; k < R; ++k)
+          strides += iv + "->nb[" + std::to_string(k) + "], ";
+        std::string nelist;
+        for (int64_t k = 0; k < R; ++k)
+          nelist += std::to_string((long long)ne[k]) + ", ";
         std::snprintf(buf, sizeof(buf),
-                      "    tensor %s = ggml_view_4d(m, %s, %lld, %lld, %lld, %lld, %s->nb[1], %s->nb[2], %s->nb[3], %lld*%s->nb[%lld]);\n",
-                      var.c_str(), iv.c_str(), (long long)ne0, (long long)ne1, (long long)ne2,
-                      (long long)ne3, iv.c_str(), iv.c_str(), iv.c_str(), (long long)accum,
-                      iv.c_str(), (long long)gd);
+                      "    tensor %s = ggml_view_%lldd(m, %s, %s%s%lld*%s->nb[%lld]);\n",
+                      var.c_str(), (long long)R, iv.c_str(), nelist.c_str(),
+                      strides.c_str(), (long long)accum, iv.c_str(), (long long)gd);
         body += buf;
         tvar[ot->name] = var;
         last = var;
-        accum += (s.size() > 1 ? s[1] : 0);  // 채널 누적(채널 split 가정)
+        // 분할 축(torch dim)의 누적 크기.
+        int64_t tdim_pos = tdim < 0 ? tdim + R : tdim;
+        accum += (tdim_pos >= 0 && tdim_pos < R) ? s[(size_t)tdim_pos] : 0;
       }
       continue;
     }
@@ -251,7 +457,8 @@ static std::string generate_arch_cpp(const Graph& g, const std::string& model,
       }
       line = "    tensor " + var + " = " + acc + ";\n";
     } else if (n.op.type == "resize") {
-      std::snprintf(buf, sizeof(buf), "    tensor %s = ggml_upscale(m, %s, 2);\n",
+      std::snprintf(buf, sizeof(buf),
+                    "    tensor %s = ggml_upscale(m, %s, 2, GGML_SCALE_MODE_NEAREST);\n",
                     var.c_str(), invar(n.in_tensors[0]).c_str());
       line = buf;
     } else if (n.op.type == "reshape") {
@@ -282,15 +489,32 @@ static std::string generate_arch_cpp(const Graph& g, const std::string& model,
                     var.c_str(), invar(n.in_tensors[0]).c_str(), p[0], p[1], p[2], p[3]);
       line = buf;
     } else if (n.op.type == "matmul") {
+      // torch A@B → ggml_mul_mat(cont(permute(B,1,0,2,3)), A). ggml ne 는 torch 역순이라
+      // 공유차원(K)을 ne0 로 맞추려면 B 를 permute. C++ IR 은 transpose 노드를 별도 렌더
+      // (q^T/attn^T)하므로 in[0]=A, in[1]=B 에 이 규칙을 적용 → Python head_render 와 일치.
+      std::string A = invar(n.in_tensors[0]);
+      std::string B = n.in_tensors.size() > 1 ? invar(n.in_tensors[1]) : A;
       std::snprintf(buf, sizeof(buf),
-                    "    tensor %s = ggml_mul_mat(m, %s, %s); // TODO(ggml): operand order\n",
-                    var.c_str(), invar(n.in_tensors[0]).c_str(),
-                    n.in_tensors.size() > 1 ? invar(n.in_tensors[1]).c_str()
-                                            : invar(n.in_tensors[0]).c_str());
+                    "    tensor %s = ggml_mul_mat(m, ggml_cont(m, ggml_permute(m, %s, 1, 0, 2, 3)), %s);\n",
+                    var.c_str(), B.c_str(), A.c_str());
       line = buf;
     } else if (n.op.type == "softmax") {
-      std::snprintf(buf, sizeof(buf), "    tensor %s = ggml_soft_max(m, %s);\n",
-                    var.c_str(), invar(n.in_tensors[0]).c_str());
+      // ggml_soft_max 는 축0 전용. torch dim → ggml 축 gd. gd==0 이면 그대로,
+      // 아니면 gd↔0 permute 후 soft_max, 다시 permute(DFL: dim=1→ggml축2).
+      int64_t rank = n.in_tensors[0]->shape_known ? (int64_t)n.in_tensors[0]->shape.size() : 4;
+      int64_t gd = ggml_dim(config_int(n, "dim", -1), rank);
+      std::string iv = invar(n.in_tensors[0]);
+      if (gd <= 0 || gd > 3) {
+        std::snprintf(buf, sizeof(buf), "    tensor %s = ggml_soft_max(m, %s);\n",
+                      var.c_str(), iv.c_str());
+      } else {
+        int p[4] = {0, 1, 2, 3};
+        std::swap(p[0], p[gd]);
+        std::snprintf(buf, sizeof(buf),
+                      "    tensor %s = ggml_cont(m, ggml_permute(m, ggml_soft_max(m, "
+                      "ggml_cont(m, ggml_permute(m, %s, %d, %d, %d, %d))), %d, %d, %d, %d));\n",
+                      var.c_str(), iv.c_str(), p[0], p[1], p[2], p[3], p[0], p[1], p[2], p[3]);
+      }
       line = buf;
     } else if (n.op.type == "maxpool") {
       int64_t kh = config_int_elem(n, "kernel_size", 0, 1), kw = config_int_elem(n, "kernel_size", 1, 1);
@@ -333,14 +557,34 @@ static std::string generate_arch_cpp(const Graph& g, const std::string& model,
   }
 
   std::string out;
+  // arch_id = 소문자 model (GGUF general.architecture 는 write_gguf 가 graph_name 그대로 기록).
+  std::string arch_id = model;
+  for (auto& c : arch_id) c = (char)std::tolower((unsigned char)c);
+
   out += "// GENERATED BY GTX Compiler (C++/libtorch port, ggml/vision.cpp backend), DO NOT EDIT!\n";
   out += "#include \"visp/arch/" + model + ".h\"\n#include \"visp/ml.h\"\n";
-  out += "#include \"visp/nn.h\"\n#include \"visp/vision.h\"\n\nnamespace visp {\n\n";
+  out += "#include \"visp/nn.h\"\n#include \"visp/vision.h\"\n";
+  out += "#include \"util/string.h\"\n\n#include <string_view>\n\nnamespace visp {\n\n";
   out += "tensor " + model + "_forward(model_ref m, tensor x, " + model + "_params const& p) {\n";
-  out += "    (void)p;\n    x = cwhn_to_contiguous_2d(m, x);\n\n";
-  out += body;
-  out += "\n    x = contiguous_2d_to_cwhn(m, " + last + ");\n";
-  out += "    return compute_graph_output(m, x, \"result\");\n}\n\n} // namespace visp\n";
+  if (is_rnn) {
+    // RNN: 입력 [feat,seq,batch] 그대로 unroll, cwhn 변환 없음.
+    out += "    (void)p;\n    // RNN: 시퀀스 입력 [feat,seq,batch] — cwhn 변환 생략\n\n";
+    out += body;
+    out += "\n    return compute_graph_output(m, " + last + ", \"result\");\n}\n\n";
+  } else {
+    out += "    (void)p;\n    x = cwhn_to_contiguous_2d(m, x);\n\n";
+    out += body;
+    out += "\n    x = contiguous_2d_to_cwhn(m, " + last + ");\n";
+    out += "    return compute_graph_output(m, x, \"result\");\n}\n\n";
+  }
+  // detect_params: GGUF general.architecture 검증 (정적 unroll → 추가 하이퍼파라미터 없음).
+  out += model + "_params " + model + "_detect_params(model_file const& f) {\n";
+  out += "    " + model + "_params p{};\n";
+  out += "    if (std::string_view arch = f.arch(); arch != \"" + arch_id + "\") {\n";
+  out += "        throw except(\n";
+  out += "            \"Architecture expected to be '" + arch_id + "', but was '{}' ({})\",\n";
+  out += "            arch, f.path);\n";
+  out += "    }\n    return p;\n}\n\n} // namespace visp\n";
   return out;
 }
 
@@ -350,22 +594,29 @@ static std::string generate_arch_h(const std::string& model) {
   o += "#include \"visp/ml.h\"\n\nnamespace visp {\n\n";
   o += "struct " + model + "_params {};\n\n";
   o += "tensor " + model + "_forward(model_ref m, tensor x, " + model + "_params const& p);\n";
+  o += model + "_params " + model + "_detect_params(model_file const& f);\n";
   o += "\n} // namespace visp\n";
   return o;
 }
 
 void compile_model(const std::string& pt_path, const std::string& graph_name,
-                   const std::vector<int64_t>& input_shape, const std::string& out_dir) {
+                   const std::vector<int64_t>& input_shape, const std::string& out_dir,
+                   const std::string& quant) {
   std::unordered_map<std::string, at::Tensor> params;
-  Graph g = do_parse(pt_path, graph_name, input_shape, params);
+  std::unordered_map<std::string, at::Tensor> constants;
+  Graph g = do_parse(pt_path, graph_name, input_shape, params, &constants);
   std::unordered_map<std::string, std::string> alias;
   fold_conv_bn(g, params, alias);
 
-  std::string cpp = generate_arch_cpp(g, graph_name, alias);
+  std::unordered_map<std::string, at::Tensor> baked;  // const.foldN → 텐서
+  std::string cpp = generate_arch_cpp(g, graph_name, alias, constants, baked);
   std::string h = generate_arch_h(graph_name);
   { std::ofstream f(out_dir + "/" + graph_name + ".cpp"); f << cpp; }
   { std::ofstream f(out_dir + "/" + graph_name + ".h"); f << h; }
-  write_gguf_core(g, params, out_dir + "/" + graph_name + ".gguf", graph_name);
+  // baked const.foldN 텐서를 params 와 함께 GGUF 에 수록(키=그대로, scope 없음).
+  write_gguf_core(g, params, out_dir + "/" + graph_name + ".gguf", graph_name, &baked, quant);
+  if (!baked.empty())
+    std::fprintf(stderr, "[gtxc-compile] baked %zu const-fold tensor(s)\n", baked.size());
   std::fprintf(stderr, "[gtxc-compile] %s.{cpp,h,gguf} → %s/ (Conv-BN folded)\n",
                graph_name.c_str(), out_dir.c_str());
 }

@@ -99,10 +99,10 @@ int main(int argc, char** argv) {
     PARAMS_T p = DETECT_PARAMS(file);
 
     tensor input = compute_graph_input(m, GGML_TYPE_F32, {3, SZ, SZ, 1}, "x");
-    ggml_build_forward_expand(m.graph, input);
+    ggml_build_forward_expand(graph, input);
 
     tensor out = FWD(m, input, p);
-    ggml_build_forward_expand(m.graph, out);
+    ggml_build_forward_expand(graph, out);
 
     compute_graph_allocate(graph, backend);
 

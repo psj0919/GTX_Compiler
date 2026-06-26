@@ -43,6 +43,7 @@ int main(int argc, char** argv) {
   std::string out_path;
   std::string gguf_path;
   std::string compile_dir;
+  std::string quant;
 
   for (int i = 2; i < argc; ++i) {
     std::string a = argv[i];
@@ -51,11 +52,12 @@ int main(int argc, char** argv) {
     else if (a == "--out" && i + 1 < argc) out_path = argv[++i];
     else if (a == "--gguf" && i + 1 < argc) gguf_path = argv[++i];
     else if (a == "--compile" && i + 1 < argc) compile_dir = argv[++i];
+    else if (a == "--quantize" && i + 1 < argc) quant = argv[++i];
   }
 
   if (!compile_dir.empty()) {
     try {
-      gtxc::compile_model(pt_path, graph_name, input_shape, compile_dir);
+      gtxc::compile_model(pt_path, graph_name, input_shape, compile_dir, quant);
       return 0;
     } catch (const std::exception& e) {
       std::cerr << "[gtxc-compile] error: " << e.what() << "\n";

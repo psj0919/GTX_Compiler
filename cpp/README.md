@@ -164,10 +164,21 @@ cpp/
        state_dict 와 값 일치 검증(`cpp/tools/verify_gguf.py`)
 8. [x] **codegen** — `compile_model`: parse→**Conv-BN fold**→vision.cpp arch C++(.cpp/.h)+folded
        GGUF. resnet18/34/50 생성물이 Python 파이프라인과 op 단위 일치. **yolo11n 전체 forward
-       완전 렌더(254 ggml 호출, TODO(head) 0)**: 백본(conv/silu/chunk view/concat/add/maxpool/
-       resize/depthwise) + 검출 헤드 DFL·C2PSA 어텐션 디코드(reshape→qkv split→permute→mul_mat
-       →softmax→permute→mul_mat→reshape). output/v10d 패턴과 동일.
-       (남음: matmul operand order/attention scale 등 수치 best-effort 정밀화, vision.cpp 직접 빌드 verify)
+       완전 렌더**: 백본(conv/silu/chunk view/concat/add/maxpool/resize/depthwise) + 검출 헤드
+       DFL·C2PSA 어텐션 디코드.
+9. [x] **vision.cpp 직접 빌드 verify (수치 정합)** — `cpp/tools/verify.sh`:
+       compile→torch(.pt) ref→vision.cpp arch 빌드(`tools/build_yolo_cpp.sh`)→실행→cosine.
+       - resnet18: **cos=1.000000** (vision.cpp 직접 빌드, torch 대비)
+       - yolo11n: **cos=1.000000** (bbox 1.0 / cls 0.99997, fp16). const-fold baking(anchor/
+         stride/2.0/attn-scale→`const.fold*` GGUF), chunk rank-general, DFL **softmax 축**
+         (dim→ggml축 permute), **matmul operand order**(torch A@B → `mul_mat(permute(B),A)`),
+         attention scale, upscale 시그니처 수정 후 정합. arch 글루 = `_detect_params` emit.
+10. [x] **RNN codegen** — lstm/gru 시퀀스 정적 unroll render(`render_rnn`, Python
+       lstm_render/gru_render 포트). 단/양방향·멀티레이어 전 변형 **cos=1.000000**
+       (`tools/rnn_cpp_verify.py`). RNN 은 cwhn 변환 생략.
+11. [x] **양자화 `--quantize q8_0`** — linear weight 를 q8_0 블록(34B=fp16 scale+32 int8)
+       으로 GGUF 수록. `ggml_mul_mat` 이 on-the-fly dequant → codegen 변경 없이 동작.
+       (남음: conv-as-matmul 양자화(conv_2d_q), q4_0/k-quant(llama-quantize 경유))
 
 ## parity 정책
 
