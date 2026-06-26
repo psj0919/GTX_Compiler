@@ -96,22 +96,31 @@ from shared.compile.render_api import register_render as _register_render
 from shared.base import OP as _OP
 
 
+def _shape_of(t):
+    try:
+        return [int(x) for x in t.shape]
+    except Exception:
+        return None
+
+
 @_register_render(_OP.ADAPTIVEAVGPOOL2D)
 def render(node, ctx):
-    # output_size 는 그래프 attr 에 없으므로 출력 shape 로 판별한다(NCHW 가정: H,W=마지막 2).
-    # output_size==(1,1) 이면 전 spatial 평균 = global avg → ggml_pool_2d(full kernel) 로 정확.
+    # adaptive_avg_pool2d((Ho,Wo)): 입력 (Hi,Wi) 가 출력의 배수면(Hi%Ho==Wi%Wo==0) 고정 커널
+    # avg pool 과 동치 → kernel=stride=(Wi/Wo, Hi/Ho) 로 정확히 tiled pooling. (1,1) global 도
+    # 이 식의 특수해. 비-배수(진짜 가변커널 adaptive)는 ggml 미지원 → global 폴백 + TODO.
     a = ctx.inp(node)
-    is_global = False
-    try:
-        oshape = list(node.out_tensors[0].shape)
-        if len(oshape) >= 2 and int(oshape[-1]) == 1 and int(oshape[-2]) == 1:
-            is_global = True
-    except Exception:
-        pass
-    expr = (
-        f"ggml_pool_2d(m, {a}, GGML_OP_POOL_AVG, "
-        f"{a}->ne[0], {a}->ne[1], {a}->ne[0], {a}->ne[1], 0, 0)"
-    )
-    if not is_global:
-        expr += " /* TODO(ggml): non-(1,1) adaptive avg pool — needs tiled pooling */"
+    ish = _shape_of(node.in_tensors[0]) if node.in_tensors else None
+    osh = _shape_of(node.out_tensors[0]) if node.out_tensors else None
+    if ish and osh and len(ish) >= 2 and len(osh) >= 2:
+        Hi, Wi = ish[-2], ish[-1]
+        Ho, Wo = osh[-2], osh[-1]
+        if Ho > 0 and Wo > 0 and Hi % Ho == 0 and Wi % Wo == 0:
+            k0, k1 = Wi // Wo, Hi // Ho          # ggml: k0 on ne0(W), k1 on ne1(H)
+            expr = (f"ggml_pool_2d(m, {a}, GGML_OP_POOL_AVG, "
+                    f"{k0}, {k1}, {k0}, {k1}, 0, 0)")
+            return ctx.out(node, expr, hint="pool")
+    # 비-배수 또는 shape 미상 → 전 spatial 평균(global)로 폴백.
+    expr = (f"ggml_pool_2d(m, {a}, GGML_OP_POOL_AVG, "
+            f"{a}->ne[0], {a}->ne[1], {a}->ne[0], {a}->ne[1], 0, 0)"
+            f" /* TODO(ggml): non-divisible adaptive avg pool — 가변커널 미지원, global 폴백 */")
     return ctx.out(node, expr, hint="pool")
