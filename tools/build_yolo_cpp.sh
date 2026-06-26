@@ -21,7 +21,7 @@ FMT_INC="$V/build/_deps/fmt-src/include"
 g++ -std=c++20 -O2 -DVISP_FMT_LIB \
   -DARCH="$ARCH" -DVISP_ARCH_HEADER="\"visp/arch/$ARCH.h\"" \
   -I"$INC" -I"$V/include" -I"$V/src" \
-  -I"$V/depend/ggml/include" -I"$FMT_INC" \
+  -I"$V/depend/llama/ggml/include" -I"$FMT_INC" \
   tools/run_yolo_cpp.cpp "$GEN/$ARCH.cpp" \
   -L"$V/build/lib" -lvisioncpp -lggml -lggml-base -lggml-cpu \
   -Wl,-rpath,"$V/build/lib" \
