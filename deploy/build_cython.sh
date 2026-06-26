@@ -30,6 +30,16 @@ mkdir -p "$STAGE"
 for p in $PKGS; do
   cp -r "$ROOT/$p" "$STAGE/$p"
 done
+
+# 0a) tools/graph_visualizer.py 를 tools 패키지로 스테이징(.so 컴파일 대상에 추가).
+#   tools/ 전체가 아니라 Graph IR 시각화기 1개만 동봉 — 나머지 dev 스크립트는 배포 제외.
+#   TorchParser Graph IR → graphviz DOT/이미지. shared/parse(.so)에 의존(같은 dist 안).
+mkdir -p "$STAGE/tools"
+cp "$ROOT/tools/graph_visualizer.py" "$STAGE/tools/graph_visualizer.py"
+printf '# tools package — graph_visualizer 동봉(컴파일 대상). __init__ 은 평문 유지.\n' \
+  > "$STAGE/tools/__init__.py"
+VIZ_PKGS="tools"  # setup_cython 에 추가로 넘길 컴파일 대상(복사 루프엔 미포함)
+
 # 소스 트리에서 따라온 stale __pycache__ 제거 (bytecode 유출 방지)
 find "$STAGE" -type d -name '__pycache__' -prune -exec rm -rf {} +
 
@@ -49,7 +59,7 @@ rm -f "$STAGE/shared/compile/TODO.md"
 find "$STAGE" -maxdepth 2 -name 'README.md' -delete
 
 # 1) cythonize → build_ext --inplace (제외목록은 setup_cython.py 가 처리)
-( cd "$STAGE" && PKGS="$PKGS" "$PY" "$ROOT/deploy/setup_cython.py" )
+( cd "$STAGE" && PKGS="$PKGS $VIZ_PKGS" "$PY" "$ROOT/deploy/setup_cython.py" )
 
 # 2) .so 심볼 제거
 find "$STAGE" -name '*.so' -exec strip --strip-all {} +
@@ -90,6 +100,24 @@ if __name__ == "__main__":
     sys.exit(main())
 EOF
 
+# 6b) graph_visualizer 진입점 런처(평문) — 컴파일된 tools/graph_visualizer.so 의 main() 호출.
+cat > "$STAGE/viz.py" <<'EOF'
+"""graph_visualizer 진입점 런처 (tools.graph_visualizer:main — .so 동봉).
+
+    python viz.py --model resnet18 --output output/resnet18_graph
+    python viz.py --model "ultralytics.YOLO('yolo11n')" --output output/y11 --format svg
+
+PyTorch 모델 → TorchParser Graph IR → graphviz DOT(+이미지). 인자 파싱·main() 호출만
+하는 얇은 래퍼 — 보호할 IP 없음(평문 유지). 이미지 렌더는 graphviz `dot` CLI 선택사항.
+"""
+import sys
+
+from tools.graph_visualizer import main
+
+if __name__ == "__main__":
+    sys.exit(main())
+EOF
+
 cat > "$STAGE/requirements.txt" <<'EOF'
 # g2c 배포본 런타임 의존성 (우리 코드는 *.so 로 동봉, 아래는 외부 오픈소스 패키지)
 #
@@ -103,6 +131,7 @@ networkx
 tqdm
 numpy
 gguf                   # GGUF writer (pipeline.generate_gguf)
+graphviz               # viz.py 이미지 렌더(선택; .dot 은 의존성 없이 항상 생성)
 EOF
 
 cat > "$STAGE/README.md" <<'EOF'
@@ -126,8 +155,12 @@ python g2c.py --model resnet18 --output output/resnet18
 python g2c.py --model "ultralytics.YOLO('yolo11n')" --output output/yolo11n
 # 라이브러리
 python -c "from shared.compile.pipeline import compile_model"
+
+# Graph IR 시각화 (graphviz DOT/이미지)
+python viz.py --model resnet18 --output output/resnet18_graph
+python viz.py --model "ultralytics.YOLO('yolo11n')" --output output/y11 --format svg
 ```
-생성물: `output/<Model>.{cpp,h,gguf,py}`
+생성물: `output/<Model>.{cpp,h,gguf,py}`, 시각화 `output/<name>.{dot,png/svg}`
 
 ## 주의
 - `.so` 는 빌드 시점 Python minor(3.12)에서만 로드됩니다.
