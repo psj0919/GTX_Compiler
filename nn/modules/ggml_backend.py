@@ -470,6 +470,19 @@ def _op_max(x, dim, keepdim):
     return vals, idx.astype(np.float32)
 
 
+def _op_mean(x, dim, keepdim):
+    """torch.mean(x, dim, keepdim). dim=None 이면 전체 평균, int 또는 int 리스트.
+
+    ShuffleNet 등의 global avg pool(x.mean([2,3])) 의 eager 수치 기준 — codegen 의
+    adaptive avg pool 렌더와 동일 결과여야 한다(가변 reduce 축 지원).
+    """
+    x = np.asarray(x, np.float32)
+    if dim is None:
+        return np.asarray(np.mean(x), np.float32)
+    ax = tuple(int(d) for d in dim) if isinstance(dim, (list, tuple)) else int(dim)
+    return np.mean(x, axis=ax, keepdims=bool(keepdim)).astype(np.float32)
+
+
 def _op_topk(x, k, dim, largest):
     x = np.asarray(x, np.float32)
     order = np.argsort(x, axis=dim)
@@ -656,6 +669,10 @@ class GgmlModule:
         if t == "MAX":
             return _op_max(self._in(args, kwargs), int(kwargs.get("dim", -1)),
                            bool(kwargs.get("keepdim", False)))
+        if t == "MEAN":
+            return _op_mean(self._in(args, kwargs),
+                            kwargs.get("dim", a.get("dim")),
+                            bool(kwargs.get("keepdim", a.get("keepdim", False))))
         if t == "TOPK":
             d = args[0] if args else kwargs
             return _op_topk(_unwrap(d["self"]), d["k"], int(d.get("dim", -1)),
