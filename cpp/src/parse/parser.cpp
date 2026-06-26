@@ -223,6 +223,50 @@ class Parser {
       constants_[name] = t.detach().to(at::kFloat).contiguous().clone();
   }
 
+  // 값 v 를 정수로 on-demand 재귀 평가(val2int_ 사전채움 순서/커버리지 무관).
+  // view/reshape 의 동적 dim(size→NumToTensor→floor_divide→Int 체인)을 현재 텐서 shape
+  // 에서 직접 해결한다. 성공 시 out 에 값, true 반환.
+  bool eval_int(JValue* v, int64_t& out) {
+    auto it = val2int_.find(v);
+    if (it != val2int_.end()) { out = it->second; return true; }
+    if (auto iv = torch::jit::toIValue(v)) {
+      if (iv->isInt()) { out = iv->toInt(); return true; }
+      if (iv->isDouble()) { out = (int64_t)iv->toDouble(); return true; }
+      if (iv->isBool()) { out = iv->toBool() ? 1 : 0; return true; }
+      if (iv->isTensor()) {                       // 0-dim/1-elem 상수 텐서(예: floor_divide 의 2)
+        auto t = iv->toTensor();
+        if (t.numel() == 1) { out = t.item<int64_t>(); return true; }
+      }
+    }
+    JNode* p = v->node();
+    const std::string k = p->kind().toUnqualString();
+    if ((k == "Int" || k == "NumToTensor" || k == "IntImplicit" ||
+         k == "ScalarImplicit" || k == "detach" || k == "contiguous") &&
+        p->inputs().size() >= 1)
+      return eval_int(p->input(0), out);
+    if (k == "size" && p->inputs().size() >= 2) {
+      int64_t dim;
+      if (!eval_int(p->input(1), dim)) return false;
+      auto in = resolve(p->input(0));
+      if (!in.t || !in.t->shape_known) return false;
+      int64_t r = (int64_t)in.t->shape.size();
+      if (dim < 0) dim += r;
+      if (dim < 0 || dim >= r) return false;
+      out = in.t->shape[dim];
+      return true;
+    }
+    if (k == "mul" || k == "add" || k == "sub" || k == "div" ||
+        k == "floordiv" || k == "floor_divide") {
+      int64_t a, b;
+      if (p->inputs().size() < 2 || !eval_int(p->input(0), a) || !eval_int(p->input(1), b))
+        return false;
+      out = k == "mul" ? a * b : k == "add" ? a + b : k == "sub" ? a - b
+            : (b != 0 ? a / b : 0);
+      return true;
+    }
+    return false;
+  }
+
   // 스칼라 정수 산출 op 추적(both 입력이 정수일 때만). 추적 시 true → 노드 생략.
   bool track_scalar_int(JNode* n) {
     const std::string k = n->kind().toUnqualString();
@@ -583,17 +627,14 @@ class Parser {
       bool ok = true;
       if (sv->node()->kind() == c10::prim::ListConstruct) {
         for (JValue* e : sv->node()->inputs()) {
-          if (val2int_.count(e)) tgt.push_back(val2int_[e]);
+          int64_t ev;
+          if (eval_int(e, ev)) tgt.push_back(ev);   // size→Int→floor_divide 체인 재귀 해결
           else {
-            auto iv = torch::jit::toIValue(e);
-            if (iv && iv->isInt()) tgt.push_back(iv->toInt());
-            else {
-              if (getenv("GTX_DBG"))
-                std::fprintf(stderr, "[reshape-fail] %s elem %s <- %s\n",
-                             n->output(0)->debugName().c_str(), e->debugName().c_str(),
-                             e->node()->kind().toQualString());
-              ok = false; break;
-            }
+            if (getenv("GTX_DBG"))
+              std::fprintf(stderr, "[reshape-fail] %s elem %s <- %s\n",
+                           n->output(0)->debugName().c_str(), e->debugName().c_str(),
+                           e->node()->kind().toQualString());
+            ok = false; break;
           }
         }
       } else {
@@ -628,6 +669,24 @@ class Parser {
     } else if (k == "sub" || k == "sub_" || k == "mul" || k == "mul_" ||
                k == "div" || k == "div_" || k == "rsub") {
       setout(node->out_tensors[0], shp);  // elementwise broadcast → 첫 입력 shape
+    } else if (k == "mean" || k == "sum") {
+      // reduce dims (dim arg = input(1) int/int-list, keepdim = input(2)).
+      std::vector<int64_t> dims;
+      auto da = in_at(n, 1);
+      if (da.k == Arg::IntListK) dims = da.il;
+      else if (da.k == Arg::IntK) dims = {da.i};
+      if (dims.empty()) return;  // 전체 평균(dim 없음)은 별도 — 미지원 best-effort
+      bool keepdim = false;
+      auto ka = in_at(n, 2);
+      if (ka.k == Arg::BoolK) keepdim = ka.b;
+      std::vector<bool> red(rank, false);
+      for (auto d : dims) { if (d < 0) d += rank; if (d >= 0 && d < rank) red[d] = true; }
+      std::vector<int64_t> s;
+      for (int64_t i = 0; i < rank; ++i) {
+        if (red[i]) { if (keepdim) s.push_back(1); }
+        else s.push_back(shp[i]);
+      }
+      setout(node->out_tensors[0], s);
     }
   }
 
@@ -637,7 +696,8 @@ class Parser {
         "silu", "silu_", "sigmoid", "sigmoid_", "tanh", "tanh_", "gelu",
         "hardswish", "hardswish_", "hardsigmoid", "mish", "elu", "elu_",
         "leaky_relu", "leaky_relu_", "relu6", "clamp", "clamp_", "neg",
-        "exp", "log", "sqrt", "abs", "softmax", "log_softmax", "dropout"};
+        "exp", "log", "sqrt", "abs", "softmax", "log_softmax", "dropout",
+        "contiguous", "detach", "clone", "to", "alias"};
     const std::string k = n->kind().toUnqualString();
     if (!same.count(k)) return;
     if (node->in_tensors.empty() || !node->in_tensors[0]->shape_known) return;

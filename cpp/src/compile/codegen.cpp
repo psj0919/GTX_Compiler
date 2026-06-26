@@ -160,6 +160,82 @@ int64_t config_int(const Node& n, const std::string& key, int64_t def) {
   return def;
 }
 
+// N-D permute(order) → 블록 축약. 인접·동순서 입력축을 한 블록으로 병합(평탄 재해석).
+// order: 출력축 i ← 입력축 order[i]. (Python head_render._fold_permute 포트)
+void fold_permute(const std::vector<int64_t>& in_shape, const std::vector<int>& order,
+                  std::vector<int64_t>& block_sizes, std::vector<int>& order_blocks) {
+  int n = (int)in_shape.size();
+  std::vector<int> inv(n, 0);
+  for (int op = 0; op < n; ++op) { int ia = ((order[op] % n) + n) % n; inv[ia] = op; }
+  std::vector<std::vector<int>> blocks;
+  blocks.push_back({0});
+  for (int ax = 1; ax < n; ++ax) {
+    if (inv[ax] == inv[ax - 1] + 1) blocks.back().push_back(ax);
+    else blocks.push_back({ax});
+  }
+  block_sizes.clear();
+  for (auto& b : blocks) { int64_t s = 1; for (int ax : b) s *= in_shape[ax]; block_sizes.push_back(s); }
+  int K = (int)blocks.size();
+  order_blocks.resize(K);
+  for (int i = 0; i < K; ++i) order_blocks[i] = i;
+  std::sort(order_blocks.begin(), order_blocks.end(),
+            [&](int a, int b) { return inv[blocks[a][0]] < inv[blocks[b][0]]; });
+}
+
+// torch permute order → ggml_permute(p0..3) 인자(블록 K≤4).
+void perm_args4(const std::vector<int>& order, int ndim, int p[4]) {
+  for (int i = 0; i < 4; ++i) p[i] = i;
+  for (int i = 0; i < ndim; ++i) { int o = ((order[i] % ndim) + ndim) % ndim; p[ndim - 1 - o] = ndim - 1 - i; }
+}
+
+// >4D permute → 블록 축약 ≤4D permute(K≤4) 또는 인접 전치 시퀀스(K>4). 정확.
+std::string render_perm_general(const std::vector<int64_t>& in_shape, const std::vector<int>& order,
+                                const std::string& iv, int& counter, std::string& out_var) {
+  std::vector<int64_t> bs; std::vector<int> ob;
+  fold_permute(in_shape, order, bs, ob);
+  int K = (int)bs.size();
+  std::string body; char b[640];
+  if (K <= 4) {
+    std::string ne;
+    for (int i = K - 1; i >= 0; --i) ne += std::to_string((long long)bs[i]) + (i ? ", " : "");
+    std::string r = "fld" + std::to_string(++counter);
+    std::snprintf(b, sizeof(b), "    tensor %s = ggml_reshape_%dd(m, ggml_cont(m, %s), %s);\n",
+                  r.c_str(), K, iv.c_str(), ne.c_str());
+    body += b;
+    int p[4]; perm_args4(ob, K, p);
+    out_var = "fld" + std::to_string(++counter);
+    std::snprintf(b, sizeof(b), "    tensor %s = ggml_cont(m, ggml_permute(m, %s, %d, %d, %d, %d));\n",
+                  out_var.c_str(), r.c_str(), p[0], p[1], p[2], p[3]);
+    body += b;
+  } else {
+    std::string v = "fld" + std::to_string(++counter);
+    std::snprintf(b, sizeof(b), "    tensor %s = ggml_cont(m, %s);\n", v.c_str(), iv.c_str());
+    body += b;
+    std::vector<int> cur(K); for (int i = 0; i < K; ++i) cur[i] = i;
+    std::vector<int64_t> cs = bs;
+    for (int i = 0; i < K; ++i) {
+      int j = (int)(std::find(cur.begin(), cur.end(), ob[i]) - cur.begin());
+      while (j > i) {
+        int64_t left = 1; for (int t = 0; t < j - 1; ++t) left *= cs[t];
+        int64_t bp = cs[j - 1], bp1 = cs[j], right = 1; for (int t = j + 1; t < K; ++t) right *= cs[t];
+        std::string r2 = "fld" + std::to_string(++counter);
+        std::snprintf(b, sizeof(b), "    tensor %s = ggml_reshape_4d(m, %s, %lld, %lld, %lld, %lld);\n",
+                      r2.c_str(), v.c_str(), (long long)right, (long long)bp1, (long long)bp, (long long)left);
+        body += b;
+        std::string s2 = "fld" + std::to_string(++counter);
+        std::snprintf(b, sizeof(b), "    tensor %s = ggml_cont(m, ggml_permute(m, %s, 0, 2, 1, 3));\n",
+                      s2.c_str(), r2.c_str());
+        body += b;
+        v = s2;
+        std::swap(cur[j - 1], cur[j]); std::swap(cs[j - 1], cs[j]);
+        --j;
+      }
+    }
+    out_var = v;
+  }
+  return body;
+}
+
 }  // namespace
 
 // RNN(lstm/gru) 시퀀스 정적 unroll render — Python nn/modules/lstm_render·gru_render 포트.
@@ -374,6 +450,35 @@ static std::string generate_arch_cpp(const Graph& g, const std::string& model,
       continue;
     }
 
+    // >4D transpose/permute(전이 5D, 예: ShuffleNet channel-shuffle) → 블록 축약 ≤4D.
+    // reshape↑/↓ 는 평탄 재해석(물리 ≤4D 유지)이라, 데이터 이동인 permute 만 표현하면 정확.
+    if ((n.op.type == "transpose" || n.op.type == "permute") &&
+        n.in_tensors[0]->shape_known && n.in_tensors[0]->shape.size() > 4) {
+      const auto& insh = n.in_tensors[0]->shape;
+      int rank = (int)insh.size();
+      std::vector<int> order(rank);
+      for (int i = 0; i < rank; ++i) order[i] = i;
+      if (n.op.type == "transpose") {
+        int d0 = (int)config_int(n, "dim0", 0), d1 = (int)config_int(n, "dim1", 1);
+        if (d0 < 0) d0 += rank; if (d1 < 0) d1 += rank;
+        if (d0 >= 0 && d0 < rank && d1 >= 0 && d1 < rank) std::swap(order[d0], order[d1]);
+      } else {  // permute: order config(int list)
+        for (const auto& kv : n.op.configs)
+          if ((kv.first == "dims" || kv.first == "order") &&
+              kv.second.type == json::Value::Arr) {
+            order.clear();
+            for (const auto& e : *kv.second.arr)
+              if (e.type == json::Value::Int) order.push_back((int)e.i);
+            break;
+          }
+      }
+      std::string ov;
+      body += render_perm_general(insh, order, invar(n.in_tensors[0]), counter, ov);
+      if (!n.out_tensors.empty()) tvar[n.out_tensors[0]->name] = ov;
+      last = ov;
+      continue;
+    }
+
     // chunk/split: 다중 출력 → 각 조각을 ggml_view_<rank>d 로(분할 축 오프셋 누적).
     // rank-general: ne=reversed(torch shape), 분할축 gd=ggml_dim(tdim,rank),
     // offset=accum*nb[gd]. 3d(DFL distance) / 4d(backbone) 모두 정합.
@@ -472,7 +577,9 @@ static std::string generate_arch_cpp(const Graph& g, const std::string& model,
         std::snprintf(buf, sizeof(buf), "    tensor %s = ggml_reshape_%lldd(m, ggml_cont(m, %s)%s);\n",
                       var.c_str(), (long long)r, invar(n.in_tensors[0]).c_str(), args.c_str());
       else
-        std::snprintf(buf, sizeof(buf), "    tensor %s = %s; // TODO(head): reshape rank %lld\n",
+        // >4D: 물리버퍼를 ≤4D 로 유지(cont passthrough). 전이 5D 의 그 사이 permute 는
+        // render_perm_general 이 ≤4D 화하고, 마지막 ≤4D reshape↓ 가 정합한다.
+        std::snprintf(buf, sizeof(buf), "    tensor %s = ggml_cont(m, %s); /* reshape rank %lld >4D → ≤4D 유지 */\n",
                       var.c_str(), invar(n.in_tensors[0]).c_str(), (long long)r);
       line = buf;
     } else if (n.op.type == "transpose" || n.op.type == "permute") {
@@ -525,11 +632,61 @@ static std::string generate_arch_cpp(const Graph& g, const std::string& model,
                     var.c_str(), invar(n.in_tensors[0]).c_str(), (long long)kh, (long long)kw,
                     (long long)sh, (long long)sw, (long long)ph, (long long)pw);
       line = buf;
-    } else if (n.op.type == "adaptive_avg_pool2d") {
+    } else if (n.op.type == "aten::mean" || n.op.type == "mean") {
+      // mean([2,3]) (= [B,C,H,W] 공간평균 = global avg pool) → ggml AVG pool(ne0,ne1) → [1,1,C,B]
+      // → keepdim 에 맞춰 reshape. (그 외 dim 은 best-effort ggml_mean(ne0)).
       std::string iv = invar(n.in_tensors[0]);
-      std::snprintf(buf, sizeof(buf),
-                    "    tensor %s = ggml_pool_2d(m, %s, GGML_OP_POOL_AVG, %s->ne[0], %s->ne[1], %s->ne[0], %s->ne[1], 0, 0);\n",
-                    var.c_str(), iv.c_str(), iv.c_str(), iv.c_str(), iv.c_str(), iv.c_str());
+      std::vector<int64_t> dims;
+      for (const auto& kv : n.op.configs)
+        if (kv.first == "dim" && kv.second.type == json::Value::Arr)
+          for (const auto& e : *kv.second.arr)
+            if (e.type == json::Value::Int) dims.push_back(e.i);
+      const auto& insh = n.in_tensors[0]->shape;
+      bool spatial = dims.size() == 2 && insh.size() == 4 &&
+                     ((dims[0] == 2 && dims[1] == 3) || (dims[0] == 3 && dims[1] == 2));
+      if (spatial) {
+        int64_t B = insh[0], C = insh[1], H = insh[2], W = insh[3];
+        std::string g = "gap" + std::to_string(++counter);
+        std::snprintf(buf, sizeof(buf),
+                      "    tensor %s = ggml_pool_2d(m, %s, GGML_OP_POOL_AVG, %lld, %lld, %lld, %lld, 0, 0);\n",
+                      g.c_str(), iv.c_str(), (long long)W, (long long)H, (long long)W, (long long)H);
+        line = buf;
+        bool keepdim = false;
+        for (const auto& kv : n.op.configs)
+          if (kv.first == "keepdim" && kv.second.type == json::Value::Bool) keepdim = kv.second.b;
+        if (keepdim)
+          std::snprintf(buf, sizeof(buf), "    tensor %s = ggml_cont(m, %s);\n", var.c_str(), g.c_str());
+        else
+          std::snprintf(buf, sizeof(buf),
+                        "    tensor %s = ggml_reshape_2d(m, ggml_cont(m, %s), %lld, %lld);\n",
+                        var.c_str(), g.c_str(), (long long)C, (long long)B);
+        line += buf;
+      } else {
+        std::snprintf(buf, sizeof(buf), "    tensor %s = ggml_mean(m, %s); // TODO: mean dim\n",
+                      var.c_str(), iv.c_str());
+        line = buf;
+      }
+    } else if (n.op.type == "adaptive_avg_pool2d") {
+      // 입력 (Hi,Wi) 가 출력 (Ho,Wo) 의 배수면 고정커널 avg pool 로 tiled pooling.
+      // (1,1) global 은 특수해. 비-배수는 global 폴백.
+      std::string iv = invar(n.in_tensors[0]);
+      const auto& ish = n.in_tensors[0]->shape;
+      const auto& osh = n.out_tensors[0]->shape;
+      bool tiled = ish.size() >= 2 && osh.size() >= 2 &&
+                   osh[osh.size() - 2] > 0 && osh[osh.size() - 1] > 0 &&
+                   ish[ish.size() - 2] % osh[osh.size() - 2] == 0 &&
+                   ish[ish.size() - 1] % osh[osh.size() - 1] == 0;
+      if (tiled) {
+        int64_t k0 = ish[ish.size() - 1] / osh[osh.size() - 1];
+        int64_t k1 = ish[ish.size() - 2] / osh[osh.size() - 2];
+        std::snprintf(buf, sizeof(buf),
+                      "    tensor %s = ggml_pool_2d(m, %s, GGML_OP_POOL_AVG, %lld, %lld, %lld, %lld, 0, 0);\n",
+                      var.c_str(), iv.c_str(), (long long)k0, (long long)k1, (long long)k0, (long long)k1);
+      } else {
+        std::snprintf(buf, sizeof(buf),
+                      "    tensor %s = ggml_pool_2d(m, %s, GGML_OP_POOL_AVG, %s->ne[0], %s->ne[1], %s->ne[0], %s->ne[1], 0, 0);\n",
+                      var.c_str(), iv.c_str(), iv.c_str(), iv.c_str(), iv.c_str(), iv.c_str());
+      }
       line = buf;
     } else if (n.op.type == "flatten") {
       int64_t C = 1;
