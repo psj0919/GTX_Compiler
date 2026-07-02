@@ -1,7 +1,7 @@
 [project]
-name = "compiler"
+name = "g2c"
 version = "0.1.0"
-description = " Compiler: PyTorch 모델 변환 및 최적화 툴킷"
+description = "g2c — GTX-to-C Compiler: PyTorch 모델 변환 및 최적화 툴킷"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -17,7 +17,7 @@ g2c = "shared.compile.pipeline:main"
 
 [tool.setuptools.packages.find]
 include = [
-    "shared*", "parse*", "qproc*", "quantization*", "utils*", "nn*",
+    "g2c*", "shared*", "parse*", "qproc*", "quantization*", "utils*", "nn*",
 ]
 
 [build-system]
