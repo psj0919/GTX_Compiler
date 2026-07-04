@@ -510,6 +510,8 @@ _SAFE_DEV_OPTS = [
     # convert_adaptive_pool_to_pool — 제외: 생성 avg_pool('avgpool') op 이 ggml export
     #   writer(torch_op_map)에 미등록 → "please register operator avgpool". ggml 부적합.
     "normalize_pad_nd",          # pad 표현 정규화(N-D)
+    # update_op_attrs — 제외: transpose→permute 변환의 'permute' op 이 ggml export
+    #   writer 에 미등록("please register operator permute"). ggml 부적합.
 ]
 
 
