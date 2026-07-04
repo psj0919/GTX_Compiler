@@ -507,6 +507,9 @@ _SAFE_DEV_OPTS = [
     #   (xmodel 은 blob/동적으로 채움) → ggml _op_reshape 실행 실패. ggml 부적합.
     "convert_shape_tensor_to_const",   # shape 텐서(정적) → const 노드
     "convert_rsub_to_sub",       # rsub(a-x) → sub 정규화
+    # convert_adaptive_pool_to_pool — 제외: 생성 avg_pool('avgpool') op 이 ggml export
+    #   writer(torch_op_map)에 미등록 → "please register operator avgpool". ggml 부적합.
+    "normalize_pad_nd",          # pad 표현 정규화(N-D)
 ]
 
 
