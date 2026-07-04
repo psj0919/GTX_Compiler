@@ -500,6 +500,7 @@ _SAFE_DEV_OPTS = [
     "strip_redundant_ops",       # CONTIGUOUS 등 잉여 op 제거
     "fuse_pad",                  # 명시적 Pad 노드 → conv/pool pad attr 흡수
     "fuse_transpose_matmul",     # transpose+matmul → 단일 matmul(transpose flag)
+    "fuse_redundant_transpose",  # 상쇄되는 연속 transpose 제거
 ]
 
 
