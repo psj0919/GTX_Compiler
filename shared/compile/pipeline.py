@@ -503,6 +503,9 @@ _SAFE_DEV_OPTS = [
     "fuse_redundant_transpose",  # 상쇄되는 연속 transpose 제거
     "merge_permute_to_linear",   # linear 앞 permute 를 weight 축 재배열로 흡수
     "merge_consecutive_reshape", # 연속 reshape 를 하나로 병합
+    # convert_reshapelike_to_reshape — 제외: reshape 로 바꾼 노드의 shape attr 이 None
+    #   (xmodel 은 blob/동적으로 채움) → ggml _op_reshape 실행 실패. ggml 부적합.
+    "convert_shape_tensor_to_const",   # shape 텐서(정적) → const 노드
 ]
 
 
