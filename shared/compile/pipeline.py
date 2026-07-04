@@ -499,6 +499,7 @@ def fold_conv_bn_graph(graph):
 _SAFE_DEV_OPTS = [
     "strip_redundant_ops",       # CONTIGUOUS 등 잉여 op 제거
     "fuse_pad",                  # 명시적 Pad 노드 → conv/pool pad attr 흡수
+    "fuse_transpose_matmul",     # transpose+matmul → 단일 matmul(transpose flag)
 ]
 
 
