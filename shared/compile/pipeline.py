@@ -506,6 +506,7 @@ _SAFE_DEV_OPTS = [
     # convert_reshapelike_to_reshape — 제외: reshape 로 바꾼 노드의 shape attr 이 None
     #   (xmodel 은 blob/동적으로 채움) → ggml _op_reshape 실행 실패. ggml 부적합.
     "convert_shape_tensor_to_const",   # shape 텐서(정적) → const 노드
+    "convert_rsub_to_sub",       # rsub(a-x) → sub 정규화
 ]
 
 
