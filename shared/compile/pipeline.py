@@ -501,6 +501,7 @@ _SAFE_DEV_OPTS = [
     "fuse_pad",                  # 명시적 Pad 노드 → conv/pool pad attr 흡수
     "fuse_transpose_matmul",     # transpose+matmul → 단일 matmul(transpose flag)
     "fuse_redundant_transpose",  # 상쇄되는 연속 transpose 제거
+    "merge_permute_to_linear",   # linear 앞 permute 를 weight 축 재배열로 흡수
 ]
 
 
