@@ -72,28 +72,92 @@ def _out_shapes(node):
     return shs
 
 
+# record-label 안에서 구조/파싱을 깨는 문자. Netron dot.js 는 필드를 '|', attr 를
+# '\l', key:value 를 ':' 로 나누므로 이들이 값에 들어가면 안 된다. graphviz record 의
+# 구조문자 '{}<>' 도 배제.
+_BAD_VAL_CHARS = set('|{}:<>"\\')
+
+
+def _fmt_val(v):
+    """op attr 값 → record 필드 문자열. 표시 불가(Tensor/None/중첩)면 None.
+
+    리스트/튜플은 `(a, b)` 로 → Netron dot.js 가 JSON 배열로 승격한다.
+    """
+    if v is None:
+        return None
+    if isinstance(v, bool):        # bool 이 int 보다 먼저 (issubclass)
+        return str(v)
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, str):
+        return v if not (set(v) & _BAD_VAL_CHARS) else None
+    if isinstance(v, (list, tuple)):
+        parts = []
+        for x in v:
+            if isinstance(x, bool):
+                parts.append(str(x))
+            elif isinstance(x, (int, float)):
+                parts.append(str(x))
+            else:
+                return None        # Tensor 등 중첩 → attr 전체 스킵
+        return "(" + ", ".join(parts) + ")"
+    return None                    # Tensor / Operation / 기타
+
+
+def _attr_pairs(node, *, show_shape: bool = True):
+    """op-IR(op._attrs) + out_shape 에서 (key, value_str) 쌍을 1:1 로 수집."""
+    pairs = []
+    short = node.name.split("::")[-1]
+    if not (set(short) & _BAD_VAL_CHARS):
+        pairs.append(("name", short))
+    op = getattr(node, "op", None)
+    for name, attr in (getattr(op, "_attrs", None) or {}).items():
+        key = str(getattr(name, "value", name))
+        s = _fmt_val(getattr(attr, "value", None))
+        if s is not None and not (set(key) & _BAD_VAL_CHARS):
+            pairs.append((key, s))
+    if show_shape:
+        shs = _out_shapes(node)
+        for i, sh in enumerate(shs):
+            k = "out_shape" if i == 0 else f"out_shape_{i}"
+            pairs.append((k, "(" + ", ".join(str(d) for d in sh) + ")"))
+    return pairs
+
+
+def _record_label(nid: str, optype: str, pairs) -> str:
+    """Netron dot.js 가 type+attribute 로 파싱하는 record 라벨.
+
+    형식: `{<nid>|op_code=<optype>\\l|<k>: <v>\\l...}` (dot.js 92-122행 규칙).
+    lines[0]==nid, lines[1] 이 'op_code=' 로 시작해야 optype 이 노드 type 으로 승격.
+    """
+    fields = [nid, f"op_code={optype}\\l"]
+    if pairs:
+        fields.append("".join(f"{k}: {v}\\l" for k, v in pairs))
+    return "{" + "|".join(fields) + "}"
+
+
 def to_dot(graph, *, rankdir: str = "TB", show_shape: bool = True) -> str:
-    """Graph IR → DOT 문자열."""
-    nodes = list(getattr(graph, "nodes", []))
+    """Graph IR → DOT 문자열 (Netron 호환 record 라벨).
+
+    graph.viz_skip_ids(=const-fold 로 baking 되어 codegen 에서 제거되는 노드 id 집합)가
+    있으면 그 노드/엣지는 컴파일 그래프와 동일하게 렌더에서 제외한다.
+    """
+    skip_ids = getattr(graph, "viz_skip_ids", None) or set()
+    nodes = [n for n in (getattr(graph, "nodes", []) or []) if id(n) not in skip_ids]
     name2id = {n.name: f"n{i}" for i, n in enumerate(nodes)}
 
     lines = [
         f'digraph "{_esc(getattr(graph, "name", "graph"))}" {{',
         f"  rankdir={rankdir};",
-        '  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=10];',
+        # record: Netron 은 label 에서 op/attr 파싱, graphviz 는 필드 렌더. octagon 금지.
+        '  node [shape=record, style=filled, fontname="Helvetica", fontsize=10];',
         '  edge [color="#90a4ae"];',
     ]
 
     for n in nodes:
         nid = name2id[n.name]
         ot = _op_type(n)
-        # 라벨: op타입 / (짧은) 노드명 / 출력 shape
-        short = n.name.split("::")[-1]
-        label = f"{ot}\\n{_esc(short)}"
-        if show_shape:
-            shs = _out_shapes(n)
-            if shs:
-                label += "\\n" + _esc(", ".join(str(s) for s in shs))
+        label = _record_label(nid, ot, _attr_pairs(n, show_shape=show_shape))
         lines.append(f'  {nid} [label="{label}", fillcolor="{_color_of(ot)}"];')
 
     seen = set()
@@ -137,7 +201,8 @@ def visualize_graph(graph, output: str, *, fmt: str = "png",
     dot_path = output + ".dot"
     with open(dot_path, "w") as f:
         f.write(to_dot(graph, rankdir=rankdir, show_shape=show_shape))
-    n = len(list(getattr(graph, "nodes", [])))
+    skip = getattr(graph, "viz_skip_ids", None) or set()
+    n = sum(1 for x in (getattr(graph, "nodes", []) or []) if id(x) not in skip)
     print(f"[graph_viz] DOT 작성: {dot_path} ({n} nodes)")
     img = _render(dot_path, output + "." + fmt, fmt)
     if img:
@@ -147,16 +212,58 @@ def visualize_graph(graph, output: str, *, fmt: str = "png",
     return {"dot": dot_path, "image": img}
 
 
-def build_graph(model_spec: str, pth: str = None, input_shape=None):
-    """g2c 와 동일한 --model 스펙 → Graph IR (TorchParser)."""
+def _apply_extra_opts(graph):
+    """compile 경로 밖(양자화/DPU 백엔드)의 OptimizeCommander 패스를 opt-in 적용.
+
+    QuantOptimizer 순서를 따름: DecoupleShared → FuseEmbedLnActv → SetNegativeSlope.
+    resnet/yolo 처럼 해당 패턴(공유 conv 가중치/embedding-LN-actv/leaky_relu)이 없으면
+    무해한 no-op. 양자화 미설정 시 SetNegativeSlope 는 값 변경 없이 경고만.
+    """
+    try:
+        from shared.optimization.commander import OptimizeCommander
+        cmd = OptimizeCommander(graph=graph)
+        cmd.DecoupleSharedParamsInConv()   # 공유 conv weight/bias → 레이어별 사본 분리
+        cmd.FuseEmbedLnActv()              # Embedding→LayerNorm→Sigmoid/Tanh 융합(노드 제거)
+        cmd.SetNegativeSlope()             # LeakyReLU alpha → DPU 값(0.1015625), quant 시만
+        print("[graph_viz] extra-opt: DecoupleShared/FuseEmbedLnActv/SetNegativeSlope 적용",
+              flush=True)
+    except Exception as e:
+        print(f"[graph_viz] extra-opt 생략 ({type(e).__name__}: {e})", flush=True)
+    return graph
+
+
+def build_graph(model_spec: str, pth: str = None, input_shape=None,
+                fold: bool = True, extra_opt: bool = False):
+    """g2c 와 동일한 --model 스펙 → Graph IR (TorchParser).
+
+    fold=True(기본): g2c 컴파일과 동일한 그래프 패스를 적용해 **실제로 컴파일되는
+    그래프**를 그린다 — (1) Conv-BN fold(BN→conv 흡수), (2) const-fold(입력 무관
+    상수 subgraph 를 GGUF 로 baking → codegen 제거; 제거 노드는 viz_skip_ids 로 표시).
+    TorchParser 자체의 파싱-타임 최적화(jit constant-fold/DCE)는 항상 포함.
+    fold=False 면 raw 파싱 그래프.
+    extra_opt=True: compile 경로 밖(양자화/DPU) OptimizeCommander 패스도 적용(_apply_extra_opts).
+    """
     import torch
-    from shared.compile.pipeline import build_model
+    from shared.compile.pipeline import build_model, fold_conv_bn_graph
     from parse import TorchParser
     from parse.rich_in_out_helper import StandardInputData
 
     model, name, shape = build_model(model_spec, pth=pth, input_shape=input_shape)
     inputs = torch.randn(*shape).cpu()
     graph = TorchParser()(name, model, StandardInputData((inputs,), {}))
+    if fold:
+        graph = fold_conv_bn_graph(graph)
+        if extra_opt:
+            graph = _apply_extra_opts(graph)
+        try:
+            from shared.compile.const_fold import fold_constants
+            baked, skip = fold_constants(graph, (shape[-2], shape[-1]))
+            graph.viz_skip_ids = skip
+            if skip:
+                print(f"[graph_viz] const-fold — baked {len(baked)} tensor, "
+                      f"{len(skip)} node 제거(codegen 제외)", flush=True)
+        except Exception as e:
+            print(f"[graph_viz] const-fold 생략 ({type(e).__name__}: {e})", flush=True)
     return graph
 
 
@@ -176,6 +283,11 @@ def main(argv=None):
     ap.add_argument("--rankdir", default="TB", choices=["TB", "LR"],
                     help="레이아웃 방향 (TB=위→아래, LR=좌→우)")
     ap.add_argument("--no-shape", action="store_true", help="출력 shape 라벨 생략")
+    ap.add_argument("--no-fold", action="store_true",
+                    help="Conv-BN fold 생략(raw 파싱 그래프). 기본은 g2c 와 동일하게 fold")
+    ap.add_argument("--extra-opt", action="store_true",
+                    help="compile 경로 밖(양자화/DPU) OptimizeCommander 패스도 적용 "
+                         "(DecoupleShared/FuseEmbedLnActv/SetNegativeSlope). 기본 off")
     ap.add_argument("--tracer", default=None, choices=["jit", "dispatch"],
                     help="트레이서 선택 (기본 jit). dispatch=GTX_DISPATCH_TRACER=1 일시 설정")
     args = ap.parse_args(argv)
@@ -189,7 +301,8 @@ def main(argv=None):
     if args.input_shape:
         shape = tuple(int(x) for x in args.input_shape.replace(" ", "").split(","))
 
-    graph = build_graph(args.model, pth=args.pth, input_shape=shape)
+    graph = build_graph(args.model, pth=args.pth, input_shape=shape,
+                        fold=not args.no_fold, extra_opt=args.extra_opt)
     visualize_graph(graph, args.output, fmt=args.format,
                     rankdir=args.rankdir, show_shape=not args.no_shape)
 
