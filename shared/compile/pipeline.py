@@ -498,6 +498,7 @@ def fold_conv_bn_graph(graph):
 # 패스마다 점증 추가하며 ggml cos 회귀 검증 후 커밋한다.
 _SAFE_DEV_OPTS = [
     "strip_redundant_ops",       # CONTIGUOUS 등 잉여 op 제거
+    "fuse_pad",                  # 명시적 Pad 노드 → conv/pool pad attr 흡수
 ]
 
 
