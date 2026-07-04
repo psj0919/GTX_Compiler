@@ -502,6 +502,7 @@ _SAFE_DEV_OPTS = [
     "fuse_transpose_matmul",     # transpose+matmul → 단일 matmul(transpose flag)
     "fuse_redundant_transpose",  # 상쇄되는 연속 transpose 제거
     "merge_permute_to_linear",   # linear 앞 permute 를 weight 축 재배열로 흡수
+    "merge_consecutive_reshape", # 연속 reshape 를 하나로 병합
 ]
 
 
