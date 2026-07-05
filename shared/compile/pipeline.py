@@ -491,6 +491,49 @@ def fold_conv_bn_graph(graph):
     return graph
 
 
+# xmodel 백엔드(DevGraphOptimizer)의 **topology-only 안전 패스**를 ggml codegen 앞에 재사용.
+# 데이터/quant-태깅/HW-layout 의존 패스(constant_folding/broadcast/update_node_data/
+# layout_tranform/partition)는 제외 — ggml 은 런타임 브로드캐스트·자체 layout 이라 불요/무의미.
+# DevGraphOptimizer 는 입력 그래프를 clone(param data 보존 검증됨) → dev_graph 반환.
+# 패스마다 점증 추가하며 ggml cos 회귀 검증 후 커밋한다.
+_SAFE_DEV_OPTS = [
+    "strip_redundant_ops",       # CONTIGUOUS 등 잉여 op 제거
+    "fuse_pad",                  # 명시적 Pad 노드 → conv/pool pad attr 흡수
+    "fuse_transpose_matmul",     # transpose+matmul → 단일 matmul(transpose flag)
+    "fuse_redundant_transpose",  # 상쇄되는 연속 transpose 제거
+    "merge_permute_to_linear",   # linear 앞 permute 를 weight 축 재배열로 흡수
+    "merge_consecutive_reshape", # 연속 reshape 를 하나로 병합
+    # convert_reshapelike_to_reshape — 제외: reshape 로 바꾼 노드의 shape attr 이 None
+    #   (xmodel 은 blob/동적으로 채움) → ggml _op_reshape 실행 실패. ggml 부적합.
+    "convert_shape_tensor_to_const",   # shape 텐서(정적) → const 노드
+    "convert_rsub_to_sub",       # rsub(a-x) → sub 정규화
+    # convert_adaptive_pool_to_pool — 제외: 생성 avg_pool('avgpool') op 이 ggml export
+    #   writer(torch_op_map)에 미등록 → "please register operator avgpool". ggml 부적합.
+    "normalize_pad_nd",          # pad 표현 정규화(N-D)
+    # update_op_attrs — 제외: transpose→permute 변환의 'permute' op 이 ggml export
+    #   writer 에 미등록("please register operator permute"). ggml 부적합.
+]
+
+
+def apply_dev_graph_opts(graph):
+    """_SAFE_DEV_OPTS 를 순차 적용(best-effort). 반환: 최적화된 dev_graph(clone) 또는 원본."""
+    if not _SAFE_DEV_OPTS:
+        return graph
+    try:
+        from shared.compile.deploy_optimizer import DevGraphOptimizer
+        opt = DevGraphOptimizer(graph)
+        applied = []
+        for name in _SAFE_DEV_OPTS:
+            getattr(opt, name)()
+            applied.append(name)
+        print(f"[g2c] dev-graph opts: {', '.join(applied)} "
+              f"(nodes {len(list(graph.nodes))}→{len(list(opt.dev_graph.nodes))})", flush=True)
+        return opt.dev_graph
+    except Exception as e:
+        print(f"[g2c] dev-graph opts 생략 ({type(e).__name__}: {e}); 원본 그래프 사용", flush=True)
+        return graph
+
+
 def compile_model(model, name: str, input_shape, output_dir: str, quant=None):
     """모델을 vision.cpp(ggml) arch C++ + GGUF 로 컴파일한다.
 
@@ -511,6 +554,7 @@ def compile_model(model, name: str, input_shape, output_dir: str, quant=None):
         print("[g2c] Parsing graph (TorchParser)...", flush=True)
         graph = TorchParser()(name, model, StandardInputData((inputs,), {}))
         fold_conv_bn_graph(graph)   # vision.cpp 정합: BN 을 conv 로 흡수(export·.cpp·GGUF 일관)
+        graph = apply_dev_graph_opts(graph)   # topology-only 안전 패스(xmodel 재사용)
         print(f"[g2c] Graph nodes: {len(list(getattr(graph, 'nodes', [])))}", flush=True)
 
         from qproc.export import get_script_writer
