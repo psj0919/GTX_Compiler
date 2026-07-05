@@ -211,18 +211,42 @@ def _ggml_unary(x, fn_name):
     return _run_nchw_1d(build).reshape(shape)
 
 
+def _adaptive_avg_pool2d(x, out_h, out_w):
+    """PyTorch F.adaptive_avg_pool2d 정확 구현 (가변커널, 분리축).
+
+    출력 o 의 윈도우 = [floor(o*I/O), ceil((o+1)*I/O)) 의 평균. divisible 은 균일
+    풀링, output (1,1) 은 global 의 특수해로 자동 포함. x: (N,C,H,W)."""
+    N, C, H, W = x.shape
+
+    def ranges(I, O):
+        return [(int(np.floor(o * I / O)), int(np.ceil((o + 1) * I / O))) for o in range(O)]
+
+    hr, wr = ranges(H, out_h), ranges(W, out_w)
+    out = np.empty((N, C, out_h, out_w), dtype=np.float32)
+    xf = _f32(x)
+    for i, (h0, h1) in enumerate(hr):
+        for j, (w0, w1) in enumerate(wr):
+            out[:, :, i, j] = xf[:, :, h0:h1, w0:w1].mean(axis=(2, 3))
+    return out
+
+
 def _op_pool(mod, x, kind):
     x = _as4d(x)
     _, C, H, W = x.shape
     if mod.type == "ADAPTIVE_AVG_POOL2D":
-        k0, k1, s0, s1, p0, p1 = W, H, W, H, 0, 0
-    else:
-        k = _scalar(mod.attrs.get("kernel_size", [2, 2]))
-        s = _scalar(mod.attrs.get("stride", [k, k]))
-        p = _scalar(mod.attrs.get("padding", [0, 0]))
-        k0 = k1 = k
-        s0 = s1 = s
-        p0 = p1 = p
+        # 출력 크기를 읽어 정확 계산(가변커널 포함). 미지정이면 global(1,1) 폴백.
+        osz = mod.attrs.get("output_size", [1, 1])
+        if not isinstance(osz, (list, tuple)):
+            osz = [osz, osz]
+        oh = int(osz[0])
+        ow = int(osz[1]) if len(osz) > 1 else oh
+        return _adaptive_avg_pool2d(x, oh, ow)
+    k = _scalar(mod.attrs.get("kernel_size", [2, 2]))
+    s = _scalar(mod.attrs.get("stride", [k, k]))
+    p = _scalar(mod.attrs.get("padding", [0, 0]))
+    k0 = k1 = k
+    s0 = s1 = s
+    p0 = p1 = p
 
     def build(ctx, ggml, U):
         xt = U.from_numpy(np.ascontiguousarray(x), ctx)
