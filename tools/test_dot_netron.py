@@ -36,16 +36,20 @@ class _Data:
 
 
 class _T:
-    def __init__(self, shape, dtype=None):
+    def __init__(self, shape, dtype=None, name=None, has_data=False):
         self.shape = shape
-        self.data = _Data(dtype, tuple(shape)) if dtype else None
+        self.dtype = dtype          # activation dtype (Tensor.dtype 프로퍼티 모사)
+        self.name = name
+        # param 만 .data(상수 weight) 보유 → 뷰어가 param(f16) vs activation(f32) 구분.
+        self.data = _Data(dtype, tuple(shape)) if has_data else None
 
 
 class _Node:
-    def __init__(self, name, op, out_shape, out_nodes):
+    def __init__(self, name, op, out_shape, out_nodes, in_tensors=None):
         self.name = name
         self.op = op
-        self.out_tensors = [_T(out_shape)]
+        self.in_tensors = in_tensors or []
+        self.out_tensors = [_T(out_shape, dtype="float32", name="y")]  # activation out
         self.out_nodes = out_nodes
 
 
@@ -78,10 +82,11 @@ def main():
         "kernel": [3, 3], "stride": [1, 1], "pad": [1, 1, 1, 1],
         "bias_term": False, "in_dim": 8, "out_dim": 8,
         "weight": _T([8]),          # Tensor attr → 표시 제외돼야 함
-    }, params={                     # op._params → dtype[shape] 필드로 표시돼야 함
-        "weight": _T([8, 8, 3, 3], dtype="float32"),
-        "bias": _T([8], dtype="float32"),
-    }), [1, 8, 4, 4], [])
+    }, params={                     # op._params → 배포 dtype(f16)[shape] 필드로 표시돼야 함
+        "weight": _T([8, 8, 3, 3], dtype="float32", has_data=True),
+        "bias": _T([8], dtype="float32", has_data=True),
+    }), [1, 8, 4, 4], [],
+        in_tensors=[_T([1, 8, 4, 4], dtype="float32", name="x")])  # activation in → in0
     skip = _Node("m::skip", _Op("relu", {}), [1, 8, 4, 4], [])
     add = _Node("m::add", _Op("elemwise_add", {}), [1, 8, 4, 4], [])
     conv.out_nodes = [add.name]
@@ -102,9 +107,12 @@ def main():
     assert ty == "conv2d", ty
     assert at["kernel"] == [3, 3] and at["pad"] == [1, 1, 1, 1], at
     assert at["out_shape"] == [1, 8, 4, 4], at
-    # op._params 는 dtype[shape] 필드로 표시(Tensor 형 _attr 는 여전히 제외).
-    assert at["weight"] == "float32[8, 8, 3, 3]", at.get("weight")
-    assert at["bias"] == "float32[8]", at.get("bias")
+    # GTX 는 전면 fp16 배포 → weight/bias·activation 모두 float16[shape](torch f32 아님).
+    assert at["weight"] == "float16[8, 8, 3, 3]", at.get("weight")
+    assert at["bias"] == "float16[8]", at.get("bias")
+    # activation in/out 텐서 → in{i}/out{i} 필드(이름 + 배포 dtype f16[shape]).
+    assert at["in0"] == "x float16[1, 8, 4, 4]", at.get("in0")
+    assert at["out0"] == "y float16[1, 8, 4, 4]", at.get("out0")
     # 엣지 = residual 두 입력.
     ins = {}
     for line in dot.splitlines():

@@ -44,6 +44,11 @@ _PALETTE = [
 ]
 _DEFAULT_COLOR = "#ffffff"
 
+# GTX 배포 dtype. GTX Architecture 는 전면 fp16 으로 구동 — weight/bias(GGUF 는
+# `.astype(np.float16)`, pipeline.py:293) 와 activation 모두 fp16. torch IR 의 f32 가
+# 아니라 이 값이 실제 배포 dtype. (양자화(--quantize)는 g2c 옵션이라 이 뷰어엔 없음.)
+_DEPLOY_DTYPE = "float16"
+
 
 def _color_of(op_type: str) -> str:
     t = (op_type or "").lower()
@@ -124,16 +129,63 @@ def _param_pairs(node):
                 sh = getattr(data, "shape", None)
             if sh is None:
                 continue
-            dt = getattr(data, "dtype", None)
+            # GTX 는 fp16 배포 → torch numpy dtype(f32) 대신 배포 dtype 표시.
             k = key if len(tensors) == 1 else f"{key}_{j}"
-            val = f"{dt if dt is not None else '?'}[{', '.join(str(int(d)) for d in sh)}]"
+            val = f"{_DEPLOY_DTYPE}[{', '.join(str(int(d)) for d in sh)}]"
             if not (set(k) & _BAD_VAL_CHARS) and not (set(val) & _BAD_VAL_CHARS):
                 pairs.append((k, val))
     return pairs
 
 
+def _shape_str(sh):
+    """텐서 shape → 'd0, d1, ...'. 심볼릭/None 차원도 문자로 관용 처리."""
+    out = []
+    for d in sh:
+        try:
+            out.append(str(int(d)))
+        except (TypeError, ValueError):
+            out.append(str(d))
+    return ", ".join(out)
+
+
+def _tensor_desc(t, show_shape: bool = True):
+    """in/out 텐서 → '[name ]dtype[shape]' 필드값. 표시할 게 없으면 None.
+
+    GTX 는 전면 fp16 배포라 weight/bias·activation 모두 배포 dtype(f16)으로 표시.
+    """
+    if t is None:
+        return None
+    dt = _DEPLOY_DTYPE
+    nm = str(getattr(t, "name", "") or "")
+    body = str(dt) if dt is not None else "?"
+    if show_shape:
+        sh = getattr(t, "shape", None)
+        if sh is not None:
+            body += "[" + _shape_str(sh) + "]"
+    if body == "?" and not nm:            # dtype·shape·name 전부 없음 → 스킵
+        return None
+    val = f"{nm} {body}" if nm and not (set(nm) & _BAD_VAL_CHARS) else body
+    return val if not (set(val) & _BAD_VAL_CHARS) else None
+
+
+def _io_pairs(node, *, show_shape: bool = True):
+    """in/out 텐서의 이름·dtype(·shape)를 in{i}/out{i} 필드로 수집(요청 p3).
+
+    parameter(weight/bias)는 `_param_pairs`, activation in/out 은 여기서."""
+    pairs = []
+    for i, t in enumerate(getattr(node, "in_tensors", None) or []):
+        v = _tensor_desc(t, show_shape=show_shape)
+        if v is not None:
+            pairs.append((f"in{i}", v))
+    for i, t in enumerate(getattr(node, "out_tensors", None) or []):
+        v = _tensor_desc(t, show_shape=show_shape)
+        if v is not None:
+            pairs.append((f"out{i}", v))
+    return pairs
+
+
 def _attr_pairs(node, *, show_shape: bool = True):
-    """op-IR(op._attrs) + param(weight/bias dtype·shape) + out_shape 를 1:1 로 수집."""
+    """op-IR(op._attrs) + param(weight/bias dtype·shape) + in/out 텐서(이름·dtype) + out_shape."""
     pairs = []
     short = node.name.split("::")[-1]
     if not (set(short) & _BAD_VAL_CHARS):
@@ -145,6 +197,7 @@ def _attr_pairs(node, *, show_shape: bool = True):
         if s is not None and not (set(key) & _BAD_VAL_CHARS):
             pairs.append((key, s))
     pairs.extend(_param_pairs(node))
+    pairs.extend(_io_pairs(node, show_shape=show_shape))
     if show_shape:
         shs = _out_shapes(node)
         for i, sh in enumerate(shs):
