@@ -27,7 +27,9 @@ INPUTS/OUTPUTS + weight/bias tensor dtype·shape) 노출.
       의 weight/bias 를 `weight: float32[64, 7, 7, 3]`, `bias: float32[64]` 처럼 dtype·shape 필드로 추가.
       dot.js 규칙 파싱 검증 + `tools/test_dot_netron.py` param 케이스. (conv shape 는 그래프 IR 레이아웃
       [OC,KH,KW,IC] — OIHW/GGUF-정확 표기는 아래 후속 항목 참고)
-- [ ] input/output **텐서 이름·dtype** 도 필드로(현재 out_shape 만). in_tensors dtype/shape 노출.
+- [x] input/output **텐서 이름·dtype** 도 필드로(현재 out_shape 만). in_tensors dtype/shape 노출.
+      `_io_pairs`/`_tensor_desc`(graph_visualizer.py) → 노드에 `in{i}`/`out{i}: [name ]dtype[shape]`.
+      DOT 이미터만 수정(다른 백엔드 무관). test_dot_netron.py in0/out0 케이스 추가.
 - [ ] (선택) GGUF 를 직접 읽어 시각화하는 경로 — 현재는 Graph IR 기반. "GGUF 파일 그래프 시각화"를 문자
       그대로 요구하면 gguf tensor 메타(dtype/shape)를 노드에 조인.
 - [ ] Netron 실기(브라우저) 확인은 사용자 몫(하네스는 `dot.js` 규칙 재현으로 검증). 스크린샷 첨부 여부 확인.
@@ -46,32 +48,38 @@ INPUTS/OUTPUTS + weight/bias tensor dtype·shape) 노출.
 const-fold 는 `N baked / M skipped`. **Pass별 레이어 단위 기록 없음.**
 
 **할 일:**
-- [ ] 각 그래프 패스(`fold_conv_bn_graph`, `apply_dev_graph_opts` 의 각 `_SAFE_DEV_OPTS`, `fold_constants`)가
+- [x] 각 그래프 패스(`fold_conv_bn_graph`, `apply_dev_graph_opts` 의 각 `_SAFE_DEV_OPTS`, `fold_constants`)가
       **변경된 노드 리스트**(name, op, action, 사유)를 수집하도록 계측. `shared/compile/pipeline.py`.
-- [ ] 표 렌더러(레이어별 REMOVED/FOLDED/FUSED + Note) + Pass 헤더 전/후 op 수·감소율.
-- [ ] xmodel 경로(`DevGraphOptimizer`)도 동일 계측(NPU 타깃이면 이쪽이 실제 대상일 수 있음).
+      (pass 전후 노드 스냅샷 diff → `_node_snapshot`/`_pass_changes`, 옵티마이저 내부 무수정)
+- [x] 표 렌더러(레이어별 REMOVED/FOLDED/FUSED/CONVERTED + Note) + Pass 헤더 전/후 op 수·감소율
+      + 최상단 `X ops → Y ops (-Z%)`. `_render_graph_opt_report`. resnet18/yolo11n e2e 검증.
+- [x] `DevGraphOptimizer` 계측 — GTX(ggml/vision.cpp) deploy 최적화기(`apply_dev_graph_opts` 가 g2c
+      경로에서 호출, `_SAFE_DEV_OPTS` 실행). 위 계측에 이미 각 dev pass 별로 포함됨.
 
 ### 2-2. [2] DISPATCH & FALLBACK (p6)
 **요구:** 레이어별 **실행 디바이스(NPU/CPU) + DType(INT8/FP16/FP32)** + 강제 **CAST 삽입 위치** 추적.
 표 `Layer | Op | Target | DType | Note`, 범례 `! fallback`, `-- cast inserted`.
 
-**현재 상태 (백엔드 갭):** ggml 경로는 **전부 CPU(ggml)** 라 NPU/CPU dispatch 개념이 없다. NPU dispatch·INT8·
-CAST·precision-violation 개념은 **xmodel/DPU 백엔드**(`deploy_optimizer`, `deploy_checker`, `QuantOptimizer`)에 있음.
+**백엔드 확정:** **GTX Architecture = 전면 NPU 구동**(모든 op 을 자체 arch NPU 에서 fp16 실행) →
+미지원 op·CPU fallback·CAST 삽입 **없음**. dispatch 는 단일 타깃이라 Target=NPU(GTX) 고정.
 
-**할 일 (백엔드 확정 필요):**
-- [ ] **대상 백엔드 결정** — (A) 이 기능은 NPU 배포용이므로 xmodel 경로에 구현, 또는 (B) ggml 경로에 "NPU 후보/
-      CPU fallback" 개념을 도입(양자화 plan·미지원 op 기준).
-- [ ] 레이어별 target(NPU/CPU)·dtype 태깅 수집(`QuantOptimizer._tag_quant_nodes`, `in_quant_part` 활용).
-- [ ] CAST(dtype escalation/디바이스 전환) 삽입 지점 기록 + `! fallback`(미지원 op)·precision violation(loss>limit) 표기.
-- [ ] 표 렌더러 + 범례.
+**할 일:**
+- [x] **대상 백엔드 결정** — GTX(ggml/vision.cpp), 전면 NPU/fp16. fallback/CAST 개념 없음.
+- [x] 레이어별 target·dtype 태깅 — `_render_dispatch_table`(pipeline.py). Target=NPU(GTX),
+      DType=FP16(기본)/INT8(`--quantize` 자격 conv·linear, quant_plan 조회). resnet18 fp16/q8_0 검증.
+- [x] CAST·`! fallback`·precision violation — GTX 전면 NPU/fp16 이라 **해당 없음**(범례만 표기).
+- [x] 표 렌더러 + 범례 — `Layer|Op|Target|DType|Note` + 범례.
 
 ### 2-3. 컴파일 최종 요약 (Summary) (p4, p7)
 **요구:** Ops 표(Original/After graph opt/After dispatch, removed, cast inserted, **Operator breakdown**(종류별 빈도), TOTAL)
 + Dispatch 표(Target별 Ops·Ratio%, NPU total/CPU total 점유율).
 
 **할 일:**
-- [ ] 컴파일 종료 시 집계 렌더러: 최적화 전/후 연산자 총량·종류별 빈도, cast 수.
-- [ ] (dispatch 기능 완성 후) Target별 op 수·비율(%), NPU vs CPU 점유율.
+- [x] 컴파일 종료 시 집계 렌더러: 최적화 전/후 연산자 총량·종류별 빈도, cast 수.
+      `_render_compile_summary`(pipeline.py) — Ops 표(Original/After opt/After dispatch, removed,
+      cast=0) + Operator breakdown(op별 빈도, TOTAL). resnet18/yolo11n 검증.
+- [x] Target별 op 수·비율(%), NPU vs CPU 점유율. **GTX = 전면 NPU**(fallback/CAST 없음, fp16)
+      → NPU(GTX) 100% / CPU 0%. (dispatch 개념이 단일 타깃이라 표는 확정값.)
 
 ---
 
@@ -79,31 +87,33 @@ CAST·precision-violation 개념은 **xmodel/DPU 백엔드**(`deploy_optimizer`,
 
 **요구:** 런타임에 **연산자별 지연시간(Latency) + 사용 메모리** 기록 → 병목 체크. (TensorFlow Profiler 참고)
 
-**현재 상태 (미구현):** `utils/profiler.py` 는 **FLOPs/MACs 이론 카운터**(hook 기반)일 뿐 — 런타임 latency/실측
-메모리/Perfetto 없음. ggml 런타임(`nn/modules/ggml_backend.py`, `python output/<Model>.py`)에 계측 훅 없음.
+**구현:** `nn/modules/ggml_profiler.py` — `GgmlModule.__call__`(op forward dispatch 단일 지점)에
+**데코레이터**(`@profile`) 로 op 별 계측. `GTX_PROFILE=1` 로 on(미설정 시 무오버헤드). atexit dump.
 
 ### 3-1. 측정 항목
-- [ ] **Latency**: 연산자 입력~출력 시간 (op 단위).
-- [ ] **메모리**: Activation(입력+출력 텐서), Scratch/Working buffer(연산 임시), Weight(파라미터), Peak(실행 시점 누적).
-- [ ] **Time Share(%)**: 전체 추론 시간 대비 각 op 비중.
+- [x] **Latency**: op 단위 `time.perf_counter` (입력~출력).
+- [x] **메모리**: Activation(입력+출력, fp16), Weight(param), Peak(상주 weight + 최대 activation).
+      ※ Scratch(ggml 내부 mem-pool)는 비노출이라 생략(콘솔에 명시).
+- [x] **Time Share(%)**: op latency / 전체 추론 시간.
 
 ### 3-2. 실행 제어
-- [ ] 프로파일링 on/off — **컴파일 옵션 또는 런타임 argument**(오버헤드 때문). `g2c` 플래그 + 런타임 env/arg.
-- [ ] **횟수 기반 통계** — 특정 구간 N회 반복 후 Average/Max/Min(초기 로딩 오버헤드 제외).
+- [x] on/off — **컴파일 옵션** `g2c --profile [--profile-reps N]`(생성 .py 최상단에 env baking) +
+      **런타임 env** `GTX_PROFILE=1`. baking 은 setdefault 라 실행 시 env 로 오버라이드(끄기 포함) 가능.
+- [x] **횟수 기반 통계** — `--profile-reps N` / `GTX_PROFILE_REPS=N` → 1회차 warmup 제외 후 Average/Max/Min.
+      (runner 가 forward 를 N회 반복; profiler 가 rep 별 집계.)
 
 ### 3-3. 출력 형식 (다중)
-- [ ] **터미널/콘솔 로그** (p10): `Idx | Layer | Target | DType | Latency | Share | Activation | Scratch | Peak Mem | Note`
-      + TOTAL INFERENCE TIME / WEIGHT MEMORY / GLOBAL PEAK MEMORY. `! Fallback`, `-- Cast Overhead`, `! Escalation` 표기.
-- [ ] **파일 저장**: CSV, JSON.
-- [ ] **호스트 전송** (타깃 디바이스 → 호스트).
-- [ ] **Perfetto JSON** (p11–12): Chrome trace 포맷 이벤트 배열 —
-      `name`(op/cast명), `cat`(model/op/mem), `ph`(B/E=구간, C=카운터), `pid/tid`(CPU/NPU 스레드 구분),
-      `ts`(µs), `args`(카운터는 Allocated 메모리). process_name/thread_name 메타 이벤트 포함. perfetto.dev 로 타임라인 확인.
-      → Duration(B/E)로 op latency, Counter(C, Peak Memory Bytes) 트랙.
+- [x] **터미널/콘솔 로그** (p10): `Idx | Op | Target | DType | Lat | Share | Activation | Peak`
+      + TOTAL INFERENCE TIME / WEIGHT MEMORY / GLOBAL PEAK MEMORY. (Target 전부 NPU(GTX),
+      fallback/cast 없음 → Note 열 생략. Layer 명은 런타임에 없어 Idx+Op 로.)
+- [x] **파일 저장**: CSV, JSON (`<Model>.profile.csv/.json`, `GTX_PROFILE_OUT` 로 경로 지정).
+- [ ] **호스트 전송** (타깃 디바이스 → 호스트) — GTX ggml 은 로컬 실행이라 해당 없음(원격 NPU 실측 시 필요).
+- [x] **Perfetto JSON** (p11–12): `<Model>.profile.perfetto.json` — Duration(ph=X, op latency)
+      + Counter(ph=C, "Peak Memory" Allocated Bytes) + process/thread_name(ph=M). perfetto.dev 로드 검증.
 
 ### 3-4. 계측 위치
-- [ ] ggml 백엔드에 op 단위 timing 훅(`nn/modules/ggml_backend.py` 의 op dispatch 지점) + 텐서 크기 기반 메모리 산출.
-- [ ] (NPU 대상이면) xmodel/DPU 런타임에 계측.
+- [x] ggml 백엔드 op 단위 timing 훅 — `GgmlModule.__call__` 데코레이터 + 텐서 크기 기반 메모리(fp16).
+      resnet18 검증(50 ops, weight 22.29MB = fp16 GGUF 일치).
 
 ---
 
