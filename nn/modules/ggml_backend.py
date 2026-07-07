@@ -32,6 +32,8 @@ import re
 
 import numpy as np
 
+from nn.modules.ggml_profiler import profile as _ggml_profile   # op latency/메모리 계측(GTX_PROFILE)
+
 _BACKEND = "pytorch"
 
 
@@ -586,6 +588,7 @@ class GgmlModule:
         b = kwargs.get("other", args[1] if len(args) > 1 else None)
         return _unwrap(a), _unwrap(b)
 
+    @_ggml_profile
     def __call__(self, *args, **kwargs):
         t = self.type
         a = self.attrs
