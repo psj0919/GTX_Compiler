@@ -104,8 +104,36 @@ def _fmt_val(v):
     return None                    # Tensor / Operation / 기타
 
 
+def _param_pairs(node):
+    """op-IR 파라미터(weight/bias 등)를 `dtype[shape]` 필드로 수집.
+
+    예: weight → 'float32[64, 7, 7, 3]', bias → 'float32[64]'. Netron 에서 연산자
+    parameter 의 dtype·사이즈를 hyperparameter 와 함께 한 번에 확인(요청 p3)."""
+    pairs = []
+    op = getattr(node, "op", None)
+    params = getattr(op, "_params", None) or {}
+    for name, tensor in params.items():
+        key = str(getattr(name, "value", name))
+        tensors = tensor if isinstance(tensor, (list, tuple)) else [tensor]
+        for j, t in enumerate(tensors):
+            if t is None:
+                continue
+            data = getattr(t, "data", None)
+            sh = getattr(t, "shape", None)
+            if sh is None:
+                sh = getattr(data, "shape", None)
+            if sh is None:
+                continue
+            dt = getattr(data, "dtype", None)
+            k = key if len(tensors) == 1 else f"{key}_{j}"
+            val = f"{dt if dt is not None else '?'}[{', '.join(str(int(d)) for d in sh)}]"
+            if not (set(k) & _BAD_VAL_CHARS) and not (set(val) & _BAD_VAL_CHARS):
+                pairs.append((k, val))
+    return pairs
+
+
 def _attr_pairs(node, *, show_shape: bool = True):
-    """op-IR(op._attrs) + out_shape 에서 (key, value_str) 쌍을 1:1 로 수집."""
+    """op-IR(op._attrs) + param(weight/bias dtype·shape) + out_shape 를 1:1 로 수집."""
     pairs = []
     short = node.name.split("::")[-1]
     if not (set(short) & _BAD_VAL_CHARS):
@@ -116,6 +144,7 @@ def _attr_pairs(node, *, show_shape: bool = True):
         s = _fmt_val(getattr(attr, "value", None))
         if s is not None and not (set(key) & _BAD_VAL_CHARS):
             pairs.append((key, s))
+    pairs.extend(_param_pairs(node))
     if show_shape:
         shs = _out_shapes(node)
         for i, sh in enumerate(shs):

@@ -23,9 +23,10 @@ INPUTS/OUTPUTS + weight/bias tensor dtype·shape) 노출.
 - 컴파일 그래프 반영(Conv-BN fold + const-fold), `--extra-opt`.
 
 **갭 / 할 일:**
-- [ ] **parameter(weight/bias) 텐서 정보 추가** — `_attr_pairs`(`tools/graph_visualizer.py`)가 `op._attrs` 만
-      노출. `node.op._params`(또는 `description()['param']`)의 weight/bias 를 `weight: float16[64,3,7,7]`,
-      `bias: float16[64]` 처럼 dtype·shape 필드로 추가. (MBLT Netron 의 `weight tensor float32[...]` 대응)
+- [x] **parameter(weight/bias) 텐서 정보 추가** — `_param_pairs`(`tools/graph_visualizer.py`)가 `op._params`
+      의 weight/bias 를 `weight: float32[64, 7, 7, 3]`, `bias: float32[64]` 처럼 dtype·shape 필드로 추가.
+      dot.js 규칙 파싱 검증 + `tools/test_dot_netron.py` param 케이스. (conv shape 는 그래프 IR 레이아웃
+      [OC,KH,KW,IC] — OIHW/GGUF-정확 표기는 아래 후속 항목 참고)
 - [ ] input/output **텐서 이름·dtype** 도 필드로(현재 out_shape 만). in_tensors dtype/shape 노출.
 - [ ] (선택) GGUF 를 직접 읽어 시각화하는 경로 — 현재는 Graph IR 기반. "GGUF 파일 그래프 시각화"를 문자
       그대로 요구하면 gguf tensor 메타(dtype/shape)를 노드에 조인.

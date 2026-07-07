@@ -25,13 +25,20 @@ class _Name:
 
 
 class _Op:
-    def __init__(self, type, attrs):
+    def __init__(self, type, attrs, params=None):
         self.type = type
         self._attrs = {_Name(k): _Attr(v) for k, v in attrs.items()}
+        self._params = {_Name(k): v for k, v in (params or {}).items()}
+
+
+class _Data:
+    def __init__(self, dtype, shape): self.dtype = dtype; self.shape = shape
 
 
 class _T:
-    def __init__(self, shape): self.shape = shape
+    def __init__(self, shape, dtype=None):
+        self.shape = shape
+        self.data = _Data(dtype, tuple(shape)) if dtype else None
 
 
 class _Node:
@@ -71,6 +78,9 @@ def main():
         "kernel": [3, 3], "stride": [1, 1], "pad": [1, 1, 1, 1],
         "bias_term": False, "in_dim": 8, "out_dim": 8,
         "weight": _T([8]),          # Tensor attr → 표시 제외돼야 함
+    }, params={                     # op._params → dtype[shape] 필드로 표시돼야 함
+        "weight": _T([8, 8, 3, 3], dtype="float32"),
+        "bias": _T([8], dtype="float32"),
     }), [1, 8, 4, 4], [])
     skip = _Node("m::skip", _Op("relu", {}), [1, 8, 4, 4], [])
     add = _Node("m::add", _Op("elemwise_add", {}), [1, 8, 4, 4], [])
@@ -87,12 +97,14 @@ def main():
     # 전부 op type 으로 승격 (id 폴백 0).
     fell = [nid for nid, (ty, _) in got.items() if ty == nid]
     assert not fell, f"id 폴백: {fell}"
-    # conv type + 파라미터 필드(튜플→배열), Tensor attr 은 빠짐.
+    # conv type + hyperparameter 필드(튜플→배열).
     ty, at = got["n0"]
     assert ty == "conv2d", ty
     assert at["kernel"] == [3, 3] and at["pad"] == [1, 1, 1, 1], at
     assert at["out_shape"] == [1, 8, 4, 4], at
-    assert "weight" not in at, "Tensor attr 이 새어나감"
+    # op._params 는 dtype[shape] 필드로 표시(Tensor 형 _attr 는 여전히 제외).
+    assert at["weight"] == "float32[8, 8, 3, 3]", at.get("weight")
+    assert at["bias"] == "float32[8]", at.get("bias")
     # 엣지 = residual 두 입력.
     ins = {}
     for line in dot.splitlines():
@@ -101,7 +113,7 @@ def main():
             ins.setdefault(e.group(2), []).append(e.group(1))
     add_id = next(nid for nid, (ty, _) in got.items() if ty == "elemwise_add")
     assert len(ins[add_id]) == 2, ins
-    print("OK — record 라벨이 dot.js 규칙으로 type+attr 승격, residual 엣지 정상.")
+    print("OK — record 라벨이 dot.js 규칙으로 type+attr+param(dtype[shape]) 승격, residual 엣지 정상.")
 
 
 if __name__ == "__main__":
