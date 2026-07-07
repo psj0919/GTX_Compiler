@@ -332,21 +332,29 @@ def generate_gguf(graph, output_dir: str, model_name: str, arch_id: str,
 
 
 def append_ggml_runner(export_path: str, class_name: str, gguf_name: str,
-                       input_shape=(1, 3, 224, 224)):
+                       input_shape=(1, 3, 224, 224), profile=False, profile_reps=1):
     """export 파일 끝에 ggml 실행 진입점을 추가한다.
 
     `python output/<Model>.py` 직접 실행 시 ggml(libggml.so) 커널로 forward 가 돈다:
     set_backend('ggml') → nn.Module → GgmlModule → run_gguf 가 옆 .gguf 를 이름 바인딩 후 실행.
+    profile: True 면 런타임 프로파일 env 를 파일 최상단에 baking(nn import 전에 set →
+    ggml_profiler 가 계측 활성화). setdefault 라 실행 시 env 로 오버라이드 가능.
     """
     marker = "# ----- ggml 실행 진입점 (libggml.so) -----"
     src = open(export_path).read()
     if marker in src:
         return
 
+    # 프로파일 env 는 nn(→ggml_profiler) import 전에 설정돼야 계측이 켜진다 → boot 최상단.
+    prof = ""
+    if profile:
+        prof = (f'_bos.environ.setdefault("GTX_PROFILE", "1")\n'
+                f'_bos.environ.setdefault("GTX_PROFILE_REPS", "{int(profile_reps)}")\n')
     boot = (
         "import os as _bos, sys as _bsys\n"
         "_bsys.path.insert(0, _bos.path.dirname(_bos.path.dirname("
         "_bos.path.abspath(__file__))))\n"
+        + prof
     )
     if "_bsys.path.insert" not in src:
         src = src.replace("import nn\n", boot + "import nn\n", 1)
@@ -364,7 +372,9 @@ if __name__ == "__main__":
     _here = _os.path.dirname(_os.path.abspath(__file__))
     _gguf = _os.path.join(_here, "{gguf_name}")
     _x = _np.random.randn({shape}).astype("float32")
-    _out = _nn.run_gguf({class_name}(), _gguf, __file__, _x)
+    _reps = int(_os.environ.get("GTX_PROFILE_REPS", "1") or "1")   # 프로파일 N회 반복
+    for _r in range(max(1, _reps)):
+        _out = _nn.run_gguf({class_name}(), _gguf, __file__, _x)
     _main = _out[0] if isinstance(_out, (list, tuple)) else _out
     _main = _np.asarray(_main)
     print("[ggml] output:", _main.shape)
@@ -464,9 +474,140 @@ def build_model(model_spec: str, pth: str = None, input_shape=None):
 
 
 # --------------------------------------------------------------------------
+# 그래프 최적화 Pass 별 로그 (PDF p5: Layer|Op|Action|Note + Pass 헤더 N→M)
+# --------------------------------------------------------------------------
+# 옵티마이저 내부를 건드리지 않고, 각 pass 전후 노드 스냅샷(name→op)을 diff 해
+# 제거/타입변환 노드를 뽑는다. 계측은 report(list) 누적 → _render_graph_opt_report.
+_PASS_META = {
+    # pass_name: (removed 노드에 붙일 Action, Note)
+    "fold_conv_bn":                  ("FUSED",      "BN 을 conv 로 흡수"),
+    "strip_redundant_ops":           ("REMOVED",    "잉여 op(contiguous 등)"),
+    "fuse_pad":                      ("FUSED",      "pad → conv/pool attr"),
+    "fuse_transpose_matmul":         ("FUSED",      "transpose+matmul → matmul"),
+    "fuse_redundant_transpose":      ("REMOVED",    "상쇄되는 연속 transpose"),
+    "merge_permute_to_linear":       ("FUSED",      "permute → linear weight 재배열"),
+    "merge_consecutive_reshape":     ("FUSED",      "연속 reshape 병합"),
+    "convert_shape_tensor_to_const": ("FOLDED",     "shape 텐서 → const"),
+    "convert_rsub_to_sub":           ("CONVERTED",  "rsub → sub"),
+    "normalize_pad_nd":              ("NORMALIZED", "pad N-D 정규화"),
+    "const_fold":                    ("FOLDED",     "입력-무관 상수 subgraph → baked"),
+}
+
+
+def _node_snapshot(graph):
+    """현재 노드 {name: op_type}. pass 전후 diff 용."""
+    return {n.name: str(getattr(n.op, "type", "?")) for n in list(graph.nodes)}
+
+
+def _pass_changes(before, after, pass_name):
+    """before/after 스냅샷 diff → 변경 노드 레코드 리스트 [(layer, op, action, note)].
+
+    removed = before 에만 존재(제거/fuse), converted = 이름 동일·op 타입 변경.
+    """
+    action, note = _PASS_META.get(pass_name, ("REMOVED", pass_name))
+    rows = []
+    for name, op in before.items():
+        if name not in after:
+            rows.append((name, op, action, note))
+        elif after[name] != op:
+            rows.append((name, op, "CONVERTED", f"{op} → {after[name]}"))
+    return rows
+
+
+def _pass_record(pass_name, before, after, changes):
+    return {"pass": pass_name,
+            "before": len(before), "after": len(after), "changes": changes}
+
+
+def _render_graph_opt_report(report, init_ops, final_ops):
+    """Pass 별 표 렌더 (PDF p5)."""
+    if not report:
+        return
+    pct = (100.0 * (init_ops - final_ops) / init_ops) if init_ops else 0.0
+    print(f"\n[g2c] ═══ GRAPH OPTIMIZATION ═══  "
+          f"{init_ops} ops → {final_ops} ops (-{pct:.0f}%)", flush=True)
+    for rec in report:
+        d = rec["before"] - rec["after"]
+        sign = f"-{d}" if d >= 0 else f"+{-d}"
+        print(f"\n  ▸ {rec['pass']:<32} "
+              f"{rec['before']} → {rec['after']} ({sign} ops)", flush=True)
+        if not rec["changes"]:
+            print("    (변경 노드 없음)", flush=True)
+            continue
+        print(f"    {'Layer':<38}{'Op':<16}{'Action':<11}Note", flush=True)
+        print(f"    {'-' * 82}", flush=True)
+        for layer, op, action, note in rec["changes"]:
+            # IR 노드명은 계층적이라 구분되는 부분이 뒤쪽 → 길면 꼬리를 남긴다.
+            lyr = layer if len(layer) <= 37 else "…" + layer[-36:]
+            print(f"    {lyr:<38}{op[:15]:<16}{action:<11}{note}", flush=True)
+    print("", flush=True)
+
+
+def _render_compile_summary(graph, skip, init_ops):
+    """컴파일 최종 요약 (PDF p4,p7): Ops 표 + Operator breakdown + Dispatch.
+
+    GTX Architecture 는 모든 op 을 NPU(자체 arch)에서 실행 → dispatch fallback·CAST 없음
+    (전면 fp16). 따라서 Target 은 전부 NPU(GTX), CPU 0%, cast 0.
+    """
+    from collections import Counter
+
+    skip = skip or set()
+    emitted = [n for n in graph.nodes if id(n) not in skip]   # codegen 이 실제 emit
+    final = len(emitted)
+    removed = init_ops - final
+    brk = Counter(str(getattr(n.op, "type", "?")) for n in emitted)
+
+    print("[g2c] ═══ COMPILE SUMMARY ═══", flush=True)
+    print(f"  {'Ops':<18}{'Original':>10}{'After opt':>12}{'After dispatch':>16}", flush=True)
+    print(f"    {'total':<16}{init_ops:>10}{final:>12}{final:>16}", flush=True)
+    print(f"    {'removed':<16}{'':>10}{('-' + str(removed)):>12}{('-' + str(removed)):>16}",
+          flush=True)
+    print(f"    {'cast inserted':<16}{'':>10}{'':>12}{0:>16}", flush=True)
+
+    print("\n  Operator breakdown (final):", flush=True)
+    for op, c in brk.most_common():
+        print(f"    {op:<24}{c:>5}", flush=True)
+    print(f"    {'-' * 29}", flush=True)
+    print(f"    {'TOTAL':<24}{final:>5}", flush=True)
+
+    print("\n  Dispatch (Target · GTX = 전면 NPU):", flush=True)
+    print(f"    {'Target':<14}{'Ops':>6}{'Ratio':>9}", flush=True)
+    print(f"    {'NPU (GTX)':<14}{final:>6}{'100.0%':>9}", flush=True)
+    print(f"    {'CPU':<14}{0:>6}{'0.0%':>9}", flush=True)
+    print("", flush=True)
+
+
+def _render_dispatch_table(graph, skip, quant_plan):
+    """레이어별 DISPATCH & FALLBACK 표 (PDF p6): Layer|Op|Target|DType|Note.
+
+    GTX 는 모든 op 을 NPU(자체 arch)에서 fp16 으로 실행 → Target 전부 NPU(GTX),
+    fallback(미지원 op→CPU)·CAST 삽입 없음. DType 은 `--quantize` 시 해당 conv/linear
+    만 INT8, 그 외 FP16.
+    """
+    from shared.compile.render_api import weight_key
+
+    skip = skip or set()
+    quant_plan = quant_plan or {}
+    emitted = [n for n in graph.nodes if id(n) not in skip]
+
+    print("[g2c] ═══ DISPATCH & FALLBACK ═══", flush=True)
+    print(f"  {'Layer':<38}{'Op':<16}{'Target':<11}{'DType':<7}Note", flush=True)
+    print(f"  {'-' * 78}", flush=True)
+    for n in emitted:
+        name = getattr(n, "name", "?") or "?"
+        lyr = name if len(name) <= 37 else "…" + name[-36:]
+        op = str(getattr(n.op, "type", "?"))
+        dtype = "INT8" if weight_key(n) in quant_plan else "FP16"
+        print(f"  {lyr:<38}{op[:15]:<16}{'NPU(GTX)':<11}{dtype:<7}", flush=True)
+    print("  범례: ! fallback(미지원 op→CPU), -- cast inserted "
+          "— GTX 전면 NPU/fp16 이라 해당 없음", flush=True)
+    print("", flush=True)
+
+
+# --------------------------------------------------------------------------
 # 컴파일 (parse → export → ggml cpp/h + gguf + runner)
 # --------------------------------------------------------------------------
-def fold_conv_bn_graph(graph):
+def fold_conv_bn_graph(graph, report=None):
     """Conv-BN folding (그래프 레벨, repo 자체 패스 — FX/model.fuse() 불요).
 
     vision.cpp 의 `batch_norm_2d` 는 BN 이 conv 로 fused 됐다고 가정하고
@@ -481,10 +622,16 @@ def fold_conv_bn_graph(graph):
     """
     try:
         from shared.optimization.commander import OptimizeCommander
+        before = _node_snapshot(graph)
         cmd = OptimizeCommander(graph=graph)
         cmd.FuseBnToConv()
         cmd.ConvertBNParams()
         n_bn = sum(getattr(n.op, "type", None) == "batch_norm" for n in graph.nodes)
+        if report is not None:
+            after = _node_snapshot(graph)
+            report.append(_pass_record(
+                "fold_conv_bn", before, after,
+                _pass_changes(before, after, "fold_conv_bn")))
         print(f"[g2c] Conv-BN fold (graph, repo pass) — 남은 batch_norm 노드={n_bn}", flush=True)
     except Exception as e:
         print(f"[g2c] Conv-BN fold 생략 ({type(e).__name__}: {e}); 원본 그래프 사용", flush=True)
@@ -517,7 +664,7 @@ _SAFE_DEV_OPTS = [
 ]
 
 
-def apply_dev_graph_opts(graph):
+def apply_dev_graph_opts(graph, report=None):
     """_SAFE_DEV_OPTS 를 순차 적용(best-effort). 반환: 최적화된 dev_graph(clone) 또는 원본."""
     if not _SAFE_DEV_OPTS:
         return graph
@@ -526,8 +673,14 @@ def apply_dev_graph_opts(graph):
         opt = DevGraphOptimizer(graph)
         applied = []
         for name in _SAFE_DEV_OPTS:
+            before = _node_snapshot(opt.dev_graph)
             getattr(opt, name)()
             applied.append(name)
+            if report is not None:
+                after = _node_snapshot(opt.dev_graph)
+                changes = _pass_changes(before, after, name)
+                if changes:   # 변경 없는 pass 는 노이즈라 표에서 생략
+                    report.append(_pass_record(name, before, after, changes))
         print(f"[g2c] dev-graph opts: {', '.join(applied)} "
               f"(nodes {len(list(graph.nodes))}→{len(list(opt.dev_graph.nodes))})", flush=True)
         return opt.dev_graph
@@ -536,9 +689,11 @@ def apply_dev_graph_opts(graph):
         return graph
 
 
-def compile_model(model, name: str, input_shape, output_dir: str, quant=None):
+def compile_model(model, name: str, input_shape, output_dir: str, quant=None,
+                  profile=False, profile_reps=1):
     """모델을 vision.cpp(ggml) arch C++ + GGUF 로 컴파일한다.
 
+    profile: True 면 생성 runner 에 런타임 프로파일(GTX_PROFILE)을 baking.
     반환: 생성 파일 dict (source/header/weights_manifest) 또는 None(파싱 실패).
     """
     import traceback
@@ -555,8 +710,10 @@ def compile_model(model, name: str, input_shape, output_dir: str, quant=None):
     try:
         print("[g2c] Parsing graph (TorchParser)...", flush=True)
         graph = TorchParser()(name, model, StandardInputData((inputs,), {}))
-        fold_conv_bn_graph(graph)   # vision.cpp 정합: BN 을 conv 로 흡수(export·.cpp·GGUF 일관)
-        graph = apply_dev_graph_opts(graph)   # topology-only 안전 패스(xmodel 재사용)
+        opt_report = []             # 그래프 최적화 pass 별 변경 노드 로그(PDF p5)
+        init_ops = len(list(getattr(graph, "nodes", [])))
+        fold_conv_bn_graph(graph, report=opt_report)   # vision.cpp 정합: BN 을 conv 로 흡수
+        graph = apply_dev_graph_opts(graph, report=opt_report)   # topology-only 안전 패스
         print(f"[g2c] Graph nodes: {len(list(getattr(graph, 'nodes', [])))}", flush=True)
 
         from qproc.export import get_script_writer
@@ -582,6 +739,17 @@ def compile_model(model, name: str, input_shape, output_dir: str, quant=None):
     if baked:
         print(f"[g2c] const-fold: {len(baked)} baked tensor(s), {len(skip)} node(s) skipped",
               flush=True)
+    # const-fold 는 노드를 그래프에서 지우지 않고 skip(id) 로 codegen 제거 → 표에 반영.
+    cur_ops = len(list(getattr(graph, "nodes", [])))
+    if skip:
+        action, note = _PASS_META["const_fold"]
+        rows = [(n.name, str(getattr(n.op, "type", "?")), action, note)
+                for n in graph.nodes if id(n) in skip]
+        opt_report.append({"pass": "const_fold", "before": cur_ops,
+                           "after": cur_ops - len(skip), "changes": rows})
+    _render_graph_opt_report(opt_report, init_ops, cur_ops - len(skip))
+    _render_dispatch_table(graph, skip, quant_plan)
+    _render_compile_summary(graph, skip, init_ops)
 
     print("[g2c] Generating visp/ggml arch C++...", flush=True)
     files = generate_ggml_code(graph, output_dir, name, quant_plan=quant_plan,
@@ -599,6 +767,8 @@ def compile_model(model, name: str, input_shape, output_dir: str, quant=None):
         name,
         f"{name}.gguf",
         input_shape,
+        profile=profile,
+        profile_reps=profile_reps,
     )
     print(f"  → 실행: python {output_dir}/{name}{_TS.SCRIPT_SUFFIX} (ggml/libggml.so 커널)")
     return files
@@ -633,6 +803,16 @@ def main(argv=None):
              "자격되는 2D Linear 가중치만, 나머지 fp16. (B) llama-quantize 경유: q4_k_m/q6_k/iq4_xs "
              "등 — $LLAMA_QUANTIZE/PATH 의 바이너리 필요(vision arch 인식 가능해야). 미지정=fp16.",
     )
+    ap.add_argument(
+        "--profile", action="store_true",
+        help="런타임 프로파일(op 별 latency/메모리/Time Share)을 생성 .py 에 baking → "
+             "`python output/<Model>.py` 실행 시 자동 계측(콘솔+CSV/JSON/Perfetto). "
+             "런타임 env `GTX_PROFILE`/`GTX_PROFILE_REPS` 로도 on/오버라이드 가능.",
+    )
+    ap.add_argument(
+        "--profile-reps", type=int, default=None, metavar="N",
+        help="프로파일 반복 횟수 N (1회차 warmup 제외 avg/max/min). 지정 시 --profile 자동 on. 기본 1.",
+    )
     args = ap.parse_args(argv)
 
     shape = None
@@ -644,7 +824,9 @@ def main(argv=None):
     name = args.name or name
     print(f"[g2c] Model: {args.model} → {model._get_name()} (name={name})", flush=True)
 
-    compile_model(model, name, shape, args.output, quant=args.quantize)
+    profile_on = args.profile or (args.profile_reps is not None)
+    compile_model(model, name, shape, args.output, quant=args.quantize,
+                  profile=profile_on, profile_reps=args.profile_reps or 1)
     print("=" * 60)
     print("완료!", flush=True)
 
