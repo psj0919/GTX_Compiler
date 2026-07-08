@@ -354,21 +354,13 @@ def append_ggml_runner(export_path: str, class_name: str, gguf_name: str,
     if profile:
         prof = (f'os.environ.setdefault("GTX_PROFILE", "1")\n'
                 f'os.environ.setdefault("GTX_PROFILE_REPS", "{int(profile_reps)}")\n')
-    # `import nn` 이 되도록 프로젝트 루트를 sys.path 에 추가한다. --output 깊이가
-    # 임의라(고정 dirname 횟수는 취약) 파일 위치에서 위로 올라가며 `nn/` 가 있는
-    # 디렉토리(=루트)를 찾는다. uv 로 패키지가 설치돼 있으면 import 는 그것으로도 되지만,
-    # 설치 안 된 채 직접 실행하는 경우까지 커버.
-    boot = (
-        "import os, sys\n"
-        + prof +
-        "root = os.path.dirname(os.path.abspath(__file__))\n"
-        "while root != os.path.dirname(root) and not os.path.isdir("
-        "os.path.join(root, 'nn')):\n"
-        "    root = os.path.dirname(root)\n"
-        "if root not in sys.path:\n"
-        "    sys.path.insert(0, root)\n"
-    )
-    if "sys.path.insert(0, root)" not in src:
+    # `import nn` 이 되도록 g2c 를 import 한다 — 설치된 g2c(g2c/__init__.py)가 토킷 루트를
+    # sys.path 에 올리고 nn 등 top-level 패키지를 노출한다(uv 설치 전제). 프로파일 env 는
+    # g2c→nn(→ggml_profiler) import 전에 설정돼야 하므로 g2c import 앞에 둔다.
+    boot = "import g2c  # noqa: F401 — 루트 sys.path 등록 + nn 노출\n"
+    if prof:
+        boot = "import os\n" + prof + boot
+    if "import g2c" not in src:
         src = src.replace("import nn\n", boot + "import nn\n", 1)
 
     shape = ", ".join(str(int(s)) for s in input_shape)
