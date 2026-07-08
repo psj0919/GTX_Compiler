@@ -17,42 +17,21 @@
 import torch
 from shared.quantization import maybe_get_quantizer
 from shared.quantization import quantize_tensors
-import utils as py_utils
 
-__all__ = ["mul"]
+__all__ = ["Sub"]
 
 
-class Mul(torch.nn.Module):
+class Sub(torch.nn.Module):
 
     def __init__(self):
-        super(Mul, self).__init__()
+        super(Sub, self).__init__()
         self.quant_mode, self.quantizer = maybe_get_quantizer()
         self.node = None
 
-    def forward(self, input, other):
+    def forward(self, input, other, alpha=1):
         [qinput, qother] = quantize_tensors(
             [input, other], self.node, tensor_type="input"
         )
-        output = torch.mul(qinput, qother)
+        output = torch.sub(input=qinput, other=qother, alpha=alpha)
         output = quantize_tensors([output], self.node)[0]
         return output
-
-
-@py_utils.register_quant_op
-def mul(*args, **kwargs):
-    return Mul(*args, **kwargs)
-
-
-# --- ggml/vision.cpp codegen (render) ---
-from shared.compile.render_api import register_render as _rr
-from shared.base import OP as _OP
-
-
-@_rr(_OP.MULTIPLY)
-def render(node, ctx):
-    return ctx.out(node, f"ggml_mul(m, {ctx.inp(node, 0)}, {ctx.inp(node, 1)})")
-
-
-@_rr(_OP.DIV)
-def render_div(node, ctx):
-    return ctx.out(node, f"ggml_div(m, {ctx.inp(node, 0)}, {ctx.inp(node, 1)})")

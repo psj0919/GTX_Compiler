@@ -15,23 +15,20 @@
 #
 
 import torch
-import math
-from shared.utils import Option, ScreenLogger, QError, QWarning
+
+from shared.utils import Option, ScreenLogger, QError
 from shared.quantization import maybe_get_quantizer
 from shared.quantization import quantize_tensors
-from .quant_noise import eval_qnoise
-import utils as py_utils
-from .add import Add
-from .multiply import Mul
+from ..quant_noise import eval_qnoise
 
-__all__ = ["linear"]
+__all__ = ["Conv2d"]
 
 
-class Linear(torch.nn.modules.linear.Linear):
-    r"""Linear operation, support float and double"""
+class Conv2d(torch.nn.modules.conv.Conv2d):
+    r"""Conv2d operation, support float and double"""
 
     def __init__(self, *args, **kwards):
-        super(Linear, self).__init__(*args, **kwards)
+        super(Conv2d, self).__init__(*args, **kwards)
         self.params_name = None
         self.node = None
         self.quant_mode, self.quantizer = maybe_get_quantizer()
@@ -129,41 +126,36 @@ class Linear(torch.nn.modules.linear.Linear):
 
         # quantize input tensor
         qinput = quantize_tensors([input], self.node, tensor_type="input")[0]
-        # split linear to mul and add operations
-        if self.quant_mode == 2 and self.quantizer.is_lstm:
-            # i * w
-            output = torch.matmul(qinput, torch.transpose(qweight, 0, 1))
-            datatype = "int"
-            if Option.only_int_quant.value is False:
-                datatype = self.quantizer.get_quant_dtype(
-                    self.node.name, tensor_type="output"
-                )
-            output = self.quantizer.quantize(
-                output,
-                self.node.name,
-                self.node,
-                tensor_type="output",
-                datatype=datatype,
-            )
-            # i*w + bias
-            if self.bias is not None:
-                output = torch.add(output, qbias)
-        else:
-            output = torch.nn.functional.linear(qinput, qweight, qbias)
+        output = torch.nn.functional.conv2d(
+            qinput,
+            weight=qweight,
+            bias=qbias,
+            stride=self.stride,
+            padding=self.padding,
+            dilation=self.dilation,
+            groups=self.groups,
+        )
         output = quantize_tensors([output], self.node)[0]
 
+        # correct weights and bias in calibation
         if Option.param_corr.value > 0:
             # rate = Option.param_corr_rate.value
             # statistic of quantization error
             if self.quant_mode == 1 and not self.stop:
-                res_f = torch.matmul(input, torch.transpose(self.weight_bak, 0, 1))
-                if self.bias is not None:
-                    res_f = torch.add(res_f, self.bias_bak)
+                res_f = torch.nn.functional.conv2d(
+                    input,
+                    self.weight_bak,
+                    bias=self.bias_bak,
+                    stride=self.stride,
+                    padding=self.padding,
+                    dilation=self.dilation,
+                    groups=self.groups,
+                )
                 error, rate, self.stop, self.efficency, self.deviation = eval_qnoise(
                     output, res_f, self.efficency, self.deviation, self.rate, self.stop
                 )
                 if (not self.stop) and (self.bias is not None):
-                    error = error.mean(dim=[k for k in range(error.dim() - 1)])
+                    error = error.mean(dim=[0, 2, 3])
                     self.bias.data = torch.sub(self.bias.data, error, alpha=rate)
                 self.param_quantized = False
 
@@ -175,26 +167,3 @@ class Linear(torch.nn.modules.linear.Linear):
             return bias_err.cpu().numpy().tolist()
         else:
             return None
-
-
-@py_utils.register_quant_op
-def linear(*args, **kwargs):
-    quant_mode, _ = maybe_get_quantizer()
-    if quant_mode == None:
-        return torch.nn.Linear(*args, **kwargs)
-    return Linear(*args, **kwargs)
-
-
-# --- ggml/vision.cpp codegen (render) ---
-from shared.compile.render_api import register_render as _register_render
-from shared.base import OP as _OP
-
-
-@_register_render(_OP.DENSE)
-def render(node, ctx):
-    # visp::linear = ggml_mul_mat(weight, x): x 의 ne[0] 가 in_features 여야 한다.
-    # PyTorch Linear.weight[out,in] 를 그대로 GGUF 에 쓰면 ggml ne=[in,out] 이 되어
-    # mul_mat 결과가 [out, N] 으로 정합한다 (앞단 flatten 이 [in, N] 을 만든다).
-    has_bias = bool(ctx.attr(node, "bias", True))
-    key = ctx.weight(node, ["weight"] + (["bias"] if has_bias else []))
-    return ctx.out(node, f"linear({key}, {ctx.inp(node)})", hint="fc")

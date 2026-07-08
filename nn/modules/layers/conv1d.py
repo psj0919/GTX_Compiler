@@ -15,24 +15,20 @@
 #
 
 import torch
-from torch.autograd import Variable
-import math
 
-from shared.utils import Option, ScreenLogger, QError, QWarning
+from shared.utils import Option, ScreenLogger, QError
 from shared.quantization import maybe_get_quantizer
 from shared.quantization import quantize_tensors
-from .quant_noise import eval_qnoise
-from utils.op_register import register_quant_op
-import torch.nn.functional as F
+from ..quant_noise import eval_qnoise
 
-__all__ = ["conv2d"]
+__all__ = ["Conv1d"]
 
 
-class Conv2d(torch.nn.modules.conv.Conv2d):
-    r"""Conv2d operation, support float and double"""
+class Conv1d(torch.nn.modules.conv.Conv1d):
+    r"""Conv1d operation, support float and double"""
 
-    def __init__(self, *args, **kwards):
-        super(Conv2d, self).__init__(*args, **kwards)
+    def __init__(self, *args, **kwargs):
+        super(Conv1d, self).__init__(*args, **kwargs)
         self.params_name = None
         self.node = None
         self.quant_mode, self.quantizer = maybe_get_quantizer()
@@ -48,15 +44,6 @@ class Conv2d(torch.nn.modules.conv.Conv2d):
         self.deviation = 0.0
 
     def forward(self, input):
-        if self.quantizer is None or Option.quant_off.value is True:
-            return self.fp32_forward(input)
-        else:
-            return self.fake_quantize_forward(input)
-
-    def fp32_forward(self, input):
-        return super().forward(input)
-
-    def fake_quantize_forward(self, input):
         # backup bias for bias correction feature
         if not self.param_saved:
             if Option.param_corr.value > 0:
@@ -130,7 +117,7 @@ class Conv2d(torch.nn.modules.conv.Conv2d):
 
         # quantize input tensor
         qinput = quantize_tensors([input], self.node, tensor_type="input")[0]
-        output = torch.nn.functional.conv2d(
+        output = torch.nn.functional.conv1d(
             qinput,
             weight=qweight,
             bias=qbias,
@@ -146,7 +133,7 @@ class Conv2d(torch.nn.modules.conv.Conv2d):
             # rate = Option.param_corr_rate.value
             # statistic of quantization error
             if self.quant_mode == 1 and not self.stop:
-                res_f = torch.nn.functional.conv2d(
+                res_f = torch.nn.functional.conv1d(
                     input,
                     self.weight_bak,
                     bias=self.bias_bak,
@@ -159,7 +146,7 @@ class Conv2d(torch.nn.modules.conv.Conv2d):
                     output, res_f, self.efficency, self.deviation, self.rate, self.stop
                 )
                 if (not self.stop) and (self.bias is not None):
-                    error = error.mean(dim=[0, 2, 3])
+                    error = error.mean(dim=[0, 1, 2])
                     self.bias.data = torch.sub(self.bias.data, error, alpha=rate)
                 self.param_quantized = False
 
@@ -171,34 +158,3 @@ class Conv2d(torch.nn.modules.conv.Conv2d):
             return bias_err.cpu().numpy().tolist()
         else:
             return None
-
-
-@register_quant_op
-def conv2d(*args, **kwargs):
-    quant_mode, _ = maybe_get_quantizer()
-    if quant_mode == None:
-        return torch.nn.Conv2d(*args, **kwargs)
-    return Conv2d(*args, **kwargs)
-
-
-# --- ggml/vision.cpp codegen (render) ---
-from shared.compile.render_api import register_render as _register_render
-from shared.compile.render_api import weight_key as _weight_key
-from shared.base import OP as _OP
-
-
-@_register_render(_OP.CONV2D)
-def render(node, ctx):
-    has_bias = bool(ctx.attr(node, "bias", False))
-    key = ctx.weight(node, ["weight"] + (["bias"] if has_bias else []))
-    s = ctx.scalar(ctx.attr(node, "stride", [1, 1]))
-    p = ctx.scalar(ctx.attr(node, "padding", [0, 0]))
-    # 양자 conv: GGUF 에 커널이 2D [IC*KH*KW, OC] 양자 형태로 저장됨 → conv_2d 대신
-    # conv_2d_q(im2col+mul_mat) emit (헬퍼는 codegen 이 .cpp 상단에 주입). KH/KW 는 plan 에서.
-    entry = (getattr(ctx, "quant_plan", None) or {}).get(_weight_key(node))
-    if entry is not None and entry.get("kind") == "conv":
-        return ctx.out(
-            node,
-            f"conv_2d_q({key}, {ctx.inp(node)}, {s}, {p}, {entry['kh']}, {entry['kw']})",
-        )
-    return ctx.out(node, f"conv_2d({key}, {ctx.inp(node)}, {s}, {p})")

@@ -17,37 +17,22 @@
 import torch
 from shared.quantization import maybe_get_quantizer
 from shared.quantization import quantize_tensors
-import utils as py_utils
 
-__all__ = ["sub"]
+__all__ = ["Concat"]
 
 
-class Sub(torch.nn.Module):
+class Concat(torch.nn.Module):
+    r"""Concat operation"""
 
-    def __init__(self):
-        super(Sub, self).__init__()
+    def __init__(self, *args, **kwargs):
+        super(Concat, self).__init__()
+        # self.dim = kwargs.get('dim', 0)
         self.quant_mode, self.quantizer = maybe_get_quantizer()
         self.node = None
 
-    def forward(self, input, other, alpha=1):
-        [qinput, qother] = quantize_tensors(
-            [input, other], self.node, tensor_type="input"
-        )
-        output = torch.sub(input=qinput, other=qother, alpha=alpha)
+    def forward(self, tensors, dim):
+        qinputs = quantize_tensors(tensors, self.node, tensor_type="input")
+        output = torch.cat(qinputs, dim)
         output = quantize_tensors([output], self.node)[0]
+
         return output
-
-
-@py_utils.register_quant_op
-def sub(*args, **kwargs):
-    return Sub(*args, **kwargs)
-
-
-# --- ggml/vision.cpp codegen (render) ---
-from shared.compile.render_api import register_render as _rr
-from shared.base import OP as _OP
-
-
-@_rr(_OP.SUB)
-def render(node, ctx):
-    return ctx.out(node, f"ggml_sub(m, {ctx.inp(node, 0)}, {ctx.inp(node, 1)})")

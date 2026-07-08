@@ -16,9 +16,8 @@
 
 import torch
 from shared.quantization.utils import maybe_get_quantizer, quantize_tensors
-import utils as py_utils
 
-__all__ = ["add"]
+__all__ = ["Add"]
 
 
 class Add(torch.nn.Module):
@@ -35,18 +34,3 @@ class Add(torch.nn.Module):
         output = torch.add(input=qinput, other=qother, alpha=alpha)
         output = quantize_tensors([output], self.node)[0]
         return output
-
-
-@py_utils.register_quant_op
-def add(*args, **kwargs):
-    return Add(*args, **kwargs)
-
-
-# --- ggml/vision.cpp codegen (render) ---
-from shared.compile.render_api import register_render as _register_render
-from shared.base import OP as _OP
-
-
-@_register_render(_OP.ADD)
-def render(node, ctx):
-    return ctx.out(node, f"ggml_add(m, {ctx.inp(node, 0)}, {ctx.inp(node, 1)})")
