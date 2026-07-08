@@ -204,8 +204,13 @@ class VispCodeGenerator:
             expr = f"ggml_gelu(m, {var})"
         elif t == "tanh":
             expr = f"ggml_tanh(m, {var})"
-        elif t in ("aten::silu_", "aten::silu", "silu"):
-            expr = f"ggml_silu(m, {var})"
+        elif t in ("silu", "aten::silu_", "aten::silu"):
+            # inplace config(dispatcher set) 로 커널 선택. fused 라 producer 출력의 단독
+            # 소비자 → inplace 덮어쓰기 안전. config 없으면 aten 접미사 폴백.
+            inplace = getattr(act_op, "inplace", None)
+            if inplace is None:
+                inplace = t.endswith("_")
+            expr = f"ggml_silu_inplace(m, {var})" if inplace else f"ggml_silu(m, {var})"
         elif t == "leaky_relu":
             slope = ctx.attr(n, "negative_slope", 0.01)
             expr = f"ggml_leaky_relu(m, {var}, {float(slope)}f, false)"

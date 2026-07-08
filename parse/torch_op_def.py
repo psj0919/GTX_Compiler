@@ -78,6 +78,13 @@ class TorchReLU(Operation):
         utils.op_register(OP.RELU, "ReLU")
 
 
+class TorchSiLU(Operation):
+
+    def __init__(self, *args, **kwargs):
+        super(TorchSiLU, self).__init__(OP.SILU, *args, **kwargs)
+        utils.op_register(OP.SILU, "SiLU")
+
+
 class TorchLeakyReLU(base_op.LeakyReLU):
 
     def __init__(self):

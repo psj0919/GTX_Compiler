@@ -24,7 +24,8 @@ from shared.base import OP
 
 # 활성화를 흡수할 수 있는 선행(producer) op.
 FUSE_ACT_PRODUCERS = [OP.CONV2D, OP.DEPTHWISE_CONV2D, OP.DENSE, OP.ADD]
-# 흡수 대상 활성화 op (선형 fold 불가, 구조적으로만 fuse).
+# 흡수 대상 활성화 op (선형 fold 불가, 구조적으로만 fuse). silu 는 dispatcher 에서 clean
+# `OP.SILU`("silu")로 정규화되고 inplace 여부는 op config 로 실림 → inplace/non-inplace 공용.
 FUSE_ACTIVATIONS = [OP.RELU, OP.RELU6, OP.LEAKY_RELU, OP.SIGMOID, OP.GELU, OP.TANH, OP.CLAMP,
                     OP.SILU]
 

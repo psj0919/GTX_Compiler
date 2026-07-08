@@ -162,9 +162,12 @@ def _permute_expr(a, order, ndim):
 
 
 # ----------------------------------------------------------- compute ops
-@_rr("aten::silu_", "aten::silu", "silu")   # silu_ = inplace, silu = nn.SiLU() 기본(non-inplace)
+@_rr(_OP.SILU, "aten::silu_", "aten::silu")   # OP.SILU="silu"; aten 키는 미정규화 폴백
 def render_silu(node, ctx):
-    inplace = str(node.op.type).rstrip().endswith("_")
+    # inplace 는 op config(dispatcher 가 set) 우선, 없으면 aten op.type 접미사("_") 폴백.
+    inplace = getattr(node.op, "inplace", None)
+    if inplace is None:
+        inplace = str(node.op.type).rstrip().endswith("_")
     fn = "ggml_silu_inplace" if inplace else "ggml_silu"
     return ctx.out(node, f"{fn}(m, {ctx.inp(node)})", hint="silu")
 

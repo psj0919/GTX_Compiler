@@ -422,6 +422,16 @@ class OpCreator(object):
         op.set_config("inplace", False)
         return op
 
+    def silu_(self, input):
+        op = TorchSiLU()
+        op.set_config("inplace", True)
+        return op
+
+    def silu(self, input):
+        op = TorchSiLU()
+        op.set_config("inplace", False)
+        return op
+
     def leaky_relu_(self, input, negative_slope=0.01):
         op = TorchLeakyReLU()
         op.set_config("negative_slope", negative_slope)
