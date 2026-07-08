@@ -815,7 +815,7 @@ def compile_model(model, name: str, input_shape, output_dir: str, quant=None,
         from shared.optimization.commander import OptimizeCommander
         n_act = OptimizeCommander(graph=graph).FuseConvActivation()
         if n_act:
-            print(f"[g2c] Conv+Activation fuse — {n_act} activation 흡수(codegen emit)", flush=True)
+            print(f"[g2c] Conv+Activation fuse — {n_act} activation fused", flush=True)
 
     print("[g2c] Generating visp/ggml arch C++...", flush=True)
     files = generate_ggml_code(graph, output_dir, name, quant_plan=quant_plan,
