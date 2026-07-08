@@ -41,32 +41,8 @@ def render_clamp(node, ctx):
 
 
 # ------------------------------------------------------------- 정규화
-@_rr(_OP.LAYER_NORM)
-def render_layer_norm(node, ctx):
-    # visp wrapper: layer_norm(m["k"], x) = ggml_norm + weight/bias affine (GGUF).
-    key = ctx.weight(node, ["weight", "bias"])
-    return ctx.out(node, f"layer_norm({key}, {ctx.inp(node)})", hint="ln")
-
-
-@_rr(_OP.GROUP_NORM)
-def render_group_norm(node, ctx):
-    groups = int(ctx.attr(node, "num_groups", ctx.attr(node, "groups", 32)) or 32)
-    eps = float(ctx.attr(node, "eps", 1e-5))
-    key = ctx.weight(node, ["weight", "bias"])
-    a = ctx.inp(node)
-    # ggml_group_norm 후 per-channel affine(weight/bias)은 GGUF 텐서로 후처리(TODO).
-    return ctx.out(
-        node,
-        f"ggml_group_norm(m, {a}, {groups}, {eps}f)"
-        f" /* TODO(ggml): affine weight/bias from {key} */",
-        hint="gn",
-    )
-
-
-@_rr(_OP.INSTANCE_NORM)
-def render_instance_norm(node, ctx):
-    eps = float(ctx.attr(node, "eps", 1e-5))
-    return ctx.out(node, f"ggml_norm(m, {ctx.inp(node)}, {eps}f)", hint="in")
+# 정규화 render(layer_norm/group_norm/instance_norm)는
+# nn/modules/normalize/render.py 로 이동.
 
 
 # ------------------------------------------------------------- math 리덕션

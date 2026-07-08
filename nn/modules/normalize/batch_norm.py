@@ -15,16 +15,12 @@
 #
 
 import torch
-from torch.autograd import Variable
-import math
 
 from shared.utils import Option
 from shared.quantization import quantize_tensors
 from shared.quantization import maybe_get_quantizer
-import utils as py_utils
-import torch.nn.functional as F
 
-__all__ = ["batchNorm"]
+__all__ = ["BatchNorm"]
 
 
 class BatchNorm(torch.nn.modules.batchnorm._BatchNorm):
@@ -106,31 +102,3 @@ class BatchNorm(torch.nn.modules.batchnorm._BatchNorm):
 
     def _check_input_dim(self, input):
         pass
-
-
-@py_utils.register_quant_op
-def batchNorm(*args, **kwargs):
-    quant_mode, _ = maybe_get_quantizer()
-    if quant_mode == None:
-
-        def _check_input_dim(self, input):
-            pass
-
-        import types
-
-        nn = torch.nn.modules.batchnorm._BatchNorm(*args, **kwargs)
-
-        nn._check_input_dim = types.MethodType(_check_input_dim, nn)
-        return nn
-    return BatchNorm(*args, **kwargs)
-
-
-# --- ggml/vision.cpp codegen (render) ---
-from shared.compile.render_api import register_render as _register_render
-from shared.base import OP as _OP
-
-
-@_register_render(_OP.BATCH_NORM)
-def render(node, ctx):
-    key = ctx.weight(node, ["weight", "bias", "running_mean", "running_var"])
-    return ctx.out(node, f"batch_norm_2d({key}, {ctx.inp(node)})")

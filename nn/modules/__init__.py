@@ -12,13 +12,10 @@ from .quant_stubs import *
 from .reluk import *
 from .function import *
 from .quant_noise import *
-from .batch_norm import *
-from .instance_norm import *
-from .group_norm import *
+from .normalize import *
 from .correlation1d import *
 from .correlation2d import *
 from .cost_volume import *
-from .layernorm import *
 from .head_render import *
 from .vision_ops_render import *
 from .lstm_render import *
