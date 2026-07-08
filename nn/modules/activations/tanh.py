@@ -15,29 +15,22 @@
 #
 
 import torch
-import numpy as np
 from shared.quantization import maybe_get_quantizer
 from shared.quantization import quantize_tensors
 from shared.utils import Option
-from shared.base import GLOBAL_MAP, KEYS
-from .sigmoid_table import *
-from .fix_ops import (
-    SigmoidTableLookup,
-    SigmoidSimulation,
-    SigmoidTableLookupAIE2,
-)
-import utils as py_utils
+from ..tanh_table import *
+from ..fix_ops import TanhTableLookup, TanhSimulation, TanhTableLookupAIE2
 
-__all__ = ["sigmoid"]
+__all__ = ["Tanh"]
 
-SIGMOID_TABLE = SigmoidTable()
+TANH_TABLE = TanhTable()
 
 
-class Sigmoid(torch.nn.modules.Sigmoid):
-    r"""Sigmoid operation"""
+class Tanh(torch.nn.modules.Tanh):
+    r"""Tanh operation"""
 
     def __init__(self):
-        super(Sigmoid, self).__init__()
+        super(Tanh, self).__init__()
         self.quant_mode, self.quantizer = maybe_get_quantizer()
         self.node = None
 
@@ -64,54 +57,27 @@ class Sigmoid(torch.nn.modules.Sigmoid):
             input_node = self.quantizer.configer.get_node(input_name)
             if not self.quantizer.configer.node_output_quantizable(input_node):
                 input_name = input_node.in_nodes[0]
-            elif self.quantizer.configer.will_merge_with_table(
-                input_node, (not Option.cv_app.value)
-            ):
-                output = super().forward(qinput)
-                bnfp = self.quantizer.get_quant_config(input_name, False)
-                bnfp[1] = 15
-                self.quantizer.set_quant_config(self.node.name, bnfp)
-                return output
 
-            bw = self.quantizer.get_quant_config(self.node.name, False)[0]
             fragpos = self.quantizer.get_quant_config(input_name, False)[1]
             # Method 1: Simulation AIE with 16 bw (for RNNT)
             if Option.op_tanh_sigmoid_mode.value == "simulation":
-                SigmoidSimulation(qinput, output, fragpos)
+                TanhSimulation(input, output, fragpos)
                 output = quantize_tensors([output], self.node)[0]
             # Method 2: Table Look up for AIE2 with 16 bw (based on LUT)
             elif (
                 Option.op_tanh_sigmoid_mode.value == "aie2_lut_16bw"
                 or Option.ip_asr.value
             ):
-                SigmoidTableLookupAIE2(qinput, output, fragpos)
+                TanhTableLookupAIE2(qinput, output, fragpos)
                 output = quantize_tensors([output], self.node)[0]
             # Method 3: Table Look up for FPGA with 16 bw
             else:
                 quant_device = qinput.device
-                Ttable = SIGMOID_TABLE.table.to(qinput.dtype).to(quant_device)
+                Ttable = TANH_TABLE.table.to(qinput.dtype).to(quant_device)
                 output = output.to(quant_device)
-                SigmoidTableLookup(input, Ttable, output, fragpos)
+                TanhTableLookup(input, Ttable, output, fragpos)
                 bnfp = self.quantizer.get_quant_config(input_name, False)
                 bnfp[1] = 15
                 self.quantizer.set_quant_config(self.node.name, bnfp)
 
         return output
-
-
-@py_utils.register_quant_op
-def sigmoid(*args, **kwargs):
-    quant_mode, _ = maybe_get_quantizer()
-    if quant_mode is None:
-        return torch.nn.Sigmoid(*args, **kwargs)
-    return Sigmoid(*args, **kwargs)
-
-
-# --- ggml/vision.cpp codegen (render) ---
-from shared.compile.render_api import register_render as _rr
-from shared.base import OP as _OP
-
-
-@_rr(_OP.SIGMOID)
-def render(node, ctx):
-    return ctx.out(node, f"ggml_sigmoid(m, {ctx.inp(node)})")

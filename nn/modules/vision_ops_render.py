@@ -31,42 +31,13 @@ from shared.base import OP as _OP
 
 
 # ------------------------------------------------------------- 활성화
-@_rr(_OP.GELU)
-def render_gelu(node, ctx):
-    # approximate: 'none'(erf, 정확) / 'tanh'(기본) / 'quick'(sigmoid 근사)
-    approx = str(ctx.attr(node, "approximate", "tanh")).lower()
-    fn = {"none": "ggml_gelu_erf", "quick": "ggml_gelu_quick"}.get(approx, "ggml_gelu")
-    return ctx.out(node, f"{fn}(m, {ctx.inp(node)})", hint="gelu")
-
-
-@_rr(_OP.TANH)
-def render_tanh(node, ctx):
-    return ctx.out(node, f"ggml_tanh(m, {ctx.inp(node)})", hint="tanh")
-
-
-@_rr(_OP.LEAKY_RELU)
-def render_leaky_relu(node, ctx):
-    slope = ctx.attr(node, "negative_slope", None)
-    if slope is None:
-        slope = ctx.attr(node, "alpha", 0.01)
-    return ctx.out(node, f"ggml_leaky_relu(m, {ctx.inp(node)}, {float(slope)}f, false)", hint="lrelu")
-
-
+# 활성화 render(gelu/tanh/leaky_relu/relu6/log_softmax/prelu)는
+# nn/modules/activations/render.py 로 이동. clamp 는 여기 유지.
 @_rr(_OP.CLAMP)
 def render_clamp(node, ctx):
     lo = ctx.attr(node, "min", 0.0)
     hi = ctx.attr(node, "max", 6.0)
     return ctx.out(node, f"ggml_clamp(m, {ctx.inp(node)}, {float(lo)}f, {float(hi)}f)", hint="clamp")
-
-
-@_rr(_OP.RELU6)
-def render_relu6(node, ctx):
-    return ctx.out(node, f"ggml_clamp(m, {ctx.inp(node)}, 0.0f, 6.0f)", hint="relu6")
-
-
-@_rr(_OP.LOG_SOFTMAX)
-def render_log_softmax(node, ctx):
-    return ctx.out(node, f"ggml_log(m, ggml_soft_max(m, {ctx.inp(node)}))", hint="lsm")
 
 
 # ------------------------------------------------------------- 정규화
@@ -246,17 +217,6 @@ def render_pad_reflect_1d(node, ctx):
 @_rr(_OP.ARGMAX)
 def render_argmax(node, ctx):
     return ctx.out(node, f"ggml_argmax(m, {ctx.inp(node)})", hint="amax")
-
-
-@_rr(_OP.PRELU)
-def render_prelu(node, ctx):
-    # PReLU(per-channel slope)을 ggml_leaky_relu(scalar)로 근사. 정확본은 mul/max 합성(TODO).
-    return ctx.out(
-        node,
-        f"ggml_leaky_relu(m, {ctx.inp(node)}, 0.25f, false)"
-        " /* TODO(ggml): PReLU per-channel slope → scalar 근사 */",
-        hint="prelu",
-    )
 
 
 @_rr(_OP.PAD)

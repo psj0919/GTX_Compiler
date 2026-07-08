@@ -16,18 +16,20 @@
 
 import torch
 from shared.quantization import maybe_get_quantizer
-from shared.utils import Option
 from shared.quantization import quantize_tensors
-import utils as py_utils
+from shared.utils import Option
 
-__all__ = ["relu"]
+__all__ = ["LeakyReLU"]
 
 
-class ReLU(torch.nn.ReLU):
-    r"""ReLU operation"""
+class LeakyReLU(torch.nn.LeakyReLU):
+    r"""LeakyReLU operation"""
 
     def __init__(self, *args, **kwargs):
-        super(ReLU, self).__init__(*args, **kwargs)
+        # only support the specified slope and inplace operation
+        super().__init__(*args, **kwargs)
+        if Option.leaky_relu_approximate.value:
+            self.negative_slope = 0.1015625
         self.quant_mode, self.quantizer = maybe_get_quantizer()
         self.node = None
 
@@ -36,22 +38,3 @@ class ReLU(torch.nn.ReLU):
         output = super().forward(qinput)
         output = quantize_tensors([output], self.node)[0]
         return output
-
-
-@py_utils.register_quant_op
-def relu(*args, **kwargs):
-    # quant_mode,_ = maybe_get_quantizer()
-    # if quant_mode==None:
-    #    return
-    return ReLU(*args, **kwargs)
-
-
-# --- ggml/vision.cpp codegen (render) ---
-from shared.compile.render_api import register_render as _register_render
-from shared.base import OP as _OP
-
-
-@_register_render(_OP.RELU)
-def render(node, ctx):
-    fn = "ggml_relu_inplace" if ctx.attr(node, "inplace", False) else "ggml_relu"
-    return ctx.out(node, f"{fn}(m, {ctx.inp(node)})")

@@ -1,0 +1,56 @@
+#
+# Copyright 2025 Supergate.cc, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+import torch
+import torch.nn.functional as F
+
+from shared.quantization import maybe_get_quantizer
+from shared.quantization import quantize_tensors
+from shared.utils import Option
+from shared.utils import KEYS, GLOBAL_MAP
+
+__all__ = ["Hardsigmoid"]
+
+
+class Hardsigmoid(torch.nn.Module):
+    r"""Hardsigmoid operation, support float and double"""
+
+    def __init__(self, inplace=False, *args, **kwards):
+        super(Hardsigmoid, self).__init__()
+        self.quant_mode, self.quantizer = maybe_get_quantizer()
+        self.node = None
+        self.inplace = inplace
+
+    def forward(self, input):
+        quant_config = GLOBAL_MAP.get_ele(KEYS.QUANT_CONFIG)
+        if self.quant_mode is None or Option.quant_off.value:
+            return torch.div(F.relu6(torch.add(input, 3.0)), 6.0)
+        elif quant_config["target_device"] == "FLEXML":
+            qinput = quantize_tensors([input], self.node, tensor_type="input")[0]
+            output = torch.nn.functional.hardsigmoid(qinput)
+            output = quantize_tensors([output], self.node)[0]
+            return output
+        else:
+            qinput = quantize_tensors([input], self.node, tensor_type="input")[0]
+            output = F.relu6(torch.add(qinput, 3.0))
+
+            # scale to DPU accuracy
+            scale = 2731.0 / 16384.0
+            output = output * scale
+
+            output = quantize_tensors([output], self.node)[0]
+
+            return output
