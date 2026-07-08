@@ -235,3 +235,4 @@ deploy/compiler_dist.tar.gz
 .claude/
 .benchmarks/
 simulator/
+.netron/
