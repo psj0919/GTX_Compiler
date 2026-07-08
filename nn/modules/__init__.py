@@ -3,11 +3,7 @@ try:
     from .rnn_builder import *  # RNN/LSTM 전용; 소스보호 배포본에선 제외될 수 있음
 except ImportError:
     pass
-from .maxpool import *
-from .maxpool1d import *
-from .avgpool import *
-from .adaptive_avg_pool import *
-from .interpolate import *
+from .pooling import *
 from .fix_ops import *
 from .activations import *
 from .prim_ops import *

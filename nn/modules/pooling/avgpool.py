@@ -16,13 +16,11 @@
 
 import math
 import torch
-from torch.autograd import Variable
 
 from shared.quantization import maybe_get_quantizer, quantize_tensors
 from shared.utils import Option
-import utils as py_utils
 
-__all__ = ["avgPool2d"]
+__all__ = ["AvgPool2d"]
 
 
 class AvgPool2d(torch.nn.modules.AvgPool2d):
@@ -77,27 +75,3 @@ class AvgPool2d(torch.nn.modules.AvgPool2d):
         output = quantize_tensors([output], self.node)[0]
 
         return output
-
-
-@py_utils.register_quant_op
-def avgPool2d(*args, **kwargs):
-    quant_mode, _ = maybe_get_quantizer()
-    if quant_mode is None or Option.quant_off.value:
-        return torch.nn.AvgPool2d(*args, **kwargs)
-    return AvgPool2d(*args, **kwargs)
-
-
-# --- ggml/vision.cpp codegen (render) ---
-from shared.compile.render_api import register_render as _register_render
-from shared.base import OP as _OP
-
-
-@_register_render(_OP.AVG_POOL)
-def render(node, ctx):
-    k = ctx.scalar(ctx.attr(node, "kernel_size", [2, 2]))
-    s = ctx.scalar(ctx.attr(node, "stride", [k, k]))
-    p = ctx.scalar(ctx.attr(node, "padding", [0, 0]))
-    return ctx.out(
-        node,
-        f"ggml_pool_2d(m, {ctx.inp(node)}, GGML_OP_POOL_AVG, {k}, {k}, {s}, {s}, {p}, {p})",
-    )

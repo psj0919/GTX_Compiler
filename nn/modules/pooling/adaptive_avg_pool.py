@@ -17,11 +17,10 @@
 import math
 import torch
 
-import utils as py_utils
 from shared.quantization import maybe_get_quantizer, quantize_tensors
 from shared.utils import Option, ScreenLogger
 
-__all__ = ["adaptiveAvgPool2d"]
+__all__ = ["AdaptiveAvgPool2d"]
 
 
 class AdaptiveAvgPool2d(torch.nn.modules.AdaptiveAvgPool2d):
@@ -81,46 +80,3 @@ class AdaptiveAvgPool2d(torch.nn.modules.AdaptiveAvgPool2d):
         output = quantize_tensors([output], self.node)[0]
 
         return output
-
-
-@py_utils.register_quant_op
-def adaptiveAvgPool2d(*args, **kwargs):
-    quant_mode, _ = maybe_get_quantizer()
-    if quant_mode is None or Option.quant_off.value:
-        return torch.nn.AdaptiveAvgPool2d(*args, **kwargs)
-    return AdaptiveAvgPool2d(*args, **kwargs)
-
-
-# --- ggml/vision.cpp codegen (render) ---
-from shared.compile.render_api import register_render as _register_render
-from shared.base import OP as _OP
-
-
-def _shape_of(t):
-    try:
-        return [int(x) for x in t.shape]
-    except Exception:
-        return None
-
-
-@_register_render(_OP.ADAPTIVEAVGPOOL2D)
-def render(node, ctx):
-    # adaptive_avg_pool2d((Ho,Wo)): 입력 (Hi,Wi) 가 출력의 배수면(Hi%Ho==Wi%Wo==0) 고정 커널
-    # avg pool 과 동치 → kernel=stride=(Wi/Wo, Hi/Ho) 로 정확히 tiled pooling. (1,1) global 도
-    # 이 식의 특수해. 비-배수(진짜 가변커널 adaptive)는 ggml 미지원 → global 폴백 + TODO.
-    a = ctx.inp(node)
-    ish = _shape_of(node.in_tensors[0]) if node.in_tensors else None
-    osh = _shape_of(node.out_tensors[0]) if node.out_tensors else None
-    if ish and osh and len(ish) >= 2 and len(osh) >= 2:
-        Hi, Wi = ish[-2], ish[-1]
-        Ho, Wo = osh[-2], osh[-1]
-        if Ho > 0 and Wo > 0 and Hi % Ho == 0 and Wi % Wo == 0:
-            k0, k1 = Wi // Wo, Hi // Ho          # ggml: k0 on ne0(W), k1 on ne1(H)
-            expr = (f"ggml_pool_2d(m, {a}, GGML_OP_POOL_AVG, "
-                    f"{k0}, {k1}, {k0}, {k1}, 0, 0)")
-            return ctx.out(node, expr, hint="pool")
-    # 비-배수 또는 shape 미상 → 전 spatial 평균(global)로 폴백.
-    expr = (f"ggml_pool_2d(m, {a}, GGML_OP_POOL_AVG, "
-            f"{a}->ne[0], {a}->ne[1], {a}->ne[0], {a}->ne[1], 0, 0)"
-            f" /* TODO(ggml): non-divisible adaptive avg pool — 가변커널 미지원, global 폴백 */")
-    return ctx.out(node, expr, hint="pool")
