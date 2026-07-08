@@ -162,7 +162,7 @@ def _permute_expr(a, order, ndim):
 
 
 # ----------------------------------------------------------- compute ops
-@_rr("aten::silu_", "silu")
+@_rr("aten::silu_", "aten::silu", "silu")   # silu_ = inplace, silu = nn.SiLU() 기본(non-inplace)
 def render_silu(node, ctx):
     inplace = str(node.op.type).rstrip().endswith("_")
     fn = "ggml_silu_inplace" if inplace else "ggml_silu"
