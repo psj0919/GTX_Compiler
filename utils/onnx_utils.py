@@ -1,0 +1,37 @@
+#
+# Copyright 2025 Supergate.cc, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+"""ONNX export 유틸 — Vitis-AI pytorch_nndct/utils/onnx_utils.py 에서 이식.
+
+opset 버전 해석은 torch 버전마다 위치가 달라(1.4~) fallback 체인으로 찾는다."""
+import torch
+
+from utils.torch_utils import CmpFlag, compare_torch_version
+
+
+def get_opset_version():
+    if "_onnx_stable_opsets" in torch.onnx.symbolic_helper.__dict__:
+        return torch.onnx.symbolic_helper._onnx_stable_opsets[-1]
+    elif "onnx_stable_opsets" in torch.onnx._constants.__dict__:
+        return torch.onnx._constants.onnx_stable_opsets[-1]
+    elif "ONNX_MAX_OPSET" in torch.onnx._constants.__dict__:
+        return torch.onnx._constants.ONNX_MAX_OPSET
+    else:
+        raise RuntimeError(
+            "Onnx stable opset version is not found. Please check pytorch version.")
+
+
+def support_onnx_export():
+    return compare_torch_version(CmpFlag.GREATER_EQUAL, "1.7")
