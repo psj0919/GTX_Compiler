@@ -13,9 +13,7 @@ import os
 import sys
 
 # 프로젝트 루트(= test/ 의 부모)를 Python 경로에 추가.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from shared.compile.pipeline import main  # noqa: E402
+from g2c.shared.compile.pipeline import main  # noqa: E402
 
 if __name__ == "__main__":
     # 과거 기본값: --model 미지정 시 resnet18.

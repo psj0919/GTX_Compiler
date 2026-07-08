@@ -196,8 +196,10 @@ def _op_batch_norm(mod, x):
     eps = float(mod.attrs.get("eps", 1e-5))
     g = _f32(w["weight"]).reshape(1, -1, 1, 1)
     b = _f32(w["bias"]).reshape(1, -1, 1, 1)
-    mean = _f32(w["running_mean"]).reshape(1, -1, 1, 1)
-    var = _f32(w["running_var"]).reshape(1, -1, 1, 1)
+    # running_mean/var 가 GGUF 에 없으면(ConvertBNParams 로 affine 변환 후 vision.cpp 정합
+    # 위해 GGUF 에서 제외됨) 항등값 0/1 로 폴백 → weight=scale/bias=offset 만으로 x*scale+offset.
+    mean = _f32(w["running_mean"]).reshape(1, -1, 1, 1) if "running_mean" in w else 0.0
+    var = _f32(w["running_var"]).reshape(1, -1, 1, 1) if "running_var" in w else 1.0
     return (x - mean) / np.sqrt(var + eps) * g + b
 
 

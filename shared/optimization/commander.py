@@ -33,6 +33,11 @@ from shared.utils import (
 )
 from .fuse_conv_bn import ConvBnHandler
 from .fuse_embed_ln_actv import EmbedLnActvHandler
+from .fuse_conv_activation import (
+    ConvActivationHandler,
+    FUSE_ACT_PRODUCERS,
+    FUSE_ACTIVATIONS,
+)
 from shared.quantization import maybe_get_quantizer
 from shared.utils import Option
 
@@ -158,6 +163,30 @@ class OptimizeCommander(object):
                 if actv_node.merged and actv_node not in removed_nodes:
                     self._graph.remove_node(actv_node)
                     removed_nodes.add(actv_node)
+
+    def FuseConvActivation(self):
+        """Conv/Dense/Add → Activation(ReLU 등) 을 단일 fused op 으로 표시(추론 최적화).
+
+        activation 노드를 제거하고 producer 에 `fused_activation` 표식을 단다. BN fold 와 달리
+        비선형이라 가중치 흡수는 없고 **그래프 표현** 최적화다(기본 컴파일엔 미포함, opt-in).
+        반환: fuse 된 activation 노드 수.
+        """
+        handler = ConvActivationHandler()
+        graph_searcher = GraphSearcher(self._graph)
+        patterns = [
+            PatternType(pattern=[producer, actv], action=handler)
+            for producer in FUSE_ACT_PRODUCERS
+            for actv in FUSE_ACTIVATIONS
+        ]
+        node_sets = graph_searcher.find_nodes_from_type(patterns)
+        removed = set()
+        for _id, node_list in node_sets.items():
+            for nodeset in node_list:
+                actv_node = nodeset[-1]
+                if actv_node.merged and actv_node not in removed:
+                    self._graph.remove_node(actv_node)
+                    removed.add(actv_node)
+        return len(removed)
 
     def FuseBnToConv(self):
         # find fusable bathnorm node

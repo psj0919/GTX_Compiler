@@ -30,8 +30,8 @@ from shared.utils import (
     ScreenLogger,
 )
 from shared.utils import PatternType, permute_data
-from .fuse_trans_matmul import TransMatmulActvHandler
-from .fuse_trans_reduction_op import TransReductionOpActvHandler
+from shared.optimization.fuse_trans_matmul import TransMatmulActvHandler
+from shared.optimization.fuse_trans_reduction_op import TransReductionOpActvHandler
 from shared.optimization.fuse_pad import PadFuseHandler
 from shared.optimization.merge_permute_in_linear import PermuteMergeHandler
 from shared.optimization.merge_reshape import ReshapeMergeHandler

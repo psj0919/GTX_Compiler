@@ -262,7 +262,11 @@ def generate_gguf(graph, output_dir: str, model_name: str, arch_id: str,
             if not name or data is None:
                 continue
             key = name.split("::")[-1]            # "<GraphName>::layer1.0.conv1.weight" → 뒤만
-            if key.endswith("num_batches_tracked"):
+            # vision.cpp batch_norm_2d(nn.cpp:150)는 running_mean/var 가 GGUF 에 있으면 ASSERT
+            # 실패(affine weight/bias 만 기대). ConvertBNParams 가 이미 BN 을 affine(weight=scale,
+            # bias=offset, mean=0/var=1)으로 변환했으므로 running stats 는 불필요 → GGUF 에서 제외.
+            # (fold 된 BN 은 노드 자체가 없어 무관. g2c 는 ensure_bn_affine 로 변환 보장.)
+            if key.endswith(("num_batches_tracked", "running_mean", "running_var")):
                 continue
             arr = np.asarray(data)
             if arr.ndim == 4 and key.endswith(".weight"):
@@ -348,15 +352,23 @@ def append_ggml_runner(export_path: str, class_name: str, gguf_name: str,
     # 프로파일 env 는 nn(→ggml_profiler) import 전에 설정돼야 계측이 켜진다 → boot 최상단.
     prof = ""
     if profile:
-        prof = (f'_bos.environ.setdefault("GTX_PROFILE", "1")\n'
-                f'_bos.environ.setdefault("GTX_PROFILE_REPS", "{int(profile_reps)}")\n')
+        prof = (f'os.environ.setdefault("GTX_PROFILE", "1")\n'
+                f'os.environ.setdefault("GTX_PROFILE_REPS", "{int(profile_reps)}")\n')
+    # `import nn` 이 되도록 프로젝트 루트를 sys.path 에 추가한다. --output 깊이가
+    # 임의라(고정 dirname 횟수는 취약) 파일 위치에서 위로 올라가며 `nn/` 가 있는
+    # 디렉토리(=루트)를 찾는다. uv 로 패키지가 설치돼 있으면 import 는 그것으로도 되지만,
+    # 설치 안 된 채 직접 실행하는 경우까지 커버.
     boot = (
-        "import os as _bos, sys as _bsys\n"
-        "_bsys.path.insert(0, _bos.path.dirname(_bos.path.dirname("
-        "_bos.path.abspath(__file__))))\n"
-        + prof
+        "import os, sys\n"
+        + prof +
+        "root = os.path.dirname(os.path.abspath(__file__))\n"
+        "while root != os.path.dirname(root) and not os.path.isdir("
+        "os.path.join(root, 'nn')):\n"
+        "    root = os.path.dirname(root)\n"
+        "if root not in sys.path:\n"
+        "    sys.path.insert(0, root)\n"
     )
-    if "_bsys.path.insert" not in src:
+    if "sys.path.insert(0, root)" not in src:
         src = src.replace("import nn\n", boot + "import nn\n", 1)
 
     shape = ", ".join(str(int(s)) for s in input_shape)
@@ -364,20 +376,20 @@ def append_ggml_runner(export_path: str, class_name: str, gguf_name: str,
 
 {marker}
 if __name__ == "__main__":
-    import os as _os
-    import numpy as _np
-    import nn as _nn
+    import os
+    import numpy as np
+    import nn
 
-    _nn.set_backend("ggml")
-    _here = _os.path.dirname(_os.path.abspath(__file__))
-    _gguf = _os.path.join(_here, "{gguf_name}")
-    _x = _np.random.randn({shape}).astype("float32")
-    _reps = int(_os.environ.get("GTX_PROFILE_REPS", "1") or "1")   # 프로파일 N회 반복
-    for _r in range(max(1, _reps)):
-        _out = _nn.run_gguf({class_name}(), _gguf, __file__, _x)
-    _main = _out[0] if isinstance(_out, (list, tuple)) else _out
-    _main = _np.asarray(_main)
-    print("[ggml] output:", _main.shape)
+    nn.set_backend("ggml")
+    here = os.path.dirname(os.path.abspath(__file__))
+    gguf_path = os.path.join(here, "{gguf_name}")
+    x = np.random.randn({shape}).astype("float32")
+    reps = int(os.environ.get("GTX_PROFILE_REPS", "1") or "1")   # 프로파일 N회 반복
+    for r in range(max(1, reps)):
+        out = nn.run_gguf({class_name}(), gguf_path, __file__, x)
+    main = out[0] if isinstance(out, (list, tuple)) else out
+    main = np.asarray(main)
+    print("[ggml] output:", main.shape)
 '''
     if not src.endswith("\n"):
         src += "\n"
@@ -689,11 +701,56 @@ def apply_dev_graph_opts(graph, report=None):
         return graph
 
 
+def _convert_bn_affine(graph, report=None):
+    """BN op 을 vision.cpp `batch_norm_2d`(affine mul+add) 형태로 변환(fold 없이).
+
+    `ConvertBNParams` 로 running_mean/var 를 weight/bias affine 에 흡수해 제거한다. BN 노드는
+    **그래프에 남지만**(nn.cpp:150 batch_norm_2d 가 처리) running stats 가 없어 GGUF/ASSERT
+    정합. fold(BN→conv 흡수)와 달리 노드 토폴로지는 유지 — g2c 가 레벨 무관 항상 적용해야
+    --Opt 0/2 에서도 유효한 GGUF 를 쓴다."""
+    try:
+        from shared.optimization.commander import OptimizeCommander
+        before = _node_snapshot(graph)
+        OptimizeCommander(graph=graph).ConvertBNParams()
+        if report is not None:
+            after = _node_snapshot(graph)
+            report.append(_pass_record("bn_affine", before, after,
+                                       _pass_changes(before, after, "bn_affine")))
+    except Exception as e:
+        print(f"[opt] BN affine 변환 생략 ({type(e).__name__}: {e})", flush=True)
+    return graph
+
+
+def apply_graph_opts(graph, level=0, report=None, ensure_bn_affine=False):
+    """--Opt 레벨별 그래프 최적화 — g2c(compile_model)·graph_visualizer 공유.
+
+      0: 없음 (raw 파싱 그래프)
+      1: Memory 최적화 — DevGraphOptimizer (topology-only 안전 패스, apply_dev_graph_opts)
+      2: OP 최적화   — OptimizeCommander (`FuseBnToConv` + `ConvertBNParams`, BN→conv 흡수)
+      3: 1 + 2
+
+    ensure_bn_affine=True (g2c 컴파일): 레벨과 무관하게 BN 을 vision.cpp affine 형태로 변환
+      (`_convert_bn_affine`) → --Opt 0/1 에서도 running stats 없는 유효 GGUF. 시각화(False)는
+      level 0 을 진짜 raw(BN+running stats 그대로)로 둔다.
+    const-fold 와 act-fuse(`--fuse-activation`)는 여기 미포함 — caller 별 opt-in.
+    반환: 최적화된 graph(dev-opts 는 clone 반환).
+    """
+    if level in (2, 3):
+        fold_conv_bn_graph(graph, report=report)      # FuseBnToConv + ConvertBNParams
+    elif ensure_bn_affine:
+        _convert_bn_affine(graph, report=report)      # ConvertBNParams 만 (fold 없이)
+    if level in (1, 3):
+        graph = apply_dev_graph_opts(graph, report=report)
+    return graph
+
+
 def compile_model(model, name: str, input_shape, output_dir: str, quant=None,
-                  profile=False, profile_reps=1):
+                  profile=False, profile_reps=1, opt_level=0):
     """모델을 vision.cpp(ggml) arch C++ + GGUF 로 컴파일한다.
 
     profile: True 면 생성 runner 에 런타임 프로파일(GTX_PROFILE)을 baking.
+    opt_level: --Opt (0 없음/1 Memory최적화/2 OP최적화/3 둘다). g2c 는 레벨과 무관하게
+      BN affine 변환·const-fold(컴파일 필수)를 항상 적용하고 그 위에 레벨 최적화를 얹는다.
     반환: 생성 파일 dict (source/header/weights_manifest) 또는 None(파싱 실패).
     """
     import traceback
@@ -708,12 +765,13 @@ def compile_model(model, name: str, input_shape, output_dir: str, quant=None,
 
     graph = None
     try:
-        print("[g2c] Parsing graph (TorchParser)...", flush=True)
+        print("[g2c] Parsing graph...", flush=True)
         graph = TorchParser()(name, model, StandardInputData((inputs,), {}))
         opt_report = []             # 그래프 최적화 pass 별 변경 노드 로그(PDF p5)
         init_ops = len(list(getattr(graph, "nodes", [])))
-        fold_conv_bn_graph(graph, report=opt_report)   # vision.cpp 정합: BN 을 conv 로 흡수
-        graph = apply_dev_graph_opts(graph, report=opt_report)   # topology-only 안전 패스
+        # 공용 최적화(--Opt 레벨). g2c 는 BN affine 변환을 항상(ensure_bn_affine) → GGUF 정합.
+        graph = apply_graph_opts(graph, level=opt_level, report=opt_report,
+                                 ensure_bn_affine=True)
         print(f"[g2c] Graph nodes: {len(list(getattr(graph, 'nodes', [])))}", flush=True)
 
         from qproc.export import get_script_writer
@@ -750,6 +808,14 @@ def compile_model(model, name: str, input_shape, output_dir: str, quant=None,
     _render_graph_opt_report(opt_report, init_ops, cur_ops - len(skip))
     _render_dispatch_table(graph, skip, quant_plan)
     _render_compile_summary(graph, skip, init_ops)
+
+    # Conv+Activation fuse(--Opt 2/3, OP 최적화)는 **export(.py) 이후** 적용 → 생성 .py 는 relu 노드를
+    # 유지(eager 검증 무손상), .cpp codegen 은 fused 마커에서 활성화를 emit(수치 동일).
+    if opt_level in (2, 3):
+        from shared.optimization.commander import OptimizeCommander
+        n_act = OptimizeCommander(graph=graph).FuseConvActivation()
+        if n_act:
+            print(f"[g2c] Conv+Activation fuse — {n_act} activation 흡수(codegen emit)", flush=True)
 
     print("[g2c] Generating visp/ggml arch C++...", flush=True)
     files = generate_ggml_code(graph, output_dir, name, quant_plan=quant_plan,
@@ -813,6 +879,12 @@ def main(argv=None):
         "--profile-reps", type=int, default=None, metavar="N",
         help="프로파일 반복 횟수 N (1회차 warmup 제외 avg/max/min). 지정 시 --profile 자동 on. 기본 1.",
     )
+    ap.add_argument(
+        "--Opt", type=int, default=3, choices=[0, 1, 2, 3],
+        help="그래프 최적화 수준. 0: 없음 / 1: Memory 최적화(DevGraphOptimizer: topology-only) / "
+             "2: OP 최적화(OptimizeCommander: Conv-BN fold) / 3: 1+2. "
+             "g2c 는 레벨과 무관하게 BN affine 변환·const-fold(컴파일 필수)를 항상 적용.",
+    )
     args = ap.parse_args(argv)
 
     shape = None
@@ -826,7 +898,8 @@ def main(argv=None):
 
     profile_on = args.profile or (args.profile_reps is not None)
     compile_model(model, name, shape, args.output, quant=args.quantize,
-                  profile=profile_on, profile_reps=args.profile_reps or 1)
+                  profile=profile_on, profile_reps=args.profile_reps or 1,
+                  opt_level=args.Opt)
     print("=" * 60)
     print("완료!", flush=True)
 

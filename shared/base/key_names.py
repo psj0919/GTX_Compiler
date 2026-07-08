@@ -313,6 +313,10 @@ class OP(object):
     SHAPE = "shape"
     SHAPE_AS_TENSOR = "shape_as_tensor"
     SIGMOID = "sigmoid"
+    # ponytail: silu 는 op_dispatcher 에 미등록 → raw aten op.type 그대로. yolo 등은 inplace
+    #   변형("aten::silu_")을 씀. 값을 정규화("silu")하려면 dispatcher+render 정합 필요(회귀
+    #   위험) → Conv+Act fuse 매칭용으로 실제 op.type 를 그대로 상수화. 비-inplace silu 필요 시 확장.
+    SILU = "aten::silu_"
     SIMPLE_RNN = "simple_rnn"
     SLICE = "slice"
     SLICE_TENSOR_INPLACE_COPY = "slice_tensor_inplace_copy"

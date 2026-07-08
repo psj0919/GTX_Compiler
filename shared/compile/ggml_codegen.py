@@ -27,6 +27,13 @@ import os
 from shared.compile.render_api import RENDERERS, RenderContext, op_value, out_shape
 
 
+class _FusedActNode:
+    """ctx.attr(node, ...) 호환 래퍼 — fused activation op 의 attr(leaky slope/clamp min·max) 조회용."""
+
+    def __init__(self, op):
+        self.op = op
+
+
 class VispCodeGenerator:
     def __init__(self, graph, output_dir, model_name="model", arch=None, quant_plan=None,
                  baked=None, skip=None):
@@ -160,6 +167,12 @@ class VispCodeGenerator:
                 continue
 
             res = render(node, ctx)
+            # Conv+Activation fuse(--Opt≥1): producer 에 흡수된 활성화를 여기서 emit
+            # (FuseConvActivation 이 relu 노드를 제거 → 마커로 재현, ggml 은 conv 다음 relu 라 동일).
+            act_op = getattr(node, "fused_activation", None)
+            if res is not None and act_op is not None:
+                res = self._emit_fused_act(ctx, act_op, res)
+                ctx.bind(node, res)      # 하류가 활성화 적용된 출력을 쓰게 재바인딩
             if res is not None:
                 last_var = res
                 _tap(_idx, res)
@@ -171,6 +184,40 @@ class VispCodeGenerator:
         if dense_out and dense_var is not None:
             last_var = dense_var
         return last_var
+
+    # ------------------------------------------------------- fused activation
+    def _emit_fused_act(self, ctx, act_op, var):
+        """producer 에 흡수된 활성화 op 을 var 에 적용해 ggml 로 emit.
+
+        nn/modules 의 활성화 render 와 **동일한 ggml 매핑**(relu→ggml_relu, relu6/clamp→
+        ggml_clamp, leaky_relu→ggml_leaky_relu(slope) 등) → fused 여도 unfused 와 수치 동일.
+        미지원 활성화는 그대로 통과(안전)."""
+        t = str(getattr(act_op, "type", "")).lower()
+        n = _FusedActNode(act_op)
+        if t == "relu":
+            expr = f"ggml_relu(m, {var})"
+        elif t == "relu6":
+            expr = f"ggml_clamp(m, {var}, 0.0f, 6.0f)"
+        elif t == "sigmoid":
+            expr = f"ggml_sigmoid(m, {var})"
+        elif t == "gelu":
+            expr = f"ggml_gelu(m, {var})"
+        elif t == "tanh":
+            expr = f"ggml_tanh(m, {var})"
+        elif t in ("aten::silu_", "aten::silu", "silu"):
+            expr = f"ggml_silu(m, {var})"
+        elif t == "leaky_relu":
+            slope = ctx.attr(n, "negative_slope", 0.01)
+            expr = f"ggml_leaky_relu(m, {var}, {float(slope)}f, false)"
+        elif t == "clamp":
+            lo = ctx.attr(n, "min", 0.0)
+            hi = ctx.attr(n, "max", 6.0)
+            expr = f"ggml_clamp(m, {var}, {float(lo)}f, {float(hi)}f)"
+        else:
+            return var
+        v2 = ctx.new_var("act")
+        ctx.line(f"    tensor {v2} = {expr};")
+        return v2
 
     # --------------------------------------------------------------- emitters
     # 양자(quantized) conv 커널을 소비하는 헬퍼. vision.cpp 의 conv_2d 는 WHCN 에서
