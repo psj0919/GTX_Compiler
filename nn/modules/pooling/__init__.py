@@ -1,6 +1,7 @@
 from .maxpool import *
 from .maxpool1d import *
 from .avgpool import *
+from .avgpool1d import *
 from .adaptive_avg_pool import *
 from .interpolate import *
 from .quant import *

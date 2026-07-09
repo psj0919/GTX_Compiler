@@ -25,6 +25,7 @@ from shared.utils import Option
 from .maxpool import MaxPool2d
 from .maxpool1d import MaxPool1d
 from .avgpool import AvgPool2d
+from .avgpool1d import AvgPool1d
 from .adaptive_avg_pool import AdaptiveAvgPool2d
 from .interpolate import Interpolate
 
@@ -32,6 +33,7 @@ __all__ = [
     "maxPool2d",
     "maxPool1d",
     "avgPool2d",
+    "avgPool1d",
     "adaptiveAvgPool2d",
     "interpolate",
 ]
@@ -59,6 +61,14 @@ def avgPool2d(*args, **kwargs):
     if quant_mode is None or Option.quant_off.value:
         return torch.nn.AvgPool2d(*args, **kwargs)
     return AvgPool2d(*args, **kwargs)
+
+
+@py_utils.register_quant_op
+def avgPool1d(*args, **kwargs):
+    quant_mode, _ = maybe_get_quantizer()
+    if quant_mode is None or Option.quant_off.value:
+        return torch.nn.AvgPool1d(*args, **kwargs)
+    return AvgPool1d(*args, **kwargs)
 
 
 @py_utils.register_quant_op

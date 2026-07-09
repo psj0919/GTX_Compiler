@@ -85,14 +85,18 @@ def emitted_builders(roots=None):
     import re
 
     here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    # render 는 카테고리 서브폴더(activations/render.py, math/render.py 등)에 있으므로
+    # 재귀(**)로 스캔한다. deprecated/ 는 inert(활성 경로에서 import 안 함)이라 제외.
     roots = roots or [
-        os.path.join(here, "nn", "modules", "*.py"),
-        os.path.join(here, "shared", "compile", "*.py"),
+        os.path.join(here, "nn", "modules", "**", "*.py"),
+        os.path.join(here, "shared", "compile", "**", "*.py"),
     ]
     out = set()
     for pat in roots:
-        for f in glob.glob(pat):
+        for f in glob.glob(pat, recursive=True):
             if os.path.basename(f) == "ggml_ops.py":
+                continue
+            if "deprecated" in f.replace("\\", "/").split("/"):
                 continue
             try:
                 txt = open(f, encoding="utf-8").read()

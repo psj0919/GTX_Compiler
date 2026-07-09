@@ -94,3 +94,28 @@ def render_prelu(node, ctx):
         " /* TODO(ggml): PReLU per-channel slope → scalar 근사 */",
         hint="prelu",
     )
+
+
+# --- vision_ops_render.py / head_render.py 에서 흡수한 활성화 render ---
+@register_render(OP.SILU, "aten::silu_", "aten::silu")   # OP.SILU="silu"; aten 키는 미정규화 폴백
+def render_silu(node, ctx):
+    # inplace 는 op config(dispatcher 가 set) 우선, 없으면 aten op.type 접미사("_") 폴백.
+    inplace = getattr(node.op, "inplace", None)
+    if inplace is None:
+        inplace = str(node.op.type).rstrip().endswith("_")
+    fn = "ggml_silu_inplace" if inplace else "ggml_silu"
+    return ctx.out(node, f"{fn}(m, {ctx.inp(node)})", hint="silu")
+
+
+def _unary(op, fn, hint):
+    @register_render(op)
+    def _r(node, ctx, _fn=fn, _h=hint):
+        return ctx.out(node, f"{_fn}(m, {ctx.inp(node)})", hint=_h)
+    return _r
+
+
+render_elu = _unary(OP.ELU, "ggml_elu", "elu")
+render_softplus = _unary(OP.SOFTPLUS, "ggml_softplus", "softplus")
+render_hsigmoid = _unary(OP.HSIGMOID, "ggml_hardsigmoid", "hsig")
+render_hswish = _unary(OP.HSWISH, "ggml_hardswish", "hsw")
+render_xielu = _unary(OP.XIELU, "ggml_xielu", "xielu")

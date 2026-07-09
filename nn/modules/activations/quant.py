@@ -26,6 +26,9 @@ from .relu import ReLU
 from .gelu import GELU
 from .sigmoid import Sigmoid
 from .tanh import Tanh
+from .silu import SiLU
+from .elu import ELU
+from .softplus import Softplus
 from .leaky_relu import LeakyReLU
 from .prelu import PReLU
 from .hardsigmoid import Hardsigmoid
@@ -39,6 +42,9 @@ __all__ = [
     "gelu",
     "sigmoid",
     "tanh",
+    "silu",
+    "elu",
+    "softplus",
     "leakyReLU",
     "prelu",
     "hardsigmoid",
@@ -79,6 +85,30 @@ def tanh(*args, **kwargs):
     if quant_mode == None:
         return torch.nn.Tanh(*args, **kwargs)
     return Tanh(*args, **kwargs)
+
+
+@py_utils.register_quant_op
+def silu(*args, **kwargs):
+    quant_mode, _ = maybe_get_quantizer()
+    if quant_mode == None:
+        return torch.nn.SiLU(*args, **kwargs)
+    return SiLU(*args, **kwargs)
+
+
+@py_utils.register_quant_op
+def elu(*args, **kwargs):
+    quant_mode, _ = maybe_get_quantizer()
+    if quant_mode == None:
+        return torch.nn.ELU(*args, **kwargs)
+    return ELU(*args, **kwargs)
+
+
+@py_utils.register_quant_op
+def softplus(*args, **kwargs):
+    quant_mode, _ = maybe_get_quantizer()
+    if quant_mode == None:
+        return torch.nn.Softplus(*args, **kwargs)
+    return Softplus(*args, **kwargs)
 
 
 @py_utils.register_quant_op

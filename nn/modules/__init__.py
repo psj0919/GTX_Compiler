@@ -16,8 +16,9 @@ from .normalize import *
 from .correlation1d import *
 from .correlation2d import *
 from .cost_volume import *
-from .head_render import *
-from .vision_ops_render import *
+from .math import *
+from .shape import *
+from .indexing import *
 from .lstm_render import *
 from .gru_render import *
 

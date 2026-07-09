@@ -87,3 +87,18 @@ def render_interpolate(node, ctx):
         f" /* TODO(ggml): verify ggml_upscale signature for this build */{note}",
         hint="up",
     )
+
+
+# --- vision_ops_render.py 에서 흡수한 1D pooling render ---
+def _pool1d(op, kind):
+    @register_render(op)
+    def _r(node, ctx, _k=kind):
+        k = ctx.scalar(ctx.attr(node, "kernel_size", [2]))
+        s = ctx.scalar(ctx.attr(node, "stride", [k]))
+        p = ctx.scalar(ctx.attr(node, "padding", [0]))
+        return ctx.out(node, f"ggml_pool_1d(m, {ctx.inp(node)}, {_k}, {k}, {s}, {p})", hint="pool1d")
+    return _r
+
+
+render_maxpool1d = _pool1d(OP.MAX_POOL1D, "GGML_OP_POOL_MAX")
+render_avgpool1d = _pool1d(OP.AVG_POOL1D, "GGML_OP_POOL_AVG")

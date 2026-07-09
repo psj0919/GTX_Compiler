@@ -128,3 +128,47 @@ def render_mean(node, ctx):
                 return ctx.out(node, f"ggml_cont(m, {g})", hint="gap")
             return ctx.out(node, f"ggml_reshape_2d(m, ggml_cont(m, {g}), {C}, {B})", hint="gap")
     return ctx.out(node, f"ggml_mean(m, {a})", hint="mean")
+
+
+# --- vision_ops_render.py / head_render.py 에서 흡수한 conv 계열 render ---
+@register_render(OP.DEPTHWISE_CONV2D)
+def render_dwconv(node, ctx):
+    has_bias = bool(ctx.attr(node, "bias", False))
+    key = ctx.weight(node, ["weight"] + (["bias"] if has_bias else []))
+    s = ctx.scalar(ctx.attr(node, "stride", [1, 1]))
+    p = ctx.scalar(ctx.attr(node, "padding", [0, 0]))
+    return ctx.out(node, f"conv_2d_depthwise({key}, {ctx.inp(node)}, {s}, {p})", hint="dwconv")
+
+
+@register_render(OP.CONV3D)
+def render_conv3d(node, ctx):
+    has_bias = bool(ctx.attr(node, "bias", False))
+    key = ctx.weight(node, ["weight"] + (["bias"] if has_bias else []))
+    s = ctx.scalar(ctx.attr(node, "stride", [1, 1, 1]))
+    p = ctx.scalar(ctx.attr(node, "padding", [0, 0, 0]))
+    d = ctx.scalar(ctx.attr(node, "dilation", [1, 1, 1]))
+    return ctx.out(
+        node,
+        f"ggml_conv_3d(m, {key}, {ctx.inp(node)}, {s}, {s}, {s}, {p}, {p}, {p}, {d}, {d}, {d})"
+        " /* TODO(ggml): conv_3d 인자 시그니처 확인 */",
+        hint="conv3d",
+    )
+
+
+def _conv_transpose(op, builder):
+    @register_render(op)
+    def _r(node, ctx, _b=builder):
+        has_bias = bool(ctx.attr(node, "bias", False))
+        key = ctx.weight(node, ["weight"] + (["bias"] if has_bias else []))
+        s = ctx.scalar(ctx.attr(node, "stride", [1]))
+        return ctx.out(
+            node,
+            f"{_b}(m, {key}, {ctx.inp(node)}, {s})"
+            " /* TODO(ggml): conv_transpose 인자(stride/pad) 확인 */",
+            hint="convT",
+        )
+    return _r
+
+
+render_convT1d = _conv_transpose(OP.CONVTRANSPOSE1D, "ggml_conv_transpose_1d")
+render_convT2d = _conv_transpose(OP.CONVTRANSPOSE2D, "ggml_conv_transpose_2d_p0")
