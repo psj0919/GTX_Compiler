@@ -8,8 +8,9 @@ op 별 **latency + 메모리(activation/weight/peak) + Time Share%** 를 계측�
     GTX_PROFILE_REPS=20  ...                          # N회 반복(1회차 warmup 제외) avg/max/min
     GTX_PROFILE_OUT=dir  ...                          # 출력 디렉토리(기본: 모델 .py 옆)
 
-출력(3-3): 콘솔 표 + CSV + JSON + Perfetto(Chrome trace) JSON. GTX 는 전면 NPU/fp16
-구동이라 메모리는 원소수×2바이트(fp16)로 산출, Target=NPU(GTX).
+출력(3-3): 콘솔 표 + CSV + JSON + Perfetto(Chrome trace) JSON. 현재 실행 backend 는
+ggml CPU(libggml.so) → Target=CPU(ggml). NPU 는 목표 아키텍처. 메모리는 fp16 가정
+(원소수×2바이트).
 """
 import atexit
 import os
@@ -151,7 +152,7 @@ def _print_console(rows, tot):
         share = (100.0 * r["ms_avg"] / tot["ms"]) if tot["ms"] else 0.0
         peak = tot["weight"] + r["act"]
         table.add_row(
-            str(r["idx"]), r["op"][:17], "[green]NPU(GTX)[/]", "[cyan]FP16[/]",
+            str(r["idx"]), r["op"][:17], "[green]CPU (ggml)[/]", "[cyan]FP16[/]",
             f"{r['ms_avg']:.3f}", _share_cell(share), _kb(r["act"]), _kb(peak))
     _console.print(table)
     summary = Table(box=box.MINIMAL, show_header=False, show_edge=False, pad_edge=False)
@@ -173,7 +174,7 @@ def _write_csv(path, rows, tot):
                     "lat_ms_min", "share_pct", "activation_bytes", "peak_bytes"])
         for r in rows:
             share = (100.0 * r["ms_avg"] / tot["ms"]) if tot["ms"] else 0.0
-            w.writerow([r["idx"], r["op"], "NPU(GTX)", "FP16",
+            w.writerow([r["idx"], r["op"], "CPU(ggml)", "FP16",
                         f"{r['ms_avg']:.6f}", f"{r['ms_max']:.6f}", f"{r['ms_min']:.6f}",
                         f"{share:.3f}", r["act"], tot["weight"] + r["act"]])
 
@@ -183,7 +184,7 @@ def _write_json(path, rows, tot):
     data = {"summary": {"total_ms": tot["ms"], "weight_bytes": tot["weight"],
                         "peak_bytes": tot["peak"], "reps": tot["reps"],
                         "warmup": tot["warmup"], "n_ops": len(rows)},
-            "ops": [{"idx": r["idx"], "op": r["op"], "target": "NPU(GTX)", "dtype": "FP16",
+            "ops": [{"idx": r["idx"], "op": r["op"], "target": "CPU(ggml)", "dtype": "FP16",
                      "lat_ms": {"avg": r["ms_avg"], "max": r["ms_max"], "min": r["ms_min"]},
                      "share_pct": (100.0 * r["ms_avg"] / tot["ms"]) if tot["ms"] else 0.0,
                      "activation_bytes": r["act"], "weight_bytes": r["weight"],
@@ -196,7 +197,7 @@ def _write_perfetto(path, rows, tot):
     """Chrome trace 포맷(perfetto.dev): op Duration(ph=X) + Peak Memory Counter(ph=C)."""
     import json
     ev = [
-        {"name": "process_name", "ph": "M", "pid": 0, "args": {"name": "GTX NPU"}},
+        {"name": "process_name", "ph": "M", "pid": 0, "args": {"name": "ggml (CPU)"}},
         {"name": "thread_name", "ph": "M", "pid": 0, "tid": 0, "args": {"name": "op"}},
     ]
     ts = 0.0   # µs, 누적

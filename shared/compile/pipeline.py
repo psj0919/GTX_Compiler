@@ -571,8 +571,8 @@ def _render_graph_opt_report(report, init_ops, final_ops):
 def _render_compile_summary(graph, skip, init_ops):
     """컴파일 최종 요약 (PDF p4,p7): Ops 표 + Operator breakdown + Dispatch.
 
-    GTX Architecture 는 모든 op 을 NPU(자체 arch)에서 실행 → dispatch fallback·CAST 없음
-    (전면 fp16). 따라서 Target 은 전부 NPU(GTX), CPU 0%, cast 0.
+    현재 실행 backend 는 ggml CPU → dispatch fallback·CAST 없음(전면 fp16). 따라서
+    Target 은 전부 CPU(ggml), cast 0. (NPU 는 목표 아키텍처.)
     """
     from collections import Counter
 
@@ -604,13 +604,14 @@ def _render_compile_summary(graph, skip, init_ops):
     brk_t.add_row("[bold]TOTAL[/]", f"[bold]{final}[/]")
     _console.print(brk_t)
 
-    disp_t = Table(title="Dispatch (Target · GTX = 전면 NPU)", title_justify="left",
+    disp_t = Table(title="Dispatch (현재 backend = ggml CPU · NPU 는 목표 arch)",
+                   title_justify="left",
                    box=box.SIMPLE_HEAD, show_edge=False, pad_edge=False, header_style="bold")
     disp_t.add_column("Target")
     disp_t.add_column("Ops", justify="right")
     disp_t.add_column("Ratio", justify="right")
-    disp_t.add_row("[green]NPU (GTX)[/]", str(final), "100.0%")
-    disp_t.add_row("[dim]CPU[/]", "0", "0.0%")
+    disp_t.add_row("[green]CPU (ggml)[/]", str(final), "100.0%")
+    disp_t.add_row("[dim]NPU (목표)[/]", "0", "0.0%")
     _console.print(disp_t)
     _console.print()
 
@@ -618,9 +619,9 @@ def _render_compile_summary(graph, skip, init_ops):
 def _render_dispatch_table(graph, skip, quant_plan):
     """레이어별 DISPATCH & FALLBACK 표 (PDF p6): Layer|Op|Target|DType|Note.
 
-    GTX 는 모든 op 을 NPU(자체 arch)에서 fp16 으로 실행 → Target 전부 NPU(GTX),
-    fallback(미지원 op→CPU)·CAST 삽입 없음. DType 은 `--quantize` 시 해당 conv/linear
-    만 INT8, 그 외 FP16.
+    현재 실행 backend 는 **ggml CPU** (libggml.so CPU 커널) → Target 전부 CPU(ggml).
+    NPU 는 목표 아키텍처. fallback/CAST 삽입 없음. DType 은 `--quantize` 시 해당
+    conv/linear 만 INT8, 그 외 FP16.
     """
     from shared.compile.render_api import weight_key
 
@@ -641,10 +642,10 @@ def _render_dispatch_table(graph, skip, quant_plan):
         op = str(getattr(n.op, "type", "?"))
         int8 = weight_key(n) in quant_plan
         dtype = "[yellow]INT8[/]" if int8 else "[cyan]FP16[/]"
-        table.add_row(lyr, op[:15], "[green]NPU(GTX)[/]", dtype, "")
+        table.add_row(lyr, op[:15], "[green]CPU (ggml)[/]", dtype, "")
     _console.print(table)
-    _console.print("  [dim]범례: ! fallback(미지원 op→CPU), -- cast inserted "
-                   "— GTX 전면 NPU/fp16 이라 해당 없음[/]")
+    _console.print("  [dim]현재 backend = ggml CPU (NPU 는 목표 arch). "
+                   "fallback/CAST 삽입 없음[/]")
     _console.print()
 
 
@@ -777,12 +778,15 @@ def apply_graph_opts(graph, level=0, report=None, ensure_bn_affine=False):
 
 
 def compile_model(model, name: str, input_shape, output_dir: str, quant=None,
-                  profile=False, profile_reps=1, opt_level=0):
+                  profile=False, profile_reps=1, opt_level=0,
+                  visualize=None, visualize_fmt="svg"):
     """모델을 vision.cpp(ggml) arch C++ + GGUF 로 컴파일한다.
 
     profile: True 면 생성 runner 에 런타임 프로파일(GTX_PROFILE)을 baking.
     opt_level: --Opt (0 없음/1 Memory최적화/2 OP최적화/3 둘다). g2c 는 레벨과 무관하게
       BN affine 변환·const-fold(컴파일 필수)를 항상 적용하고 그 위에 레벨 최적화를 얹는다.
+    visualize: 경로(문자열)면 최종 컴파일 그래프를 그 경로에 DOT(+이미지)로 시각화.
+      "__auto__" 면 `<output_dir>/<name>_graph`. None 이면 생략.
     반환: 생성 파일 dict (source/header/weights_manifest) 또는 None(파싱 실패).
     """
     import traceback
@@ -849,6 +853,14 @@ def compile_model(model, name: str, input_shape, output_dir: str, quant=None,
         if n_act:
             print(f"[g2c] Conv+Activation fuse — {n_act} activation fused", flush=True)
 
+    # 그래프 시각화(--visualize): 최종 컴파일 그래프(opt·fold·act-fuse 반영)를 DOT+이미지로.
+    if visualize:
+        from shared.compile.graph_viz import visualize_graph
+        graph.viz_skip_ids = skip                 # const-fold 로 제거된 노드는 뷰에서도 제외
+        viz_out = (os.path.join(output_dir, f"{name}_graph")
+                   if visualize == "__auto__" else visualize)
+        visualize_graph(graph, viz_out, fmt=visualize_fmt)
+
     print("[g2c] Generating visp/ggml arch C++...", flush=True)
     files = generate_ggml_code(graph, output_dir, name, quant_plan=quant_plan,
                                baked=baked, skip=skip)
@@ -903,9 +915,8 @@ def main(argv=None):
     )
     ap.add_argument(
         "--profile", action="store_true",
-        help="런타임 프로파일(op 별 latency/메모리/Time Share)을 생성 .py 에 baking → "
-             "`python output/<Model>.py` 실행 시 자동 계측(콘솔+CSV/JSON/Perfetto). "
-             "런타임 env `GTX_PROFILE`/`GTX_PROFILE_REPS` 로도 on/오버라이드 가능.",
+        help="컴파일 후 생성 모델을 실행해 런타임 프로파일(op 별 latency/메모리/Time Share)을 "
+             "계측·출력(콘솔 표 + CSV/JSON/Perfetto). env `GTX_PROFILE`/`GTX_PROFILE_REPS` 로도 오버라이드.",
     )
     ap.add_argument(
         "--profile-reps", type=int, default=None, metavar="N",
@@ -916,6 +927,15 @@ def main(argv=None):
         help="그래프 최적화 수준. 0: 없음 / 1: Memory 최적화(DevGraphOptimizer: topology-only) / "
              "2: OP 최적화(OptimizeCommander: Conv-BN fold) / 3: 1+2. "
              "g2c 는 레벨과 무관하게 BN affine 변환·const-fold(컴파일 필수)를 항상 적용.",
+    )
+    ap.add_argument(
+        "--visualize", nargs="?", const="__auto__", default=None, metavar="PATH",
+        help="최종 컴파일 그래프를 graphviz DOT(+이미지)로 시각화. PATH 생략 시 "
+             "`<output>/<name>_graph`. Netron/graphviz 로 op·attr·shape 확인.",
+    )
+    ap.add_argument(
+        "--visualize-format", default="svg", choices=["png", "svg", "pdf"],
+        help="--visualize 이미지 포맷 (기본 svg).",
     )
     args = ap.parse_args(argv)
 
@@ -929,11 +949,28 @@ def main(argv=None):
     print(f"[g2c] Model: {args.model} → {model._get_name()} (name={name})", flush=True)
 
     profile_on = args.profile or (args.profile_reps is not None)
-    compile_model(model, name, shape, args.output, quant=args.quantize,
-                  profile=profile_on, profile_reps=args.profile_reps or 1,
-                  opt_level=args.Opt)
+    reps = args.profile_reps or 1
+    files = compile_model(model, name, shape, args.output, quant=args.quantize,
+                          profile=profile_on, profile_reps=reps,
+                          opt_level=args.Opt,
+                          visualize=args.visualize, visualize_fmt=args.visualize_format)
+    # --profile: 생성 모델을 실제 실행해 프로파일(콘솔+CSV/JSON/Perfetto)을 산출.
+    if profile_on and files is not None:
+        _run_profile(args.output, name, reps)
     print("=" * 60)
     print("완료!", flush=True)
+
+
+def _run_profile(output_dir, name, reps):
+    """생성된 runner 를 GTX_PROFILE 로 실행 → 프로파일 콘솔/CSV/JSON/Perfetto 산출."""
+    import subprocess
+    from utils import TorchSymbol as _TS
+
+    runner = os.path.join(output_dir, name + _TS.SCRIPT_SUFFIX)
+    env = dict(os.environ, GTX_PROFILE="1", GTX_PROFILE_REPS=str(int(reps)),
+               GTX_PROFILE_OUT=output_dir)
+    print(f"[g2c] Profiling: {runner} (reps={reps}) …", flush=True)
+    subprocess.run([sys.executable, runner], env=env, check=False)
 
 
 if __name__ == "__main__":
