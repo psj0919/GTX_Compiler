@@ -36,6 +36,21 @@ import sys
 
 import numpy as np
 import torch
+from rich import box
+from rich.console import Console
+from rich.table import Table
+
+_console = Console()
+
+# 그래프 최적화 Action → 색상 (컴파일 로그 가독성)
+_ACTION_COLOR = {
+    "REMOVED": "red", "FUSED": "cyan", "FOLDED": "yellow",
+    "CONVERTED": "magenta", "NORMALIZED": "blue",
+}
+
+
+def _action_cell(action):
+    return f"[{_ACTION_COLOR.get(action, 'white')}]{action}[/]"
 
 # 프로젝트 루트(= shared/ 의 부모의 부모)를 Python 경로에 추가 (스크립트 직접 실행 대비).
 project_root = os.path.dirname(
@@ -524,27 +539,33 @@ def _pass_record(pass_name, before, after, changes):
 
 
 def _render_graph_opt_report(report, init_ops, final_ops):
-    """Pass 별 표 렌더 (PDF p5)."""
+    """Pass 별 표 렌더 (PDF p5) — Rich 테이블."""
     if not report:
         return
     pct = (100.0 * (init_ops - final_ops) / init_ops) if init_ops else 0.0
-    print(f"\n[g2c] ═══ GRAPH OPTIMIZATION ═══  "
-          f"{init_ops} ops → {final_ops} ops (-{pct:.0f}%)", flush=True)
+    _console.rule(f"[bold cyan]GRAPH OPTIMIZATION[/]  "
+                  f"{init_ops} ops → {final_ops} ops [bold green](-{pct:.0f}%)[/]",
+                  align="left")
     for rec in report:
         d = rec["before"] - rec["after"]
         sign = f"-{d}" if d >= 0 else f"+{-d}"
-        print(f"\n  ▸ {rec['pass']:<32} "
-              f"{rec['before']} → {rec['after']} ({sign} ops)", flush=True)
+        title = (f"▸ [bold]{rec['pass']}[/]  "
+                 f"{rec['before']} → {rec['after']} [yellow]({sign} ops)[/]")
         if not rec["changes"]:
-            print("    (변경 노드 없음)", flush=True)
+            _console.print(f"  {title}   [dim](변경 노드 없음)[/]")
             continue
-        print(f"    {'Layer':<38}{'Op':<16}{'Action':<11}Note", flush=True)
-        print(f"    {'-' * 82}", flush=True)
+        table = Table(title=title, title_justify="left", box=box.SIMPLE_HEAD,
+                      show_edge=False, pad_edge=False, header_style="bold")
+        table.add_column("Layer", style="cyan", no_wrap=True, max_width=40)
+        table.add_column("Op", style="white")
+        table.add_column("Action")
+        table.add_column("Note", style="dim")
         for layer, op, action, note in rec["changes"]:
             # IR 노드명은 계층적이라 구분되는 부분이 뒤쪽 → 길면 꼬리를 남긴다.
-            lyr = layer if len(layer) <= 37 else "…" + layer[-36:]
-            print(f"    {lyr:<38}{op[:15]:<16}{action:<11}{note}", flush=True)
-    print("", flush=True)
+            lyr = layer if len(layer) <= 40 else "…" + layer[-39:]
+            table.add_row(lyr, op[:15], _action_cell(action), note)
+        _console.print(table)
+    _console.print()
 
 
 def _render_compile_summary(graph, skip, init_ops):
@@ -561,24 +582,37 @@ def _render_compile_summary(graph, skip, init_ops):
     removed = init_ops - final
     brk = Counter(str(getattr(n.op, "type", "?")) for n in emitted)
 
-    print("[g2c] ═══ COMPILE SUMMARY ═══", flush=True)
-    print(f"  {'Ops':<18}{'Original':>10}{'After opt':>12}{'After dispatch':>16}", flush=True)
-    print(f"    {'total':<16}{init_ops:>10}{final:>12}{final:>16}", flush=True)
-    print(f"    {'removed':<16}{'':>10}{('-' + str(removed)):>12}{('-' + str(removed)):>16}",
-          flush=True)
-    print(f"    {'cast inserted':<16}{'':>10}{'':>12}{0:>16}", flush=True)
+    _console.rule("[bold cyan]COMPILE SUMMARY[/]", align="left")
 
-    print("\n  Operator breakdown (final):", flush=True)
+    ops_t = Table(box=box.ROUNDED, show_edge=True, pad_edge=False, header_style="bold")
+    ops_t.add_column("Ops", style="white")
+    ops_t.add_column("Original", justify="right")
+    ops_t.add_column("After opt", justify="right", style="cyan")
+    ops_t.add_column("After dispatch", justify="right", style="green")
+    ops_t.add_row("total", str(init_ops), str(final), str(final))
+    ops_t.add_row("removed", "", f"[red]-{removed}[/]", f"[red]-{removed}[/]")
+    ops_t.add_row("cast inserted", "", "", "0")
+    _console.print(ops_t)
+
+    brk_t = Table(title="Operator breakdown (final)", title_justify="left",
+                  box=box.SIMPLE_HEAD, show_edge=False, pad_edge=False, header_style="bold")
+    brk_t.add_column("Op", style="cyan")
+    brk_t.add_column("Count", justify="right")
     for op, c in brk.most_common():
-        print(f"    {op:<24}{c:>5}", flush=True)
-    print(f"    {'-' * 29}", flush=True)
-    print(f"    {'TOTAL':<24}{final:>5}", flush=True)
+        brk_t.add_row(op, str(c))
+    brk_t.add_section()
+    brk_t.add_row("[bold]TOTAL[/]", f"[bold]{final}[/]")
+    _console.print(brk_t)
 
-    print("\n  Dispatch (Target · GTX = 전면 NPU):", flush=True)
-    print(f"    {'Target':<14}{'Ops':>6}{'Ratio':>9}", flush=True)
-    print(f"    {'NPU (GTX)':<14}{final:>6}{'100.0%':>9}", flush=True)
-    print(f"    {'CPU':<14}{0:>6}{'0.0%':>9}", flush=True)
-    print("", flush=True)
+    disp_t = Table(title="Dispatch (Target · GTX = 전면 NPU)", title_justify="left",
+                   box=box.SIMPLE_HEAD, show_edge=False, pad_edge=False, header_style="bold")
+    disp_t.add_column("Target")
+    disp_t.add_column("Ops", justify="right")
+    disp_t.add_column("Ratio", justify="right")
+    disp_t.add_row("[green]NPU (GTX)[/]", str(final), "100.0%")
+    disp_t.add_row("[dim]CPU[/]", "0", "0.0%")
+    _console.print(disp_t)
+    _console.print()
 
 
 def _render_dispatch_table(graph, skip, quant_plan):
@@ -594,18 +628,24 @@ def _render_dispatch_table(graph, skip, quant_plan):
     quant_plan = quant_plan or {}
     emitted = [n for n in graph.nodes if id(n) not in skip]
 
-    print("[g2c] ═══ DISPATCH & FALLBACK ═══", flush=True)
-    print(f"  {'Layer':<38}{'Op':<16}{'Target':<11}{'DType':<7}Note", flush=True)
-    print(f"  {'-' * 78}", flush=True)
+    _console.rule("[bold cyan]DISPATCH & FALLBACK[/]", align="left")
+    table = Table(box=box.SIMPLE_HEAD, show_edge=False, pad_edge=False, header_style="bold")
+    table.add_column("Layer", style="cyan", no_wrap=True, max_width=40)
+    table.add_column("Op", style="white")
+    table.add_column("Target")
+    table.add_column("DType")
+    table.add_column("Note", style="dim")
     for n in emitted:
         name = getattr(n, "name", "?") or "?"
-        lyr = name if len(name) <= 37 else "…" + name[-36:]
+        lyr = name if len(name) <= 40 else "…" + name[-39:]
         op = str(getattr(n.op, "type", "?"))
-        dtype = "INT8" if weight_key(n) in quant_plan else "FP16"
-        print(f"  {lyr:<38}{op[:15]:<16}{'NPU(GTX)':<11}{dtype:<7}", flush=True)
-    print("  범례: ! fallback(미지원 op→CPU), -- cast inserted "
-          "— GTX 전면 NPU/fp16 이라 해당 없음", flush=True)
-    print("", flush=True)
+        int8 = weight_key(n) in quant_plan
+        dtype = "[yellow]INT8[/]" if int8 else "[cyan]FP16[/]"
+        table.add_row(lyr, op[:15], "[green]NPU(GTX)[/]", dtype, "")
+    _console.print(table)
+    _console.print("  [dim]범례: ! fallback(미지원 op→CPU), -- cast inserted "
+                   "— GTX 전면 NPU/fp16 이라 해당 없음[/]")
+    _console.print()
 
 
 # --------------------------------------------------------------------------

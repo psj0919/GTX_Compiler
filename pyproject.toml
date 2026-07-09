@@ -10,6 +10,7 @@ dependencies = [
     "tqdm",
     "ultralytics",
     "networkx",            # shared/inspector SubgraphMatcher (fused op 패턴 매칭)
+    "rich>=15.0.0",
 ]
 
 [project.scripts]

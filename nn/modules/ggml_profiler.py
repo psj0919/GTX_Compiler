@@ -15,8 +15,13 @@ import atexit
 import os
 import sys
 import time
-
+# Rich 라이브러리로 콘솔에 컬러 출력 및 테이블 형식으로 프로파일 결과를 표시한다.
 import numpy as np
+from rich import box
+from rich.console import Console
+from rich.table import Table
+
+_console = Console()
 
 _FP16_BYTES = 2   # GTX 전면 fp16 → 텐서 메모리 = 원소수 × 2
 
@@ -122,22 +127,42 @@ def _out_base():
     return os.path.join(d or os.path.dirname(os.path.abspath(argv0)) or ".", stem + ".profile")
 
 
+def _share_cell(share):
+    """Time Share% 를 색상 막대와 함께 표시 (병목 op 강조)."""
+    color = "red" if share >= 25 else "yellow" if share >= 10 else "green"
+    bars = int(round(share / 10.0))   # 10%당 블록 1개(최대 10)
+    bar = "█" * bars
+    return f"[{color}]{share:5.1f}%[/] [{color}]{bar}[/]"
+
+
 def _print_console(rows, tot):
-    print("\n[GTX] ═══ RUNTIME PROFILE ═══  "
-          f"(reps={tot['reps']}, warmup={tot['warmup']})", flush=True)
-    print(f"  {'Idx':<4}{'Op':<18}{'Target':<10}{'DType':<6}"
-          f"{'Lat(ms)':>9}{'Share':>8}{'Activation':>12}{'Peak':>12}", flush=True)
-    print(f"  {'-' * 79}", flush=True)
+    _console.rule(f"[bold cyan]GTX RUNTIME PROFILE[/]  "
+                  f"[dim](reps={tot['reps']}, warmup={tot['warmup']})[/]", align="left")
+    table = Table(box=box.SIMPLE_HEAD, show_edge=False, pad_edge=False, header_style="bold")
+    table.add_column("Idx", justify="right", style="dim")
+    table.add_column("Op", style="cyan", no_wrap=True)
+    table.add_column("Target")
+    table.add_column("DType")
+    table.add_column("Lat(ms)", justify="right")
+    table.add_column("Share", justify="left", no_wrap=True)
+    table.add_column("Activation", justify="right")
+    table.add_column("Peak", justify="right")
     for r in rows:
         share = (100.0 * r["ms_avg"] / tot["ms"]) if tot["ms"] else 0.0
         peak = tot["weight"] + r["act"]
-        print(f"  {r['idx']:<4}{r['op'][:17]:<18}{'NPU(GTX)':<10}{'FP16':<6}"
-              f"{r['ms_avg']:>9.3f}{share:>7.1f}%{_kb(r['act']):>12}{_kb(peak):>12}", flush=True)
-    print(f"  {'-' * 79}", flush=True)
-    print(f"  TOTAL INFERENCE TIME : {tot['ms']:.3f} ms  ({len(rows)} ops)", flush=True)
-    print(f"  WEIGHT MEMORY        : {_kb(tot['weight'])}", flush=True)
-    print(f"  GLOBAL PEAK MEMORY   : {_kb(tot['peak'])}", flush=True)
-    print("  (Scratch: ggml 내부 mem-pool 비노출 → 생략. Activation=입력+출력 fp16.)", flush=True)
+        table.add_row(
+            str(r["idx"]), r["op"][:17], "[green]NPU(GTX)[/]", "[cyan]FP16[/]",
+            f"{r['ms_avg']:.3f}", _share_cell(share), _kb(r["act"]), _kb(peak))
+    _console.print(table)
+    summary = Table(box=box.MINIMAL, show_header=False, show_edge=False, pad_edge=False)
+    summary.add_column(style="bold")
+    summary.add_column(justify="right")
+    summary.add_row("TOTAL INFERENCE TIME", f"[bold]{tot['ms']:.3f} ms[/]  ({len(rows)} ops)")
+    summary.add_row("WEIGHT MEMORY", _kb(tot["weight"]))
+    summary.add_row("GLOBAL PEAK MEMORY", f"[bold]{_kb(tot['peak'])}[/]")
+    _console.print(summary)
+    _console.print("  [dim](Scratch: ggml 내부 mem-pool 비노출 → 생략. "
+                   "Activation=입력+출력 fp16.)[/]")
 
 
 def _write_csv(path, rows, tot):
