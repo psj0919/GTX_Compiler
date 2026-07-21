@@ -362,6 +362,19 @@ class OP(object):
     EXPM1 = "expm1"
     TRUNC = "trunc"
     XIELU = "xielu"
+    POW = "pow"
+    ROLL = "roll"
+    LINSPACE = "linspace"
+    FULL = "full"          # zeros/new_ones/fill_ 공용 상수텐서 (fill_value config)
+    # 비교/선택 — ggml 에 단일 커널이 없어 render 가 step/mul/add 로 합성한다.
+    # 결과 마스크는 0.0/1.0 f32 (bool 타입이 없음).
+    GREATER = "greater"
+    LOGICAL_OR = "logical_or"
+    WHERE = "where"
+    MASKED_FILL = "masked_fill"
+    SCALAR_GREATER_THAN = "scalar_gt"
+    SCALAR_NOT_EQUAL = "scalar_ne"
+    DEFORM_CONV2D = "deform_conv2d"
     ARGSORT = "argsort"
     SUM_ROWS = "sum_rows"
     CUMSUM = "cumsum"

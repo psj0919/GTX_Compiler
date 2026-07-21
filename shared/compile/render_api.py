@@ -115,12 +115,19 @@ def attr(node, key, default=None):
     try:
         items = list(attrs.items())
     except AttributeError:
-        return default
+        items = []
     for k, v in items:
         kname = getattr(k, "value", k)  # AttrName.STRIDE -> 'stride'
         if kname in aliases or k in aliases:
             val = getattr(v, "value", v)  # IrAttr -> 실제 값
-            return default if val is None else val
+            if val is not None:
+                return val
+    # AttrName 을 선언하지 않은 plain Operation(clamp/arange/full/roll…)은 파라미터가
+    # attrs 가 아니라 op.configs(=set_config 로 심은 인스턴스 속성)로만 실린다.
+    for name in aliases:
+        val = getattr(node.op, name, None)
+        if val is not None:
+            return val
     return default
 
 

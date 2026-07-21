@@ -40,6 +40,27 @@ def render_conv(node, ctx):
     return ctx.out(node, f"conv_2d({key}, {ctx.inp(node)}, {s}, {p})")
 
 
+@register_render(OP.DEFORM_CONV2D)
+def render_deform_conv(node, ctx):
+    # in_tensors 는 torchvision 스키마 순서 [input, weight, offset, mask, bias].
+    has_bias = bool(ctx.attr(node, "bias", False))
+    key = ctx.weight(node, ["weight"] + (["bias"] if has_bias else []))
+    s = ctx.scalar(ctx.attr(node, "stride", [1, 1]))
+    p = ctx.scalar(ctx.attr(node, "padding", [0, 0]))
+    mask = ctx.inp(node, 3) if ctx.attr(node, "use_mask", False) else "nullptr"
+    d = ctx.scalar(ctx.attr(node, "dilation", [1, 1]))
+    g = int(ctx.attr(node, "groups", 1) or 1)
+    og = int(ctx.attr(node, "offset_groups", 1) or 1)
+    # ggml_conv_2d_deform 에는 dilation/groups/offset_groups 인자가 없다 — 1 이 아니면 부정확.
+    note = "" if (d == 1 and g == 1 and og == 1) else (
+        f"  /* TODO(ggml): dilation={d} groups={g} offset_groups={og} 미지원 */")
+    return ctx.out(
+        node,
+        f"conv_2d_deform({key}, {ctx.inp(node, 0)}, {ctx.inp(node, 2)}, {mask}, {s}, {p}){note}",
+        hint="dcn",
+    )
+
+
 @register_render(OP.DENSE)
 def render_linear(node, ctx):
     # visp::linear = ggml_mul_mat(weight, x): x 의 ne[0] 가 in_features 여야 한다.
@@ -71,6 +92,22 @@ def render_add(node, ctx):
 @register_render(OP.SUB)
 def render_sub(node, ctx):
     return ctx.out(node, f"ggml_sub(m, {ctx.inp(node, 0)}, {ctx.inp(node, 1)})")
+
+
+@register_render(OP.RSUB)
+def render_rsub(node, ctx):
+    # rsub(x, other, alpha) = other - alpha*x
+    alpha = ctx.attr(node, "alpha", 1.0)
+    alpha = float(alpha) if isinstance(alpha, (int, float)) else 1.0
+    ins = [t for t in node.in_tensors if t is not None]
+    if len(ins) > 1:
+        neg = f"ggml_scale(m, {ctx.inp(node, 0)}, {-alpha}f)"
+        return ctx.out(node, f"ggml_add(m, {ctx.inp(node, 1)}, {neg})", hint="rsub")
+    # other 가 스칼라(`1 - x` 형태) → scale+bias 한 번으로 접는다.
+    other = ctx.attr(node, "other", 0.0)
+    other = float(other) if isinstance(other, (int, float)) else 0.0
+    return ctx.out(node, f"ggml_scale_bias(m, {ctx.inp(node, 0)}, {-alpha}f, {other}f)",
+                   hint="rsub")
 
 
 @register_render(OP.MULTIPLY)

@@ -39,6 +39,9 @@ class OpCreator(object):
         "_cast_Float": "cast_float",
         "_cast_Int": "cast_int",
         "add_": "add",
+        "mul_": "mul",
+        "__or__": "logical_or",
+        "masked_fill_": "masked_fill",
         "__interpolate": "_interpolate",
         "floordiv": "div",
         "ListConstruct": "list_construct",
@@ -742,6 +745,9 @@ class OpCreator(object):
             "aten::mul(Tensor self, Tensor other) -> Tensor",
             "aten::mul(Tensor self, Scalar other) -> Tensor",
             "aten::mul(Tensor self, Tensor other, Tensor out) -> Tensor",
+            "aten::mul_(Tensor self, Tensor other) -> Tensor",
+            "aten::mul_(Tensor self, Scalar other) -> Tensor",
+            "aten::mul_(Tensor self, Tensor other, Tensor out) -> Tensor",
         ]
 
         schema_handler = SchemaHelper(self.cur_node.schema)
@@ -1313,19 +1319,78 @@ class OpCreator(object):
         op.set_config("interpolation", f"'{args[4]}'")
         return op
 
-    def eq(self, input, other):
-        # TODO:
-        # op = TorchBaseOperation(OP.EQUAL, "eq")
+    def _compare(self, op_type, torch_op, scalar_op_type, input, other):
+        """비교 연산 공용: 한쪽이라도 실제 텐서면 텐서 op, 아니면 스칼라(primitive) op."""
         if (isinstance(input, Tensor) and input.is_real_tensor()) or (
             isinstance(other, Tensor) and other.is_real_tensor()
         ):
-            op = TorchBaseOperation(OP.EQUAL, "eq")
+            op = TorchBaseOperation(op_type, torch_op)
         else:
             op = TorchBaseOperation(
-                OP.SCALAR_EQUAL, OP.SCALAR_EQUAL, force_to_primitive=False
+                scalar_op_type, scalar_op_type, force_to_primitive=False
             )
         op.set_config("input", input)
         op.set_config("other", other)
+        return op
+
+    def eq(self, input, other):
+        return self._compare(OP.EQUAL, "eq", OP.SCALAR_EQUAL, input, other)
+
+    def ne(self, input, other):
+        return self._compare(OP.NOT_EQUAL, "ne", OP.SCALAR_NOT_EQUAL, input, other)
+
+    def gt(self, input, other):
+        return self._compare(OP.GREATER, "gt", OP.SCALAR_GREATER_THAN, input, other)
+
+    def logical_or(self, input, other):
+        # aten::__or__. bool 마스크 합집합만 처리 — 정수 비트연산이면 기본 경로로 넘긴다.
+        if not (isinstance(input, Tensor) and input.is_real_tensor()):
+            return self.default(self.cur_node, "aten::__or__", input, other)
+        op = TorchBaseOperation(OP.LOGICAL_OR, "logical_or")
+        op.set_config("input", input)
+        op.set_config("other", other)
+        return op
+
+    def where(self, *args):
+        # 1항 where(cond) 는 인덱스를 돌려주는 다른 연산 → 기본 경로.
+        if len(args) < 3:
+            return self.default(self.cur_node, "aten::where", *args)
+        op = TorchBaseOperation(OP.WHERE, "where")
+        op.set_config("condition", args[0])
+        op.set_config("input", args[1])
+        op.set_config("other", args[2])
+        return op
+
+    def deform_conv2d(self, input, weight, offset, mask, bias, stride_h, stride_w,
+                      pad_h, pad_w, dilation_h, dilation_w, groups, offset_groups,
+                      use_mask):
+        """torchvision::deform_conv2d (DCN v1/v2). 인자 순서는 torchvision 스키마 그대로.
+
+        weight/bias 는 op param 으로 실어 GGUF 에 나가게 한다(conv2d 와 동일 경로).
+        """
+        # torchvision.ops 소속이라 torch/torch.nn 네임스페이스에 없다 → CUSTOM_FUNCTION.
+        op = TorchBaseOperation(OP.DEFORM_CONV2D, "deform_conv2d",
+                                class_type=TorchOpClassType.CUSTOM_FUNCTION)
+        op.set_config("input", input)
+        op.set_config("offset", offset)
+        op.set_config("mask", mask)
+        op.set_config("stride", [int(stride_h), int(stride_w)])
+        op.set_config("padding", [int(pad_h), int(pad_w)])
+        op.set_config("dilation", [int(dilation_h), int(dilation_w)])
+        op.set_config("groups", int(groups))
+        op.set_config("offset_groups", int(offset_groups))
+        op.set_config("use_mask", bool(use_mask))
+        op.set_config("bias", bias is not None)
+        op.set_param("weight", weight)
+        if bias is not None:
+            op.set_param("bias", bias)
+        return op
+
+    def masked_fill(self, input, mask, value):
+        op = TorchBaseOperation(OP.MASKED_FILL, "masked_fill")
+        op.set_config("input", input)
+        op.set_config("mask", mask)
+        op.set_config("value", value)
         return op
 
     def index(self, input, index):
@@ -1969,4 +2034,61 @@ class OpCreator(object):
         else:
             return self.default(self.cur_node, "aten::arange", *args)
 
+        return op
+
+    def sin(self, input, *args):
+        op = TorchUnaryOp(OP.SIN, "sin")
+        op.set_config("input", input)
+        return op
+
+    def cos(self, input, *args):
+        op = TorchUnaryOp(OP.COS, "cos")
+        op.set_config("input", input)
+        return op
+
+    def pow(self, input, exponent, *args):
+        # 지수 2 는 ggml_sqr 로 정확히 접힌다. 나머지는 OP.POW(render 가 반복 mul / exp·log).
+        if isinstance(exponent, (int, float)) and exponent == 2:
+            op = TorchUnaryOp(OP.SQUARE, "square")
+            op.set_config("input", input)
+            return op
+        op = TorchUnaryOp(OP.POW, "pow")
+        op.set_config("input", input)
+        op.set_config("exponent", exponent)
+        return op
+
+    def type_as(self, input, other):
+        # dtype 만 맞추는 연산. cast 로 매핑(ggml 그래프는 단일 dtype → render 는 passthrough).
+        op = TorchUnaryOp(OP.CAST, "to")
+        op.set_config("input", input)
+        op.set_config("other", other)
+        return op
+
+    def linspace(self, start, end, steps, *args):
+        op = TorchBaseOperation(OP.LINSPACE, "linspace")
+        op.set_config("start", start)
+        op.set_config("end", end)
+        op.set_config("steps", steps)
+        return op
+
+    def roll(self, input, shifts, dims=None):
+        op = TorchBaseOperation(OP.ROLL, "roll")
+        op.set_config("input", input)
+        op.set_config("shifts", shifts)
+        op.set_config("dims", dims)
+        return op
+
+    def new_ones(self, input, *args):
+        op = TorchBaseOperation(OP.FULL, "full")
+        op.set_config("size", args[0] if args else None)
+        op.set_config("fill_value", 1.0)
+        return op
+
+    def fill_(self, input, value):
+        # 텐서 전체를 상수로 덮는 in-place op → 같은 shape 의 상수 텐서와 동치.
+        op = TorchBaseOperation(OP.FULL, "full")
+        op.set_config(
+            "size", list(input.shape) if isinstance(input, Tensor) else None
+        )
+        op.set_config("fill_value", value)
         return op

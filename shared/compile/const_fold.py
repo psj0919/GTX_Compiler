@@ -191,11 +191,15 @@ def fold_constants(graph, img_hw):
 
     # 3) 경계 텐서: 상수값을 가지면서 tainted 노드의 입력으로 쓰이는 텐서 → bake.
     consumed_by_tainted = set()
+    crossing = set()    # 평가 여부와 무관하게 상수→tainted 경계를 넘는 텐서
     for n in nodes:
         outs = [t for t in (n.out_tensors or [])]
         if any(t is not None and id(t) in tainted_t for t in outs):  # tainted 노드
             for t in (n.in_tensors or []):
-                if t is not None and id(t) in vals:
+                if t is None or id(t) in tainted_t:
+                    continue
+                crossing.add(id(t))
+                if id(t) in vals:
                     consumed_by_tainted.add(id(t))
 
     baked = {}
@@ -219,13 +223,26 @@ def fold_constants(graph, img_hw):
     # 4) skip: 상수영역 노드(출력이 하나도 tainted 가 아님) 는 codegen 에서 전부 제거.
     #    경계 텐서는 baked 로 따로 로드(m.weights)하고, 그 외 상수 출력은 상수영역
     #    내부에서만 소비되므로(=tainted 가 참조하는 상수는 모두 baked 됨) 안전하게 제거.
+    #    단, 평가에 실패해 bake 되지 못한 **텐서** 출력이 경계를 넘어가면 제거할 수 없다 —
+    #    소비처가 바인딩을 잃고 조용히 다른 텐서로 대체된다. 그래프에 남겨 render 로 emit.
+    #    스칼라(shape 산술 등)는 소비처가 정적 값으로 쓰므로 그대로 제거한다.
+    def _is_tensor(t):
+        try:
+            return len(t.shape) > 0
+        except Exception:
+            return False
+
     skip = set()
     for n in nodes:
         ov = op_value(n)
         if ov in ("input", "return"):
             continue
         outs = [t for t in (n.out_tensors or [])]
-        if outs and not any(t is not None and id(t) in tainted_t for t in outs):
-            skip.add(id(n))
+        if not outs or any(t is not None and id(t) in tainted_t for t in outs):
+            continue
+        if any(t is not None and id(t) in crossing and id(t) not in baked and _is_tensor(t)
+               for t in outs):
+            continue
+        skip.add(id(n))
 
     return baked, skip

@@ -253,16 +253,101 @@ static tensor conv_2d_q(model_ref m, tensor x, int stride, int pad, int kh, int 
 }
 '''
 
+    # grid_sample 은 ggml 에 커널이 없다(임의 위치 보간). ggml_custom_4d 로 직접 구현해
+    # 그래프에 넣는다 — DCN/deformable attention 공용. bilinear/nearest + zeros padding.
+    _GRID_SAMPLE_HELPER = '''\
+// --- grid_sample_2d: ggml 에 대응 커널이 없어 custom op 으로 구현 ---
+// a: WHCN [W,H,C,N].  g: [2,GW,GH,N] (torch (N,GH,GW,2) 의 ggml 역순), 정규화 좌표 [-1,1].
+// dst: [GW,GH,C,N].  flags: bit0=nearest, bit1=align_corners.  범위 밖은 0 (zeros padding).
+#define GTX_GS_AT(t, i0, i1, i2, i3) \\
+    (*(float const *)((char const *)(t)->data + (i0)*(t)->nb[0] + (i1)*(t)->nb[1] \\
+                      + (i2)*(t)->nb[2] + (i3)*(t)->nb[3]))
+
+static void grid_sample_2d_op(ggml_tensor * dst, int ith, int nth, void * userdata) {
+    ggml_tensor const * a = dst->src[0];
+    ggml_tensor const * g = dst->src[1];
+    int const flags = (int)(intptr_t)userdata;
+    bool const nearest = (flags & 1) != 0;
+    bool const align   = (flags & 2) != 0;
+    int64_t const W = a->ne[0], H = a->ne[1];
+    int64_t const GW = dst->ne[0], GH = dst->ne[1], C = dst->ne[2], N = dst->ne[3];
+    int64_t const rows = GH * C * N;                 // (gh, c, n) 행 단위로 스레드 분할
+    for (int64_t r = ith; r < rows; r += nth) {
+        int64_t const gh = r % GH, c = (r / GH) % C, n = r / (GH * C);
+        for (int64_t gw = 0; gw < GW; ++gw) {
+            float const * gp = (float const *)((char const *)g->data
+                + gw * g->nb[1] + gh * g->nb[2] + n * g->nb[3]);
+            float fx = gp[0], fy = gp[1];            // torch grid 마지막 축 = (x, y)
+            fx = align ? (fx + 1.f) * (W - 1) * 0.5f : ((fx + 1.f) * W - 1.f) * 0.5f;
+            fy = align ? (fy + 1.f) * (H - 1) * 0.5f : ((fy + 1.f) * H - 1.f) * 0.5f;
+            float v = 0.f;
+            if (nearest) {
+                int64_t const xi = (int64_t)std::nearbyint(fx);
+                int64_t const yi = (int64_t)std::nearbyint(fy);
+                if (xi >= 0 && xi < W && yi >= 0 && yi < H) v = GTX_GS_AT(a, xi, yi, c, n);
+            } else {
+                int64_t const x0 = (int64_t)std::floor(fx), y0 = (int64_t)std::floor(fy);
+                float const dx = fx - (float)x0, dy = fy - (float)y0;
+                for (int64_t j = 0; j < 2; ++j) {
+                    for (int64_t i = 0; i < 2; ++i) {
+                        int64_t const xi = x0 + i, yi = y0 + j;
+                        if (xi < 0 || xi >= W || yi < 0 || yi >= H) continue;
+                        v += GTX_GS_AT(a, xi, yi, c, n)
+                             * (i ? dx : 1.f - dx) * (j ? dy : 1.f - dy);
+                    }
+                }
+            }
+            *(float *)((char *)dst->data + gw * dst->nb[0] + gh * dst->nb[1]
+                       + c * dst->nb[2] + n * dst->nb[3]) = v;
+        }
+    }
+}
+
+static tensor grid_sample_2d(model_ref m, tensor a, tensor g, int flags) {
+    ggml_tensor * args[2] = { a, g };
+    return ggml_custom_4d(m, GGML_TYPE_F32, g->ne[1], g->ne[2], a->ne[2], a->ne[3],
+                          args, 2, grid_sample_2d_op, GGML_N_TASKS_MAX,
+                          (void *)(intptr_t)flags);
+}
+'''
+
+    # deformable conv (DCN v1/v2). ggml_conv_2d_deform 은 bias/dilation/groups 를 안 받으므로
+    # bias 만 여기서 더한다(dilation/groups≠1 은 render 가 TODO 로 표시).
+    _CONV_2D_DEFORM_HELPER = '''\
+// --- deformable conv: ggml_conv_2d_deform + optional bias ---
+// weight(GGUF, OIHW) → ggml ne [KW,KH,IC,OC].  x: WHCN.
+// offset: [OW,OH,2*KH*KW,N],  mask: [OW,OH,KH*KW,N] (v1 이면 nullptr).
+static tensor conv_2d_deform(model_ref m, tensor x, tensor offset, tensor mask,
+                             int stride, int pad) {
+    tensor out = ggml_conv_2d_deform(m, m.weights("weight"), x, offset, mask,
+                                     stride, stride, pad, pad);
+    if (tensor bias = m.find("bias")) {
+        bias = ggml_reshape_4d(m, bias, 1, 1, bias->ne[0], 1);
+        out = ggml_add_inplace(m, out, bias);
+    }
+    return out;
+}
+'''
+
     def _emit_quant_helpers(self, ctx):
         plan = getattr(ctx, "quant_plan", None) or {}
+        ops = {op_value(n) for n in self.graph.nodes}
+        out = ""
         if any(e.get("kind") == "conv" for e in plan.values()):
-            return "\n" + self._CONV_2D_Q_HELPER
-        return ""
+            out += "\n" + self._CONV_2D_Q_HELPER
+        if "grid_sample" in ops:
+            out += "\n" + self._GRID_SAMPLE_HELPER
+        if "deform_conv2d" in ops:
+            out += "\n" + self._CONV_2D_DEFORM_HELPER
+        return out
 
     def _emit_source(self, ctx, last_var):
         body = "\n".join(ctx.lines)
         arch_id = self.arch.lower()  # GGUF general.architecture 규약(소문자)
         quant_helpers = self._emit_quant_helpers(ctx)
+        # grid_sample custom 커널만 <cmath> 필요 — 안 쓰는 모델의 생성물은 그대로 둔다.
+        extra_inc = ("#include <cmath>\n"
+                     if any(op_value(n) == "grid_sample" for n in self.graph.nodes) else "")
         # RNN(LSTM/GRU)은 입력이 3D 시퀀스 [feat,seq,batch] 라 이미지용 cwhn↔whcn 레이아웃
         # 변환을 적용하면 안 된다 → RNN arch 에선 입력/출력 래핑을 생략하고 x 를 그대로 흘린다.
         is_rnn = any(op_value(n) in ("aten::lstm", "aten::gru")
@@ -281,7 +366,7 @@ static tensor conv_2d_q(model_ref m, tensor x, int stride, int pad, int kh, int 
 #include "visp/vision.h"
 #include "util/string.h"
 
-#include <string_view>
+{extra_inc}#include <string_view>
 
 namespace visp {{
 {quant_helpers}

@@ -261,11 +261,37 @@ def render_shape(node, ctx):
 
 
 # ----------------------------------------------------------- 텐서 생성
+def _num(v, default):
+    return float(v) if isinstance(v, (int, float, bool)) else float(default)
+
+
+def _fill_expr(sh, v):
+    """정적 shape 의 상수 텐서 → ggml_fill(new_tensor_Nd, v). >4D 는 1D 스칼라로 폴백."""
+    if sh and len(sh) <= 4:
+        _, args = _ne_args(sh)
+        return f"ggml_fill(m, ggml_new_tensor_{len(sh)}d(m, GGML_TYPE_F32, {args}), {v}f)"
+    return f"ggml_fill(m, ggml_new_tensor_1d(m, GGML_TYPE_F32, 1), {v}f)"
+
+
 @_rr(_OP.ARANGE)
 def render_arange(node, ctx):
     sh = out_shape(node)
     n = sh[0] if sh else 0
-    return ctx.out(node, f"ggml_arange(m, 0.0f, {float(n)}f, 1.0f)", hint="ar")
+    start = _num(ctx.attr(node, "start"), 0.0)
+    step = _num(ctx.attr(node, "step"), 1.0) or 1.0
+    stop = _num(ctx.attr(node, "end"), start + n * step)
+    return ctx.out(node, f"ggml_arange(m, {start}f, {stop}f, {step}f)", hint="ar")
+
+
+@_rr(_OP.LINSPACE)
+def render_linspace(node, ctx):
+    sh = out_shape(node)
+    n = int(_num(ctx.attr(node, "steps"), sh[0] if sh else 2))
+    start = _num(ctx.attr(node, "start"), 0.0)
+    end = _num(ctx.attr(node, "end"), 1.0)
+    step = (end - start) / (n - 1) if n > 1 else 1.0
+    # ggml_arange 는 [start, stop) 반개구간 → 마지막 원소가 포함되도록 stop 을 반보 넘긴다.
+    return ctx.out(node, f"ggml_arange(m, {start}f, {end + step / 2.0}f, {step}f)", hint="lin")
 
 
 @_rr(_OP.CONST)
@@ -275,18 +301,40 @@ def render_const(node, ctx):
     if sh and len(sh) <= 4:
         _, args = _ne_args(sh)
         return ctx.out(node, f"ggml_new_tensor_{len(sh)}d(m, GGML_TYPE_F32, {args})", hint="const")
-    return ctx.out(node, "ggml_new_f32(m, 0.0f)", hint="const")
+    return ctx.out(node, "ggml_new_tensor_1d(m, GGML_TYPE_F32, 1)", hint="const")
 
 
-@_rr("aten::full", "full")
+@_rr("aten::full", "full", _OP.FULL)
 def render_full(node, ctx):
-    # full(size, v) → 상수 채움. ggml_arange(v, v+eps, 1) 대신 scale(zeros)+v 로는 builder 부족 →
-    # 정적 shape 0텐서 + scale 0 후 add 상수: 간단히 새 텐서(값은 stride 상수, 런타임/후처리 주입).
+    # full/zeros/new_ones/fill_ 공용: 정적 shape 텐서를 ggml_fill 로 상수 채움.
+    v = _num(ctx.attr(node, "fill_value"), 0.0)
+    return ctx.out(node, _fill_expr(out_shape(node), v), hint="full")
+
+
+@_rr(_OP.ZEROS)
+def render_zeros(node, ctx):
+    return ctx.out(node, _fill_expr(out_shape(node), 0.0), hint="zeros")
+
+
+@_rr(_OP.ROLL)
+def render_roll(node, ctx):
     sh = out_shape(node)
-    if sh and len(sh) <= 4:
-        _, args = _ne_args(sh)
-        return ctx.out(node, f"ggml_new_tensor_{len(sh)}d(m, GGML_TYPE_F32, {args})", hint="full")
-    return ctx.out(node, "ggml_new_f32(m, 0.0f)", hint="full")
+    ndim = len(sh) if sh else 4
+    shifts = ctx.attr(node, "shifts", [])
+    dims = ctx.attr(node, "dims", [])
+    if not isinstance(shifts, (list, tuple)):
+        shifts = [shifts]
+    if not isinstance(dims, (list, tuple)):
+        dims = [dims]
+    if not dims:
+        # dims 없는 torch.roll 은 평탄화 후 회전 → ggml_roll(축별)로 표현 불가.
+        return ctx.out(node, f"ggml_cont(m, {ctx.inp(node)})"
+                             " /* TODO(ggml): roll without dims (flattened) */", hint="roll")
+    s = [0, 0, 0, 0]
+    for amount, d in zip(shifts, dims):
+        s[ggml_axis(d, ndim)] = int(amount)
+    return ctx.out(node, f"ggml_roll(m, {ctx.inp(node)}, {s[0]}, {s[1]}, {s[2]}, {s[3]})",
+                   hint="roll")
 
 
 @_rr("aten::meshgrid", "meshgrid")

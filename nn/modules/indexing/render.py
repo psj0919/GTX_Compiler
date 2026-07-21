@@ -59,6 +59,53 @@ def render_topk(node, ctx):
     return var
 
 
+# ----------------------------------------------------------- 마스크 선택(where/masked_fill)
+# ggml 에 where 커널이 없다 → 0/1 마스크(비교 op render 의 출력)로 산술 합성한다.
+# ±inf 채움값은 곱셈에서 0*inf=NaN 이 되므로 f32 로 안전한 ±1e30 으로 대체한다
+# (softmax 마스킹 용도에서 exp() 는 어차피 0 으로 포화).
+_BIG = 1e30
+
+
+def _finite(v, default=0.0):
+    v = float(v) if isinstance(v, (int, float)) else default
+    if v == float("inf"):
+        return _BIG
+    if v == float("-inf"):
+        return -_BIG
+    return v
+
+
+@_rr(_OP.WHERE)
+def render_where(node, ctx):
+    # where(c, a, b) = a*c + b*(1-c)
+    c, a, b = ctx.inp(node, 0), ctx.inp(node, 1), ctx.inp(node, 2)
+    inv = f"ggml_scale_bias(m, {c}, -1.0f, 1.0f)"
+    return ctx.out(node, f"ggml_add(m, ggml_mul(m, {a}, {c}), ggml_mul(m, {b}, {inv}))",
+                   hint="where")
+
+
+@_rr(_OP.MASKED_FILL)
+def render_masked_fill(node, ctx):
+    # masked_fill(x, mask, v) = x*(1-mask) + v*mask
+    x, mask = ctx.inp(node, 0), ctx.inp(node, 1)
+    v = _finite(ctx.attr(node, "value", 0.0))
+    inv = f"ggml_scale_bias(m, {mask}, -1.0f, 1.0f)"
+    return ctx.out(node, f"ggml_add(m, ggml_mul(m, {x}, {inv}), ggml_scale(m, {mask}, {v}f))",
+                   hint="mfill")
+
+
+@_rr(_OP.GRID_SAMPLE)
+def render_grid_sample(node, ctx):
+    # ggml 커널 부재 → codegen 이 .cpp 상단에 주입하는 grid_sample_2d(custom op) 호출.
+    mode = str(ctx.attr(node, "mode", "bilinear")).strip("'\"")
+    pad = str(ctx.attr(node, "padding_mode", "zeros")).strip("'\"")
+    flags = (1 if mode == "nearest" else 0) | (2 if ctx.attr(node, "align_corners", False) else 0)
+    note = "" if pad == "zeros" else f"  /* TODO(ggml): padding_mode='{pad}' → zeros 로 근사 */"
+    return ctx.out(node,
+                   f"grid_sample_2d(m, {ctx.inp(node, 0)}, {ctx.inp(node, 1)}, {flags}){note}",
+                   hint="gs")
+
+
 # ----------------------------------------------------------- 선택(gather/slice)
 @_rr("aten::gather", "gather", _OP.INDEX)
 def render_gather(node, ctx):

@@ -152,7 +152,8 @@ class TorchBaseScriptWriter(metaclass=abc.ABCMeta):
             return str_list
         for param_type, param_tensor in node.op.params.items():
             if param_tensor.name not in self._tensor_output_map:
-                param_name = param_type.value
+                # param 키는 Enum 이 보통이지만 str 도 허용된다(base_operator.set_param).
+                param_name = getattr(param_type, "value", param_type)
                 param_shape = tuple(param_tensor.shape)
                 param_init_str = f"self.{param_name} = torch.nn.parameter.Parameter(torch.Tensor{param_shape})"
                 str_list.append(param_init_str)

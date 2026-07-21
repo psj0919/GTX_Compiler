@@ -78,6 +78,21 @@ render_trunc = _unary(_OP.TRUNC, "ggml_trunc", "trunc")
 
 
 # ------------------------------------------------------------- 산술
+@_rr(_OP.POW)
+def render_pow(node, ctx):
+    # 지수 2 는 op_dispatcher 가 OP.SQUARE 로 접는다. 여기는 그 외 지수.
+    e = ctx.attr(node, "exponent", 1.0)
+    a = ctx.inp(node)
+    if isinstance(e, (int, float)) and float(e).is_integer() and 0 < int(e) <= 8:
+        expr = a
+        for _ in range(int(e) - 1):
+            expr = f"ggml_mul(m, {expr}, {a})"
+        return ctx.out(node, expr, hint="pow")
+    # 일반 지수: x^e = exp(e * log x). x > 0 전제 (음수 밑은 실수 거듭제곱이 정의되지 않음).
+    return ctx.out(node, f"ggml_exp(m, ggml_scale(m, ggml_log(m, {a}), {float(e)}f))",
+                   hint="pow")
+
+
 @_rr(_OP.FLOOR_DIV)
 def render_floor_div(node, ctx):
     # floor_divide(x, c): 상수 나눗셈 → ggml_scale(1/c). 정확한 floor 는 후처리(인덱스 계산).
@@ -88,6 +103,45 @@ def render_floor_div(node, ctx):
 def render_remainder(node, ctx):
     # remainder(x, c): ggml 직접 op 없음 → x - floor(x/c)*c. 좌표 인덱스 계산(후처리 보정).
     return ctx.out(node, f"ggml_cont(m, {ctx.inp(node, 0)}) /* remainder: x - (x/c)*c */", hint="rem")
+
+
+# ------------------------------------------------------------- 비교/논리
+# ggml 에 비교 커널이 없다 → ggml_step(x)=(x>0) 로 합성한다. 결과는 0.0/1.0 f32 마스크로,
+# where/masked_fill render 가 그대로 소비한다 (ggml 에 bool 타입 없음).
+def _diff(node, ctx, flip=False):
+    """a - b (flip=True 면 b - a). other 가 스칼라면 scale_bias 로 상수를 흡수."""
+    ins = [t for t in (getattr(node, "in_tensors", None) or []) if t is not None]
+    a = ctx.inp(node, 0)
+    if len(ins) > 1:
+        b = ctx.inp(node, 1)
+        return f"ggml_sub(m, {b}, {a})" if flip else f"ggml_sub(m, {a}, {b})"
+    o = ctx.attr(node, "other", 0.0)
+    o = float(o) if isinstance(o, (int, float)) else 0.0
+    s = -1.0 if flip else 1.0
+    return f"ggml_scale_bias(m, {a}, {s}f, {-s * o}f)"
+
+
+@_rr(_OP.GREATER)
+def render_greater(node, ctx):
+    return ctx.out(node, f"ggml_step(m, {_diff(node, ctx)})", hint="gt")
+
+
+@_rr(_OP.NOT_EQUAL)
+def render_not_equal(node, ctx):
+    return ctx.out(node, f"ggml_step(m, ggml_abs(m, {_diff(node, ctx)}))", hint="ne")
+
+
+@_rr(_OP.EQUAL)
+def render_equal(node, ctx):
+    ne = f"ggml_step(m, ggml_abs(m, {_diff(node, ctx)}))"
+    return ctx.out(node, f"ggml_scale_bias(m, {ne}, -1.0f, 1.0f)", hint="eq")
+
+
+@_rr(_OP.LOGICAL_OR)
+def render_logical_or(node, ctx):
+    # 0/1 마스크 두 개: a|b = step(a+b) (a+b ∈ {0,1,2} → 0 이 아니면 1).
+    both = f"ggml_add(m, {ctx.inp(node, 0)}, {ctx.inp(node, 1)})"
+    return ctx.out(node, f"ggml_step(m, {both})", hint="or")
 
 
 # ------------------------------------------------------------- 패딩
