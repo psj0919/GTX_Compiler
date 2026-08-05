@@ -34,14 +34,20 @@ class _FusedActNode:
         self.op = op
 
 
+from shared.compile.options import DEFAULT as _CodegenDefault
+
+
 class VispCodeGenerator:
     def __init__(self, graph, output_dir, model_name="model", arch=None, quant_plan=None,
-                 baked=None, skip=None):
+                 baked=None, skip=None, options=None):
         self.graph = graph
         self.output_dir = output_dir
         self.model_name = model_name
         self.arch = arch or model_name
         self.quant_plan = quant_plan or {}
+        # 생성 동작 옵션. **환경변수를 읽지 않는다** — main() 의 argparse 에서 흘러온다.
+        # 미지정이면 검증된 기본값(shared/compile/options.py 의 DEFAULT).
+        self.opts = options or _CodegenDefault
         # const-fold 결과: baked={id(tensor):(gguf_key,arr)} 는 m.weights 로 로드,
         # skip={id(node)} 상수영역 노드는 emit 생략. (shared/compile/const_fold.py)
         self.baked = baked or {}
@@ -74,27 +80,22 @@ class VispCodeGenerator:
         # (정수 div/mod·값기반 top-k·gather 의미 mismatch) — CPU 후처리 영역(vision.cpp 도
         # NMS 를 host 에서 수행). 그래프에 그런 op 이 있으면 **자동으로** dense 예측 (1,C,A)
         # 까지만 출력한다(런타임 크래시 방지). top-k/NMS 는 harness 등 CPU 에서.
-        # env GTX_DENSE_OUT=1 로 강제도 가능, GTX_DENSE_OUT=0 로 비활성도 가능.
-        import os as _os
+        # `--dense-out on|off` 로 강제할 수 있다(기본 auto).
         _PP_OPS = {"max", "argmax", "topk", "aten::topk", "gather", "aten::gather", "index"}
-        _env = _os.environ.get("GTX_DENSE_OUT")
-        if _env == "0":
-            dense_out = False
-        elif _env:
-            dense_out = True
-        else:
+        if self.opts.dense_out is None:                  # auto — 그래프를 보고 판단
             dense_out = any(op_value(n) in _PP_OPS for n in self.graph.nodes)
+        else:
+            dense_out = bool(self.opts.dense_out)
         if dense_out:
             print("[g2c] NMS-free postprocess detected → emitting dense output "
                   "(top-k/NMS is CPU-side)", flush=True)
         dense_var = None
 
-        # 중간 텐서 탭(env GTX_DEBUG_TAPS="all" | "12,45,..."): 노드별 출력을
+        # 중간 텐서 탭(`--debug-taps all|12,45`): 노드별 출력을
         # compute_graph_output 으로 추가 표시 → harness 가 dump, eager 백엔드와 노드별 대조.
         # tap 이름 tap{node_idx} = 생성 .py 의 module_{node_idx} 와 정렬(동일 IR 노드 순서).
-        _taps = _os.environ.get("GTX_DEBUG_TAPS")
-        _tap_set = (None if not _taps or _taps == "all"
-                    else {int(i) for i in _taps.split(",") if i.strip().isdigit()})
+        _taps = self.opts.debug_taps
+        _tap_set = self.opts.tap_set
 
         def _tap(idx, var):
             if not _taps or var in (None, "x"):
@@ -401,9 +402,9 @@ static tensor conv_2d_deform(model_ref m, tensor x, tensor offset, tensor mask,
             _rv = ctx._var.get(id(_t)) or ctx._var_by_name.get(getattr(_t, "name", None))
             if _rv:
                 _roots.append(_rv)
-        _lines = (ctx.lines if os.environ.get("G2C_NO_DCE")
-                  else self._prune_dead_lines(ctx.lines, (_roots or []) + [last_var]))
-        if os.environ.get("G2C_TRACE_SHAPES"):
+        _lines = (self._prune_dead_lines(ctx.lines, (_roots or []) + [last_var])
+                  if self.opts.dce else ctx.lines)
+        if self.opts.trace_shapes:
             import re as _re
             _decl = _re.compile(r"^\s*tensor\s+(\w+)\s*=")
             _out = []

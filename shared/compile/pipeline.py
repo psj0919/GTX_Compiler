@@ -40,6 +40,10 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 
+from shared.compile.options import (DEFAULT as _CodegenDefault,
+                                    add_cli_arguments as add_codegen_arguments,
+                                    from_args as codegen_options_from_args)
+
 _console = Console()
 
 # 그래프 최적화 Action → 색상 (컴파일 로그 가독성)
@@ -64,7 +68,7 @@ if project_root not in sys.path:
 # codegen / weight 직렬화
 # --------------------------------------------------------------------------
 def generate_ggml_code(graph, output_dir: str, model_name: str = "model", quant_plan=None,
-                       baked=None, skip=None):
+                       baked=None, skip=None, options=None):
     """Graph → vision.cpp(ggml) arch 스타일 C++ 소스코드 생성. 설계: docs/ggml_codegen.md
 
     quant_plan: build_quant_plan 결과. 양자 conv 노드는 conv_2d_q 로 emit + 헬퍼 주입.
@@ -73,7 +77,8 @@ def generate_ggml_code(graph, output_dir: str, model_name: str = "model", quant_
     from shared.compile.ggml_codegen import VispCodeGenerator
 
     codegen = VispCodeGenerator(graph, output_dir=output_dir, model_name=model_name,
-                                quant_plan=quant_plan, baked=baked, skip=skip)
+                                quant_plan=quant_plan, baked=baked, skip=skip,
+                                options=options)
     return codegen.generate()
 
 
@@ -720,12 +725,12 @@ _SAFE_DEV_OPTS = [
 ]
 
 
-def apply_dev_graph_opts(graph, report=None):
+def apply_dev_graph_opts(graph, report=None, options=None):
     """_SAFE_DEV_OPTS 를 순차 적용(best-effort). 반환: 최적화된 dev_graph(clone) 또는 원본."""
-    # `G2C_SKIP_OPTS=pass1,pass2` 로 개별 pass 를, `G2C_SKIP_OPTS=all` 로 전부 끈다.
+    # `--skip-opts pass1,pass2` 로 개별 pass 를, `--skip-opts all` 로 전부 끈다.
     # 어느 pass 가 그래프를 망가뜨렸는지 이분 탐색할 때 쓴다.
-    _skip = {s.strip() for s in (os.environ.get("G2C_SKIP_OPTS") or "").split(",") if s.strip()}
-    passes = [] if "all" in _skip else [p for p in _SAFE_DEV_OPTS if p not in _skip]
+    opts = options or _CodegenDefault
+    passes = [p for p in _SAFE_DEV_OPTS if not opts.skips(p)]
     if not passes:
         return graph
     try:
@@ -769,7 +774,7 @@ def _convert_bn_affine(graph, report=None):
     return graph
 
 
-def apply_graph_opts(graph, level=0, report=None, ensure_bn_affine=False):
+def apply_graph_opts(graph, level=0, report=None, ensure_bn_affine=False, options=None):
     """--Opt 레벨별 그래프 최적화 — g2c(compile_model)·graph_visualizer 공유.
 
       0: 없음 (raw 파싱 그래프)
@@ -788,13 +793,13 @@ def apply_graph_opts(graph, level=0, report=None, ensure_bn_affine=False):
     elif ensure_bn_affine:
         _convert_bn_affine(graph, report=report)      # ConvertBNParams 만 (fold 없이)
     if level in (1, 3):
-        graph = apply_dev_graph_opts(graph, report=report)
+        graph = apply_dev_graph_opts(graph, report=report, options=options)
     return graph
 
 
 def compile_model(model, name: str, input_shape, output_dir: str, quant=None,
                   profile=False, profile_reps=1, opt_level=0,
-                  visualize=None, visualize_fmt="svg"):
+                  visualize=None, visualize_fmt="svg", options=None):
     """모델을 vision.cpp(ggml) arch C++ + GGUF 로 컴파일한다.
 
     profile: True 면 생성 runner 에 런타임 프로파일(GTX_PROFILE)을 baking.
@@ -802,9 +807,13 @@ def compile_model(model, name: str, input_shape, output_dir: str, quant=None,
       BN affine 변환·const-fold(컴파일 필수)를 항상 적용하고 그 위에 레벨 최적화를 얹는다.
     visualize: 경로(문자열)면 최종 컴파일 그래프를 그 경로에 DOT(+이미지)로 시각화.
       "__auto__" 면 `<output_dir>/<name>_graph`. None 이면 생략.
+    options: `CodegenOptions` — const-fold·DCE·진단 스위치. 환경변수 대신 이걸 쓴다.
+      미지정이면 검증된 기본값(shared/compile/options.DEFAULT).
     반환: 생성 파일 dict (source/header/weights_manifest) 또는 None(파싱 실패).
     """
     import traceback
+
+    opts = options or _CodegenDefault
 
     from parse import TorchParser
     from parse.rich_in_out_helper import StandardInputData
@@ -822,7 +831,7 @@ def compile_model(model, name: str, input_shape, output_dir: str, quant=None,
         init_ops = len(list(getattr(graph, "nodes", [])))
         # 공용 최적화(--Opt 레벨). g2c 는 BN affine 변환을 항상(ensure_bn_affine) → GGUF 정합.
         graph = apply_graph_opts(graph, level=opt_level, report=opt_report,
-                                 ensure_bn_affine=True)
+                                 ensure_bn_affine=True, options=opts)
         print(f"[g2c] Graph nodes: {len(list(getattr(graph, 'nodes', [])))}", flush=True)
     except Exception:
         print("[g2c] Parse 실패:")
@@ -858,9 +867,8 @@ def compile_model(model, name: str, input_shape, output_dir: str, quant=None,
     # 하류 `ctx.inp()` 가 그래프 입력 x(= 이미지)로 폴백한다 — PVT 는 pos_embed 슬라이스가
     # 접히면서 `ggml_add(ln4, permute(x))` 가 나와 can_repeat 로 죽었다.
     # (실측: pvt 에서 410 노드 skip / 16 텐서만 bake. deploy 는 이 기능 자체가 없고 100/100.)
-    # G2C_CONST_FOLD=1 로 켤 수 있다.
-    import os as _cf_os
-    if _cf_os.environ.get("G2C_CONST_FOLD"):
+    # `--const-fold` 로 켤 수 있다.
+    if opts.const_fold:
         baked, skip = fold_constants(graph, (input_shape[-2], input_shape[-1]))
     else:
         baked, skip = {}, set()
@@ -897,6 +905,7 @@ def compile_model(model, name: str, input_shape, output_dir: str, quant=None,
 
     print("[g2c] Generating visp/ggml arch C++...", flush=True)
     files = generate_ggml_code(graph, output_dir, name, quant_plan=quant_plan,
+                              options=opts,
                                baked=baked, skip=skip)
     for ftype, fpath in files.items():
         print(f"  → {ftype}: {fpath}")
@@ -971,7 +980,9 @@ def main(argv=None):
         "--visualize-format", default="svg", choices=["png", "svg", "pdf"],
         help="--visualize 이미지 포맷 (기본 svg).",
     )
+    add_codegen_arguments(ap)          # --const-fold / --no-dce / --skip-opts / 진단 스위치
     args = ap.parse_args(argv)
+    opts = codegen_options_from_args(args)
 
     shape = None
     if args.input_shape:
@@ -987,7 +998,8 @@ def main(argv=None):
     files = compile_model(model, name, shape, args.output, quant=args.quantize,
                           profile=profile_on, profile_reps=reps,
                           opt_level=args.Opt,
-                          visualize=args.visualize, visualize_fmt=args.visualize_format)
+                          visualize=args.visualize, visualize_fmt=args.visualize_format,
+                          options=opts)
     # --profile: 생성 모델을 실제 실행해 프로파일(콘솔+CSV/JSON/Perfetto)을 산출.
     if profile_on and files is not None:
         _run_profile(args.output, name, reps)
