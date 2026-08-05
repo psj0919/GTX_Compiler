@@ -23,12 +23,36 @@ from shared.compile.render_api import register_render, weight_key, out_shape, gg
 from shared.base import OP
 
 
+def _conv_scalar(ctx, node, key, default):
+    """conv 의 stride/padding/dilation 을 **단일 int** 로 뽑는다.
+
+    vision.cpp 의 `conv_2d`/`conv_2d_wt`/`conv_2d_grouped` 는 축별이 아니라 int 하나만
+    받는다(H·W 동일). `ctx.scalar()` 는 리스트의 [0] 만 쓰므로 비대칭이면 **조용히 잘린다** —
+    pooling 에서 같은 방식으로 `AvgPool2d((4,8))` 이 (4,4) 가 돼 한참 뒤 flatten 에서 죽었다.
+    여기서는 비대칭을 만나면 생성 코드에 표시를 남겨 조용히 지나가지 않게 한다.
+
+    실측(mmdet 40개 모델 2,765개 conv): 비대칭 padding/stride/dilation **0건**.
+    표현이 필요해지면 vision.cpp 헬퍼가 (h, w) 쌍을 받도록 먼저 넓혀야 한다.
+    """
+    v = ctx.attr(node, key, default)
+    if isinstance(v, (list, tuple)) and len(v) >= 2:
+        try:
+            a, b = int(v[0]), int(v[1])
+        except (TypeError, ValueError):
+            return ctx.scalar(v)
+        if a != b:
+            ctx.line(f"    // TODO(ggml): 비대칭 {key}={list(v)} — vision.cpp conv 헬퍼는 "
+                     f"int 하나만 받는다. {a} 로 진행(값이 틀릴 수 있음).")
+        return a
+    return ctx.scalar(v)
+
+
 @register_render(OP.CONV2D)
 def render_conv(node, ctx):
     has_bias = bool(ctx.attr(node, "bias", False))
     key = ctx.weight(node, ["weight"] + (["bias"] if has_bias else []))
-    s = ctx.scalar(ctx.attr(node, "stride", [1, 1]))
-    p = ctx.scalar(ctx.attr(node, "padding", [0, 0]))
+    s = _conv_scalar(ctx, node, "stride", [1, 1])
+    p = _conv_scalar(ctx, node, "padding", [0, 0])
     # 양자 conv: GGUF 에 커널이 2D [IC*KH*KW, OC] 양자 형태로 저장됨 → conv_2d 대신
     # conv_2d_q(im2col+mul_mat) emit (헬퍼는 codegen 이 .cpp 상단에 주입). KH/KW 는 plan 에서.
     entry = (getattr(ctx, "quant_plan", None) or {}).get(weight_key(node))
@@ -41,7 +65,7 @@ def render_conv(node, ctx):
     # 안 보면 `conv_2d` 가 전 채널을 한 번에 돌려 `ggml_im2col` 의
     # `GGML_ASSERT(a->ne[2] == b->ne[2])`(커널 IC != src C) 로 죽는다.
     # ⚠️ `conv_2d_grouped` 는 vision.cpp 헬퍼다 — submodule 포인터에 그 심볼이 있어야 링크된다.
-    d = ctx.scalar(ctx.attr(node, "dilation", [1, 1]))
+    d = _conv_scalar(ctx, node, "dilation", [1, 1])
     g = ctx.attr(node, "groups", 1)
     g = int(g) if isinstance(g, (int, float)) else 1
     if g > 1:
@@ -116,9 +140,9 @@ def render_conv2d_dynamic(node, ctx):
     # (cwhn↔whcn·F16·im2col)을 처리한다. groups==1 만 dispatcher 가 이 경로로 보낸다.
     x = ctx.inp(node, 0)
     w = ctx.inp(node, 1)
-    s = ctx.scalar(ctx.attr(node, "stride", [1, 1]))
-    p = ctx.scalar(ctx.attr(node, "padding", [0, 0]))
-    d = ctx.scalar(ctx.attr(node, "dilation", [1, 1]))
+    s = _conv_scalar(ctx, node, "stride", [1, 1])
+    p = _conv_scalar(ctx, node, "padding", [0, 0])
+    d = _conv_scalar(ctx, node, "dilation", [1, 1])
     ins = [t for t in node.in_tensors if t is not None]
     bias = ctx.inp(node, 2) if (bool(ctx.attr(node, "has_bias", False)) and len(ins) >= 3) else "nullptr"
     return ctx.out(node, f"conv_2d_wt(m, {x}, {w}, {bias}, {s}, {p}, {d})", hint="convd")
