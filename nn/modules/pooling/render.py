@@ -120,6 +120,52 @@ def _shape_of(t):
         return None
 
 
+@register_render(OP.ADAPTIVEMAXPOOL2D)
+def render_adaptive_max_pool(node, ctx):
+    # BFP(Libra) 다운샘플 등. in/out 이 정수배면 kernel=stride=in//out 인 max pool 로 정확.
+    # (NCHW: H,W=마지막 2. ggml ne0=W, ne1=H.) 비정수배는 크기만 맞추고 값은 근사.
+    a = ctx.inp(node)
+
+    def _hw(shp):
+        try:
+            s = [int(d) for d in shp]
+            return (s[-2], s[-1]) if len(s) >= 2 else None
+        except Exception:
+            return None
+
+    ins = [t for t in node.in_tensors if t is not None]
+    ih_iw = _hw(ins[0].shape) if ins else None
+    outs = [t for t in (node.out_tensors or []) if t is not None]
+    oh_ow = _hw(outs[0].shape) if outs else None
+    if oh_ow is None:
+        os_cfg = ctx.attr(node, "output_size", None)
+        try:
+            oh_ow = (int(os_cfg[0]), int(os_cfg[1]))
+        except Exception:
+            oh_ow = None
+    if ih_iw and oh_ow and oh_ow[0] > 0 and oh_ow[1] > 0:
+        def _ksp(inp, outp):
+            if inp % outp == 0:
+                k = inp // outp
+                return k, k, 0
+            s = max(1, round(inp / outp))
+            pad2 = outp * s - inp
+            if pad2 >= 0 and pad2 % 2 == 0:
+                return s, s, pad2 // 2
+            k = inp - (outp - 1) * s          # 홀수 pad/음수 → 큰 kernel 로 크기를 정확히 맞춤
+            return (k if k >= 1 else 1), s, 0
+        kh, sh, ph = _ksp(ih_iw[0], oh_ow[0])
+        kw, sw, pw = _ksp(ih_iw[1], oh_ow[1])
+        exact = (ih_iw[0] % oh_ow[0] == 0 and ih_iw[1] % oh_ow[1] == 0)
+        expr = (f"ggml_pool_2d(m, {a}, GGML_OP_POOL_MAX, "
+                f"{kw}, {kh}, {sw}, {sh}, {pw}, {ph})")
+        if not exact:
+            expr += " /* TODO(ggml): non-integer adaptive max pool — 크기맞춤 pad, 값 근사 */"
+        return ctx.out(node, expr, hint="pool")
+    return ctx.out(node, f"ggml_pool_2d(m, {a}, GGML_OP_POOL_MAX, "
+                         f"{a}->ne[0], {a}->ne[1], {a}->ne[0], {a}->ne[1], 0, 0)", hint="pool")
+
+
 @register_render(OP.ADAPTIVEAVGPOOL2D)
 def render_adaptive_avg_pool(node, ctx):
     # adaptive_avg_pool2d((Ho,Wo)): 입력 (Hi,Wi) 가 출력의 배수면(Hi%Ho==Wi%Wo==0) 고정 커널

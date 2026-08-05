@@ -451,6 +451,17 @@ class OpCreator(object):
         op.set_config("in_features", weight_size[1])
         return op
 
+    def adaptive_max_pool2d(self, *args):
+        # BFP(Libra R-CNN) 등: 고해상도 레벨을 gather 크기로 다운샘플. render 가 out/in shape 로
+        # kernel=stride=in//out 계산(정수배면 정확). multi-output(값,인덱스)이나 값만 사용.
+        # 없으면 unhandled 로 떨어져 **다운샘플이 통째로 생략**되고, BFP 가 128x128 을 그대로
+        # 합쳐 뒤 reshape 이 nelements 로 죽는다(libra_rcnn 실측).
+        op = TorchBaseOperation(OP.ADAPTIVEMAXPOOL2D, "adaptive_max_pool2d")
+        op.set_config("input", args[0])
+        if len(args) > 1:
+            op.set_config("output_size", args[1])
+        return op
+
     def split_with_sizes(self, input, split_sizes, dim=0):
         # split_with_sizes(x, [s0,s1,...], dim) = dim 축을 s_i 크기로 나눈 N개 텐서(unbind 와 달리
         # 축을 제거하지 않고 크기만 자름). nn.MultiheadAttention 의 in_proj_weight[3E,E]→q/k/v 등.
