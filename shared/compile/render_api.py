@@ -216,3 +216,16 @@ class RenderContext:
         key = weight_key(node)
         self._weights.append((key, list(suffixes)))
         return f'm["{key}"]'
+
+    def raw_weight(self, node, suffix):
+        """state_dict 키를 **텐서로** 직접 참조한다(`m["layer"]` 레이어 핸들이 아니라).
+
+        custom autograd op(mmcv deform 등)은 가중치가 `in_tensors` 에 안 실려 오는 경우가
+        있어 `inp()` 가 그래프 입력 `x`(= 이미지)로 폴백한다 — 그러면 이미지가 커널에
+        가중치로 들어가 `kernel->ne[2] == C` assert 로 죽는다.
+        그런 op 은 노드명에서 얻은 모듈 경로로 gguf 텐서를 직접 찾는다.
+        """
+        key = f"{weight_key(node)}.{suffix}"
+        if (key, []) not in self._weights:
+            self._weights.append((key, []))
+        return f'm.find("{key}")'
