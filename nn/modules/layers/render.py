@@ -136,9 +136,52 @@ def render_matmul(node, ctx):
     return ctx.out(node, f"ggml_mul_mat(m, {bt}, {a})", hint="mm")
 
 
+def _same_drop_reshape(node, small_expr, big_sh, small_sh):
+    """>4D 두 피연산자를 **같은 축을 버려서** 4D 로 낮춘 small 표현식.
+
+    `_reshape_to_out` 은 >4D 를 낮출 때 크기-1 축을 **전부** 버린다. 두 피연산자가 각자
+    독립으로 그러면 버리는 축 수가 달라져 rank 가 어긋나고, 실제 축이 ne 슬롯을 옮겨 앉는다.
+
+    Swin attention mask:
+        attn = attn.view(B//nW, nW, nH, N, N)          torch [1,361,3,49,49]
+          크기-1 이 1개 → [361,3,49,49]  → ne [49,49,3,361]
+        mask = mask.unsqueeze(1).unsqueeze(0)          torch [1,361,1,49,49]
+          크기-1 이 2개 → [361,49,49]    → ne [49,49,361,1]  ✗ head 축 소실
+        같은 축(index 0)만 버리면 → [361,1,49,49] → ne [49,49,1,361]  ✓
+
+    큰 쪽이 4D 로 내려오며 버린 축 집합을 그대로 작은 쪽에 적용한다.
+    **rank 가 같고 둘 다 >4D 일 때만** 개입한다(conv 계열은 애초에 해당 없음).
+    """
+    if len(big_sh) != len(small_sh) or len(big_sh) <= 4:
+        return None
+    drop = [i for i, d in enumerate(big_sh) if int(d) == 1][:len(big_sh) - 4]
+    if len(big_sh) - len(drop) != 4:
+        return None
+    kept = [int(d) for i, d in enumerate(small_sh) if i not in set(drop)]
+    if len(kept) != 4:
+        return None
+    ne = list(reversed(kept))
+    return (f"ggml_reshape_4d(m, ggml_cont(m, {small_expr}), "
+            f"{ne[0]}, {ne[1]}, {ne[2]}, {ne[3]})")
+
+
 @register_render(OP.ADD)
 def render_add(node, ctx):
+    # ⚠️ `align_bcast`(뒤 4개 유지) 를 여기에 쓰지 마라 —
+    #    nas_fpn 은 못 고치면서 `ssd`(cos 0.0)·`yolo`(cos 0.56) 를 회귀시킨다(deploy 실측).
+    #    아래 `_same_drop_reshape` 는 **큰 쪽의 축-버림 집합을 그대로 따라가는** 방식이라 다르다.
     a, b = _bcast_order(node, ctx)   # add 도 가환 — 큰 텐서를 first 로
+    ins = [t for t in node.in_tensors if t is not None]
+    if len(ins) >= 2:
+        try:
+            s0 = [int(d) for d in ins[0].shape]
+            s1 = [int(d) for d in ins[1].shape]
+            big_sh, small_sh = (s0, s1) if (_nelem(ins[0]) or 0) >= (_nelem(ins[1]) or 0) else (s1, s0)
+            fixed = _same_drop_reshape(node, b, big_sh, small_sh)
+            if fixed:
+                b = fixed
+        except Exception:
+            pass
     return ctx.out(node, f"ggml_add(m, {a}, {b})")
 
 

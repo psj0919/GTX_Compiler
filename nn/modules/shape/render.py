@@ -379,9 +379,43 @@ def render_linspace(node, ctx):
     return ctx.out(node, f"ggml_arange(m, {start}f, {end + step / 2.0}f, {step}f)", hint="lin")
 
 
+def _uniform_scalar(data):
+    """상수 데이터(list/스칼라)를 평탄화해 단일값(또는 전부 동일값)이면 float 반환, 아니면 None.
+    YOLO head 의 anchor offset(0.5)·stride(8/16/32) 같은 스칼라 상수 추출용."""
+    if data is None:
+        return None
+
+    def flat(x):
+        r = []
+        for e in (x if isinstance(x, (list, tuple)) else [x]):
+            r += flat(e) if isinstance(e, (list, tuple)) else [e]
+        return r
+
+    try:
+        f = [float(v) for v in flat(data)]
+    except (TypeError, ValueError):
+        return None
+    if not f:
+        return None
+    if all(abs(v - f[0]) < 1e-9 for v in f):
+        return f[0]
+    return None
+
+
+def _filled_scalar(v):
+    # ggml 그래프에 채워진 1-element 상수 [v]: arange(v, v+0.5, 1) = [v] (no_alloc 컨텍스트라
+    # ggml_new_tensor 는 미초기화 → arange 로 값을 실제 채운다). 이후 broadcast 로 add/div 에 쓰임.
+    return f"ggml_arange(m, {float(v)}f, {float(v) + 0.5}f, 1.0f) /* const {float(v)} */"
+
+
 @_rr(_OP.CONST)
 def render_const(node, ctx):
-    # const 텐서(anchor seed). 정적 shape 의 영텐서로 emit (값은 GGUF/런타임 주입 대상).
+    # const 값은 parse 단계 set_config("data", ...) 로 IR 에 저장됨 → ctx.attr 로 읽어 채운다.
+    # ⚠️ 이 조회가 없으면 `ggml_new_tensor` 로만 나가는데 **no_alloc 컨텍스트라 미초기화**다 —
+    #    쓰레기 메모리가 상수 자리에 앉아 크래시 없이 조용히 틀린다(swin: const 168개).
+    v = _uniform_scalar(ctx.attr(node, "data", None))
+    if v is not None:
+        return ctx.out(node, _filled_scalar(v), hint="const")
     sh = out_shape(node)
     if sh and len(sh) <= 4:
         _, args = _ne_args(sh)
