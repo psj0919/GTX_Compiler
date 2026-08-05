@@ -139,7 +139,7 @@ class OpCreator(object):
             #    다음 BN 으로 흘러간다(detectors 실측: `op149 = x` → batch_norm_2d abort).
             if (weight and weight.node is not None and not transposed
                     and getattr(weight, "ndim", 0) == 4 and int(groups) == 1):
-                op = TorchBaseOperation(OP.CONV2D_DYNAMIC, "conv2d_dynamic")
+                op = TorchConv2dDynamic()
                 op.set_config("stride", _as_int_list(stride) or [1, 1])
                 op.set_config("padding", _as_int_list(padding) or [0, 0])
                 op.set_config("dilation", _as_int_list(dilation) or [1, 1])
@@ -449,7 +449,7 @@ class OpCreator(object):
             # param 으로 잡지 않으면 driver 가 이미 채운 in_tensors(input,weight,[bias])로 남는다.
             # ⚠️ 여기서 raise 하면 **op 이 통째로 unhandled 로 떨어져** attention 이 passthrough 가
             #    된다(pvt: aten::linear 32건 + split_with_sizes 32건이 전부 TODO 주석으로 나갔다).
-            op = TorchBaseOperation(OP.LINEAR_DYNAMIC, "linear_dynamic")
+            op = TorchLinearDynamic()
             op.set_config("has_bias", bias is not None)
             return op
         op = TorchLinear()
@@ -469,7 +469,11 @@ class OpCreator(object):
         # std/var(Tensor self, int[1]? dim, bool unbiased=True, bool keepdim=False). ConvWS2d 의
         # weight standardization(weight.view(c,-1).std(dim=1)) 등. render 가 mean·sub·sqr·mean·sqrt 로 전개.
         sstr = SchemaHelper(self.cur_node.schema).toString()
-        op = TorchPermuteInvarOp(optype, name)
+        # op 클래스가 있으면 그걸 쓴다 — ScriptWriter 의 `.py` export 가 클래스로 모듈을 찾는다.
+        # (없으면 `op_class_type of op (unknown) is unknown` 으로 export 만 실패한다.)
+        op = (TorchVariance() if optype == OP.VARIANCE
+              else TorchStd() if optype == OP.STD
+              else TorchPermuteInvarOp(optype, name))
         op.set_config("input", args[0])
         dim = None
         unbiased = True
@@ -506,7 +510,7 @@ class OpCreator(object):
         # kernel=stride=in//out 계산(정수배면 정확). multi-output(값,인덱스)이나 값만 사용.
         # 없으면 unhandled 로 떨어져 **다운샘플이 통째로 생략**되고, BFP 가 128x128 을 그대로
         # 합쳐 뒤 reshape 이 nelements 로 죽는다(libra_rcnn 실측).
-        op = TorchBaseOperation(OP.ADAPTIVEMAXPOOL2D, "adaptive_max_pool2d")
+        op = TorchAdaptiveMaxPool2d()
         op.set_config("input", args[0])
         if len(args) > 1:
             op.set_config("output_size", args[1])
