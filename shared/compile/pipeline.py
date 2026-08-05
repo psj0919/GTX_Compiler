@@ -696,7 +696,13 @@ def fold_conv_bn_graph(graph, report=None):
 _SAFE_DEV_OPTS = [
     "strip_redundant_ops",       # CONTIGUOUS 등 잉여 op 제거
     "fuse_pad",                  # 명시적 Pad 노드 → conv/pool pad attr 흡수
-    "fuse_transpose_matmul",     # transpose+matmul → 단일 matmul(transpose flag)
+    # fuse_transpose_matmul — 제외: 이 패스는 PERMUTE 노드를 **그래프에서 지우고** matmul 의
+    #   `is_trans_b` 플래그가 대신 표현한다고 가정한다(xmodel/NPU 백엔드 규약). 그런데 ggml
+    #   MATMUL 렌더러는 그 플래그를 안 읽고 **항상** 두번째 피연산자를 transpose 한다 →
+    #   지워진 permute 만큼 수식이 달라진다. libra_rcnn NonLocal 이 실측 사례:
+    #     deploy  mul_mat(cont(transpose(phi)), permute(theta))   ← permute 3개
+    #     port    mul_mat(cont(permute(phi)),   theta)            ← permute 1개, can_mul_mat abort
+    #   렌더러가 is_trans_b 를 소비하도록 만들기 전에는 켜면 안 된다.
     "fuse_redundant_transpose",  # 상쇄되는 연속 transpose 제거
     "merge_permute_to_linear",   # linear 앞 permute 를 weight 축 재배열로 흡수
     "merge_consecutive_reshape", # 연속 reshape 를 하나로 병합
@@ -716,13 +722,17 @@ _SAFE_DEV_OPTS = [
 
 def apply_dev_graph_opts(graph, report=None):
     """_SAFE_DEV_OPTS 를 순차 적용(best-effort). 반환: 최적화된 dev_graph(clone) 또는 원본."""
-    if not _SAFE_DEV_OPTS:
+    # `G2C_SKIP_OPTS=pass1,pass2` 로 개별 pass 를, `G2C_SKIP_OPTS=all` 로 전부 끈다.
+    # 어느 pass 가 그래프를 망가뜨렸는지 이분 탐색할 때 쓴다.
+    _skip = {s.strip() for s in (os.environ.get("G2C_SKIP_OPTS") or "").split(",") if s.strip()}
+    passes = [] if "all" in _skip else [p for p in _SAFE_DEV_OPTS if p not in _skip]
+    if not passes:
         return graph
     try:
         from shared.compile.deploy_optimizer import DevGraphOptimizer
         opt = DevGraphOptimizer(graph)
         applied = []
-        for name in _SAFE_DEV_OPTS:
+        for name in passes:
             before = _node_snapshot(opt.dev_graph)
             getattr(opt, name)()
             applied.append(name)
