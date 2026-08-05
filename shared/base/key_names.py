@@ -326,6 +326,8 @@ class OP(object):
     SPACE_TO_BATCH_ND = "space_to_batch_nd"
     SPARSE_SOFTMAX_CROSS_ENTROPY = "sparse_softmax_cross_entropy_with_logits"
     SPLIT = "split"
+    UNBIND = "unbind"   # torch.unbind
+    IM2COL = "im2col"   # F.unfold — Swin 등
     SQRT = "sqrt"
     SQUARE = "square"
     SQUEEZE = "squeeze"
