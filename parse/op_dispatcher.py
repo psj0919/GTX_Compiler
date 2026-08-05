@@ -131,6 +131,20 @@ class OpCreator(object):
                 (in_channels, out_channels/groups, kernel_size_0, kernel_size_1)
         """
         if (weight and weight.node != None) or (bias and bias.node != None):
+            # 동적 weight conv (예: DetectoRS 의 ConvAWS2d — 표준화된 weight 가 런타임 계산
+            # 텐서다). weight/bias 를 param 이 아닌 in_tensor 로 남겨 render 가
+            # `ggml_conv_2d(m, W, x, …)` 로 emit 한다. 정규 2D conv(ndim==4, non-transposed,
+            # groups==1)만 지원 — 그 외는 기존 raise.
+            # ⚠️ 여기서 raise 하면 op 이 통째로 unhandled 로 떨어져 **입력 이미지가 그대로**
+            #    다음 BN 으로 흘러간다(detectors 실측: `op149 = x` → batch_norm_2d abort).
+            if (weight and weight.node is not None and not transposed
+                    and getattr(weight, "ndim", 0) == 4 and int(groups) == 1):
+                op = TorchBaseOperation(OP.CONV2D_DYNAMIC, "conv2d_dynamic")
+                op.set_config("stride", _as_int_list(stride) or [1, 1])
+                op.set_config("padding", _as_int_list(padding) or [0, 0])
+                op.set_config("dilation", _as_int_list(dilation) or [1, 1])
+                op.set_config("has_bias", bias is not None)
+                return op
             raise ("weight or bias is not a constant param!")
         weight_size = weight.shape
         if transposed:

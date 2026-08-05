@@ -109,6 +109,21 @@ def render_linear(node, ctx):
     return ctx.out(node, f"linear({key}, {ctx.inp(node)})", hint="fc")
 
 
+@register_render(OP.CONV2D_DYNAMIC)
+def render_conv2d_dynamic(node, ctx):
+    # 동적(런타임 계산) weight conv (예: DetectoRS 의 ConvAWS2d 표준화 weight).
+    # in_tensors=[input, weight, (bias)]. conv_2d_wt 는 conv_2d 와 동일하게 레이아웃
+    # (cwhn↔whcn·F16·im2col)을 처리한다. groups==1 만 dispatcher 가 이 경로로 보낸다.
+    x = ctx.inp(node, 0)
+    w = ctx.inp(node, 1)
+    s = ctx.scalar(ctx.attr(node, "stride", [1, 1]))
+    p = ctx.scalar(ctx.attr(node, "padding", [0, 0]))
+    d = ctx.scalar(ctx.attr(node, "dilation", [1, 1]))
+    ins = [t for t in node.in_tensors if t is not None]
+    bias = ctx.inp(node, 2) if (bool(ctx.attr(node, "has_bias", False)) and len(ins) >= 3) else "nullptr"
+    return ctx.out(node, f"conv_2d_wt(m, {x}, {w}, {bias}, {s}, {p}, {d})", hint="convd")
+
+
 @register_render(OP.LINEAR_DYNAMIC)
 def render_linear_dynamic(node, ctx):
     # F.linear(x, W, b) = x @ W.T + b 에서 W 가 동적 그래프 텐서(예: nn.MultiheadAttention 이
