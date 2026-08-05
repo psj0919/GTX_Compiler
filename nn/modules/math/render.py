@@ -20,7 +20,7 @@ pad_reflect_1d)와 head_render.py 의 floor_divide/remainder 를 통합한 모�
 전부 **실제 ggml 그래프 op** 으로 emit 한다 (register_render side-effect).
 """
 
-from shared.compile.render_api import register_render as _rr
+from shared.compile.render_api import register_render as _rr, out_shape
 from shared.base import OP as _OP
 
 
@@ -80,7 +80,7 @@ render_trunc = _unary(_OP.TRUNC, "ggml_trunc", "trunc")
 # ------------------------------------------------------------- 산술
 @_rr(_OP.POW)
 def render_pow(node, ctx):
-    # 지수 2 는 op_dispatcher 가 OP.SQUARE 로 접는다. 여기는 그 외 지수.
+    # 지수 2 는 op_dispatcher 가 _OP.SQUARE 로 접는다. 여기는 그 외 지수.
     e = ctx.attr(node, "exponent", 1.0)
     a = ctx.inp(node)
     if isinstance(e, (int, float)) and float(e).is_integer() and 0 < int(e) <= 8:
@@ -152,14 +152,58 @@ def render_pad_reflect_1d(node, ctx):
     return ctx.out(node, f"ggml_pad_reflect_1d(m, {ctx.inp(node)}, {p[0]}, {p[1]})", hint="padr")
 
 
-@_rr(_OP.PAD)
+
+# ── deploy 이식: F.pad 원소별 파싱 ────────────────────────────────
+# main 의 PAD 렌더러는 `pads` 를 통째로 int() 변환한다 — Swin 은 `[0,0,0,Tensor,0,Tensor]`
+# 처럼 **일부만 Tensor** 라 예외로 떨어져 패딩이 전부 0 이 된다. 원소별로 처리한다.
+@_rr("pad_nd", _OP.PAD)
 def render_pad(node, ctx):
-    # ggml_pad(a, p0,p1,p2,p3): 각 ne 축 뒤쪽 패딩. torch pad 리스트→ggml 축 매핑은 best-effort.
-    p = ctx.attr(node, "pad", ctx.attr(node, "padding", [0, 0, 0, 0])) or [0, 0, 0, 0]
-    p = [int(x) for x in p] + [0, 0, 0, 0]
+    """F.pad → ggml_pad_ext (비대칭 zero-pad). torch pad=[d(-1)L,d(-1)R,d(-2)L,d(-2)R,…] →
+    ggml dim0(W)=마지막축부터. constant(zero) 모드 가정(carafe shift 등)."""
+    x = ctx.inp(node, 0)
+    pads = ctx.attr(node, "pad", None) or ctx.attr(node, "paddings", None) or []
+    # ⚠️ 통째로 `[int(p) for p in pads]` 하면 안 된다 — **일부만 Tensor** 인 경우가 흔하다.
+    # Swin: `F.pad(x, (0,0, 0,pad_r, 0,pad_b))` → `[0, 0, 0, Tensor, 0, Tensor]`.
+    # 통째 변환은 예외로 떨어져 **아는 0 까지 버리고**, 그러면 폴백이 same-padding 으로 대칭
+    # 분배해 `(2,3)` 을 넣는다. Swin 은 **끝에만** 붙여야 하므로 데이터가 통째로 어긋난다.
+    # → 원소별로 아는 값은 살리고, 모르는 값만 shape 차이로 역산한다.
+    known = []
+    for p in (pads or []):
+        try:
+            known.append(int(p))
+        except Exception:
+            known.append(None)
+
+    ish = osh = None
+    try:
+        ish = [int(d) for d in [t for t in node.in_tensors if t is not None][0].shape]
+        osh = [int(d) for d in (out_shape(node) or [])]
+        if not (ish and osh and len(ish) == len(osh)):
+            ish = osh = None
+    except Exception:
+        ish = osh = None
+
+    lp = [0, 0, 0, 0]
+    rp = [0, 0, 0, 0]
+    for i in range(4):
+        kl = known[2 * i] if 2 * i < len(known) else 0
+        kr = known[2 * i + 1] if 2 * i + 1 < len(known) else 0
+        total = None
+        if ish and osh and i < len(ish):
+            total = osh[len(ish) - 1 - i] - ish[len(ish) - 1 - i]   # ggml 축 i ↔ torch 축 nd-1-i
+        if kl is not None and kr is not None:
+            lp[i], rp[i] = kl, kr
+        elif total is not None and total > 0:
+            if kl is not None:                 # 한쪽만 알면 나머지는 shape 차이로 정확히 결정된다
+                lp[i], rp[i] = kl, total - kl
+            elif kr is not None:
+                lp[i], rp[i] = total - kr, kr
+            else:                              # 둘 다 모르면 same-padding 규칙(EfficientNet)
+                lp[i], rp[i] = total // 2, total - total // 2
+        else:
+            lp[i], rp[i] = (kl or 0), (kr or 0)
     return ctx.out(
         node,
-        f"ggml_pad(m, {ctx.inp(node)}, {p[0]}, {p[1]}, {p[2]}, {p[3]})"
-        " /* TODO(ggml): torch pad order → ggml ne 축 확인 */",
+        f"ggml_pad_ext(m, {x}, {lp[0]}, {rp[0]}, {lp[1]}, {rp[1]}, {lp[2]}, {rp[2]}, {lp[3]}, {rp[3]})",
         hint="pad",
     )

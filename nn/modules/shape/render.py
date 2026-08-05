@@ -134,18 +134,50 @@ def _render_perm_general(node, ctx, order, in_shape, hint):
 def _reshape_to_out(node, ctx, hint):
     """정적 출력 shape 로 ggml_reshape_Nd (reshape/unsqueeze 공용).
 
-    ggml_reshape 는 contiguous 입력을 요구 → 항상 ggml_cont 로 감싼다.
-    >4D 출력: 물리버퍼를 ≤4D 로 유지(cont passthrough, 평탄 재해석). 전이 5D 의 그 사이
-    permute 는 _render_perm_general 이 블록 ≤4D 로 처리하고, 마지막 ≤4D reshape↓ 가 정합한다.
+    >4D(예: transformer MHA 의 [B,N,3,H,D]) 면 **크기-1 축을 squeeze** 해 ≤4D 로 낮춘다.
+    크기-1 차원은 flat 원소 순서에 영향이 없으므로 squeeze 는 수치 불변(정확). squeeze 후에도
+    >4D 면 표현 불가 → cont 폴백.
+
+    ⚠️ **어느 크기-1 축을 버리느냐가 broadcast 를 좌우한다.** ggml ne 는 torch shape 의 역순이라
+    torch **뒤쪽** 크기-1 은 `ne0`/`ne1`(가장 빠른 축)이 되고, `ggml_can_repeat` 은 ne 를 축별로
+    비교하므로 이걸 버리면 실제 축이 통째로 앞당겨져 broadcast 상대가 어긋난다.
+    반대로 torch **앞쪽**(바깥) 크기-1 은 ne 의 높은 슬롯이고 ggml 이 빈 상위 슬롯을 1 로 채우므로
+    버려도 의미가 보존된다. → **앞쪽부터 버린다.**
+    실제 사례(resnest Split-Attention): `atten.view(B, radix, -1, 1, 1)` = torch [1,2,64,1,1].
+      전부 squeeze → [2,64]      → ne [64,2,1,1]  ✗ (x=[128,128,64,2] 와 축이 안 맞음)
+      앞쪽만 squeeze → [2,64,1,1] → ne [1,1,64,2]  ✓
+    앞 레이어는 `128 % 64 == 0` 이라 assert 를 통과하며 **조용히 틀린 값**을 내고, 뒤 레이어에서
+    `64 % 128 ≠ 0` 으로 터진다 — 크래시 지점이 원인 지점이 아니다.
     """
     sh = out_shape(node)
     a = ctx.inp(node)
-    if not sh or len(sh) > 4:
-        return ctx.out(node, f"ggml_cont(m, {a}) /* reshape to {sh} (>4D → physical ≤4D 유지) */",
-                       hint=hint)
-    _, args = _ne_args(sh)
-    return ctx.out(node, f"ggml_reshape_{len(sh)}d(m, ggml_cont(m, {a}), {args})", hint=hint)
-
+    if not sh:
+        return ctx.out(node, f"ggml_cont(m, {a}) /* reshape: shape 미상 */", hint=hint)
+    sh2 = sh
+    if len(sh2) > 4:
+        sh2 = [d for d in sh if int(d) != 1]  # 크기-1 squeeze
+    # ⚠️ 이 순서(squeeze 먼저, 병합은 그래도 >4D 일 때만)를 바꾸지 마라.
+    #    "병합 우선" 도 "rank 보존 우선" 도 시도했으나 **둘 다 `pvt` 를 cos 1.0 → 0.87 로
+    #    회귀시켰다**(2026-08-03 실측, 회귀세트 `pvt·detr·resnest·ssd·yolo·regnet`).
+    #    Swin 의 `mask.unsqueeze(1).unsqueeze(0)`=[1,361,1,49,49] 이 squeeze 로 3D 가 돼
+    #    head broadcast 축을 잃는 문제는 남아 있다 — **이 함수가 아니라 소비하는 이항 연산에서**
+    #    좁게 고쳐야 한다(`sub.py` 의 양방향 broadcast 처리와 같은 방식).
+    if len(sh2) > 4:
+        # 아직 >4D → **바깥 축들을 하나로 병합**한다. 연속 메모리에서 인접 축 병합은 flat
+        # 원소 순서를 바꾸지 않으므로 수치 불변이고, cont 폴백(형태를 통째로 포기)보다 낫다.
+        # 예) Swin qkv [3,361,3,49,32] → [1083,3,49,32]. 뒤따르는 `select(dim=0)` 이
+        # 이 병합을 전제로 view 를 낸다(`select_render.render_select`).
+        head = [int(d) for d in sh2[:len(sh2) - 3]]
+        n = 1
+        for d in head:
+            n *= d
+        sh2 = [n] + [int(d) for d in sh2[len(sh2) - 3:]]
+    if len(sh2) > 4 or len(sh2) == 0:
+        return ctx.out(node, f"ggml_cont(m, {a}) /* reshape to {sh} (>4D) */", hint=hint)
+    _, args = _ne_args(sh2)
+    # ggml_reshape 는 contiguous 입력 필요 → slice/view/permute 출력이 들어오면 assert.
+    # cont 로 감싸 안전하게(이미 contiguous 면 복사 비용만, 수치 불변). attention 의 reshape(slice) 등.
+    return ctx.out(node, f"ggml_reshape_{len(sh2)}d(m, ggml_cont(m, {a}), {args})", hint=hint)
 
 def _permute_expr(a, order, ndim):
     # ≤4D 전용. >4D 는 render_transpose/render_permute 가 _render_perm_general 로 처리.
@@ -349,4 +381,17 @@ def render_meshgrid(node, ctx):
     else:
         var = ctx.out(node, f"ggml_cont(m, {a})", hint="mg")
     ctx.bind_outputs(node, var)
+    return var
+
+
+@_rr("dropout", "aten::dropout", "aten::dropout_")
+def render_dropout(node, ctx):
+    """추론 그래프에서 dropout 은 항등(no-op) — 입력 var 를 그대로 바인딩한다.
+
+    렌더러가 없으면 `unhandled op` 로 남아 passthrough 되는데, 그 자체는 값이 같지만
+    **새 변수를 만들어 바인딩**하므로 뒤따르는 shape 추론이 어긋날 수 있다.
+    Swin 계열에서 49건이 이 상태였다.
+    """
+    var = ctx.inp(node)
+    ctx.bind(node, var)
     return var
