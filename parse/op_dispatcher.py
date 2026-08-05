@@ -465,6 +465,42 @@ class OpCreator(object):
         op.set_config("in_features", weight_size[1])
         return op
 
+    def _std_var(self, optype, name, *args):
+        # std/var(Tensor self, int[1]? dim, bool unbiased=True, bool keepdim=False). ConvWS2d 의
+        # weight standardization(weight.view(c,-1).std(dim=1)) 등. render 가 mean·sub·sqr·mean·sqrt 로 전개.
+        sstr = SchemaHelper(self.cur_node.schema).toString()
+        op = TorchPermuteInvarOp(optype, name)
+        op.set_config("input", args[0])
+        dim = None
+        unbiased = True
+        keepdim = False
+        if len(args) >= 2 and ("dim" in sstr):
+            d = args[1]
+            if isinstance(d, int) and not isinstance(d, bool):
+                d = [d]
+            if isinstance(d, (list, tuple)) and all(
+                isinstance(x, int) and not isinstance(x, bool) for x in d
+            ):
+                dim = list(d)
+            for a in args[2:]:
+                if isinstance(a, bool):
+                    unbiased = a
+                    break
+            if len(args) >= 4 and isinstance(args[3], bool):
+                keepdim = args[3]
+        elif len(args) >= 2 and isinstance(args[1], bool):
+            unbiased = args[1]
+        op.set_config("dim", dim)
+        op.set_config("unbiased", unbiased)
+        op.set_config("keepdim", keepdim)
+        return op
+
+    def var(self, *args):
+        return self._std_var(OP.VARIANCE, "variance", *args)
+
+    def std(self, *args):
+        return self._std_var(OP.STD, "std", *args)
+
     def adaptive_max_pool2d(self, *args):
         # BFP(Libra R-CNN) 등: 고해상도 레벨을 gather 크기로 다운샘플. render 가 out/in shape 로
         # kernel=stride=in//out 계산(정수배면 정확). multi-output(값,인덱스)이나 값만 사용.

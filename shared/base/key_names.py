@@ -195,6 +195,8 @@ class OP(object):
     # split_with_sizes 로 잘라 q/k/v 를 만들므로 weight 가 그래프 텐서다 → 별도 op 으로 가른다.
     LINEAR_DYNAMIC = "linear_dynamic"
     CONV2D_DYNAMIC = "conv2d_dynamic"
+    STD = "std"
+    VARIANCE = "variance"
     ADAPTIVEMAXPOOL2D = "adaptive_max_pool2d"
     DEPTHWISE_CONV1D = "depthwise_conv1d"
     DEPTHWISE_CONV2D = "depthwise_conv2d"

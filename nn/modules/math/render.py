@@ -38,6 +38,63 @@ def render_sqrt(node, ctx):
     return ctx.out(node, f"ggml_sqrt(m, {ctx.inp(node)})", hint="sqrt")
 
 
+def _mean_over_axis(x, ax):
+    """ggml ne 축 ax 에 대한 평균(size-1 keepdim 유지). ax!=0 이면 permute 로 ne0 이동 후 mean."""
+    if ax == 0:
+        return f"ggml_mean(m, {x})"
+    p = [0, 1, 2, 3]
+    p[0], p[ax] = p[ax], p[0]
+    perm = f"{p[0]}, {p[1]}, {p[2]}, {p[3]}"
+    return (f"ggml_cont(m, ggml_permute(m, ggml_mean(m, "
+            f"ggml_cont(m, ggml_permute(m, {x}, {perm}))), {perm}))")
+
+
+def _render_std_var(node, ctx, is_std):
+    """std(x,dim) = sqrt(var), var = mean((x-mean(x))^2) * (unbiased ? N/(N-1) : 1).
+
+    ConvWS2d/ConvAWS2d 의 weight standardization(`weight.view(c,-1).std(dim=1)`)이 이걸 쓴다.
+    ggml 에 전용 커널이 없어 mean·sub·sqr·mean·(scale)·sqrt 로 전개한다.
+    ⚠️ 지원이 없으면 op 이 unhandled 로 떨어져 **입력이 그대로** 통과하고, 뒤 reshape 이
+       `nelements` 로 죽는다(detectors: [147,64] 가 [1,1,1,64] 로 안 줄어듦).
+    """
+    x = ctx.inp(node)
+    dims = ctx.attr(node, "dim", None)
+    unbiased = bool(ctx.attr(node, "unbiased", True))
+    try:
+        ish = [int(d) for d in [t for t in node.in_tensors if t is not None][0].shape]
+    except Exception:
+        ish = None
+    ndim = len(ish) if ish else 4
+    if dims is None:
+        dims = [ndim - 1]           # 미지정 → 마지막 축(best-effort)
+    if isinstance(dims, int):
+        dims = [dims]
+    expr = x
+    for d in dims:
+        ax = ggml_axis(d, ndim)
+        n = ish[d] if (ish and 0 <= d < len(ish)) else None
+        cen = f"ggml_sub(m, {expr}, {_mean_over_axis(expr, ax)})"
+        var_e = _mean_over_axis(f"ggml_sqr(m, {cen})", ax)
+        if unbiased and n and n > 1:
+            var_e = f"ggml_scale(m, {var_e}, (float){n}/(float){n - 1})"
+        expr = f"ggml_sqrt(m, {var_e})" if is_std else var_e
+    sh = out_shape(node)
+    if sh and len(sh) <= 4:
+        ne = list(reversed([int(d) for d in sh]))
+        expr = f"ggml_reshape_{len(ne)}d(m, ggml_cont(m, {expr}), {', '.join(str(d) for d in ne)})"
+    return ctx.out(node, expr, hint="std")
+
+
+@_rr(_OP.STD)
+def render_std(node, ctx):
+    return _render_std_var(node, ctx, is_std=True)
+
+
+@_rr(_OP.VARIANCE)
+def render_var(node, ctx):
+    return _render_std_var(node, ctx, is_std=False)
+
+
 def _sum_over_axis(x, ax):
     """ggml ne 축 ax 에 대한 합(size-1 keepdim 유지).
 
