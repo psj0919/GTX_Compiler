@@ -32,6 +32,75 @@ def render_clamp(node, ctx):
     return ctx.out(node, f"ggml_clamp(m, {ctx.inp(node)}, {float(lo)}f, {float(hi)}f)", hint="clamp")
 
 
+@_rr("aten::clamp_", "clamp_")
+def render_clamp_inplace(node, ctx):
+    """in-place `clamp_` — 값 의미는 `clamp` 과 같다(ggml 은 out-of-place).
+
+    DyHead 의 hard-sigmoid(`clamp(x/6 + 0.5, 0, 1)`)가 이걸 쓴다. 등록이 없으면
+    passthrough 로 떨어져 **클램핑이 사라지고** scale/task attention 이 통째로 틀린다.
+    """
+    lo = ctx.attr(node, "min", None)
+    hi = ctx.attr(node, "max", None)
+    lo = 0.0 if lo is None else float(lo)
+    hi = 1.0 if hi is None else float(hi)
+    return ctx.out(node, f"ggml_clamp(m, {ctx.inp(node)}, {lo}f, {hi}f)", hint="clamp")
+
+
+def _prod(xs):
+    n = 1
+    for d in xs:
+        n *= int(d)
+    return n
+
+
+def _bcast_pair(node, a, b):
+    """두 피연산자를 **출력 shape 로 함께 확장**한 (a, b) 를 돌려준다.
+
+    ggml `can_repeat(b,a)` 는 b→a 한 방향만 허용한다. torch 처럼 양쪽이 서로를 못 덮는
+    경우(`[49,1,361]` vs `[1,49,361]`)는 둘 다 `ggml_repeat` 으로 먼저 펴야 한다.
+    한 방향으로 되는 경우는 그대로 둔다(불필요한 복사 회피 + 기존 동작 유지).
+    """
+    try:
+        ins = [t for t in node.in_tensors if t is not None]
+        sa = [int(d) for d in ins[0].shape]
+        sb = [int(d) for d in ins[1].shape]
+        osh = [int(d) for d in (out_shape(node) or [])]
+
+        def _covers(dst, src):
+            return len(dst) == len(src) and all(d % s == 0 for d, s in zip(dst, src) if s)
+
+        if not osh or len(osh) > 4 or _covers(sa, sb) or _covers(sb, sa):
+            return a, b
+        ne = list(reversed(osh))
+        while len(ne) < 4:
+            ne.append(1)
+        tgt = (f"ggml_reshape_4d(m, ggml_scale(m, ggml_arange(m, 0.0f, {float(_prod(osh))}f, 1.0f), 0.0f), "
+               f"{ne[0]}, {ne[1]}, {ne[2]}, {ne[3]})")
+        return f"ggml_repeat(m, {a}, {tgt})", f"ggml_repeat(m, {b}, {tgt})"
+    except Exception:
+        return a, b
+
+
+@_rr("aten::max")
+def render_aten_max(node, ctx):
+    """`aten::max` — 인자 수로 갈린다.
+
+    - 텐서 2개: **원소별 max** → `(a+b+|a-b|)/2` (정확)
+    - 그 외(dim 리덕션): 기존 `_OP.MAX` 렌더러가 맡던 의미라 여기선 통과시킨다.
+    DyHead 의 scale-aware attention 이 원소별 max 를 쓴다.
+    """
+    ins = [t for t in node.in_tensors if t is not None]
+    if len(ins) >= 2:
+        a, b = _bcast_pair(node, ctx.inp(node, 0), ctx.inp(node, 1))
+        return ctx.out(
+            node,
+            f"ggml_scale(m, ggml_add(m, ggml_add(m, {a}, {b}), "
+            f"ggml_abs(m, ggml_sub(m, {a}, {b}))), 0.5f)",
+            hint="max",
+        )
+    return ctx.out(node, f"ggml_cont(m, {ctx.inp(node)}) /* TODO(ggml): max(dim) */", hint="max")
+
+
 # ------------------------------------------------------------- 리덕션
 @_rr(_OP.SQRT)
 def render_sqrt(node, ctx):
