@@ -139,7 +139,9 @@ class TorchGraphHandler(object):
                 QError.PYTORCH_TRACE,
                 f"Failed to get graph from model and input args. The PyTorch internal failed reason is:\n{str(e)}",
             )
-            # sys.exit(1)
+            # trace 실패 시 fw_graph 가 unbound → 아래에서 UnboundLocalError 로 **진짜 원인을 가린다**.
+            # 진짜 예외를 그대로 전파해 호출측이 정확한 실패 사유를 받게 한다.
+            raise
         ScreenLogger().info("Finish tracing.")
 
         node_kinds = {node.kind().split(":")[-1] for node in fw_graph.nodes()}

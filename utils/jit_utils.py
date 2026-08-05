@@ -358,6 +358,11 @@ def _tracing_name(module):
         if name_to_child is None:
             name_to_child = {}
 
+        # HRNet 등은 ModuleList 에 None 브랜치(identity transition)를 둔다 → None 은
+        # named_children() 가 없어 크래시. None 자식은 계층에 담지 않고 건너뛴다.
+        if module is None:
+            return name_to_child
+
         name_to_child[prefix] = module
         # If the child is a ModuleList,
         # we need to use the child in the list as the actual child.
