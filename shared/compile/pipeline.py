@@ -308,6 +308,11 @@ def generate_gguf(graph, output_dir: str, model_name: str, arch_id: str,
             qbytes = gguf_quants.quantize(a, entry["qtype"])
             writer.add_tensor(key, qbytes, raw_dtype=entry["qtype"])
             n_quant += 1
+        elif not np.issubdtype(np.asarray(arr).dtype, np.floating):
+            # 정수 버퍼(예: Swin 의 `relative_position_index`)를 float 으로 캐스팅하면 안 된다 —
+            # `ggml_get_rows` 는 인덱스 텐서가 **I32** 여야 하고, 아니면
+            # `GGML_ASSERT(b->type == GGML_TYPE_I32)` 로 죽는다(swin·glip·grounding_dino 공통).
+            writer.add_tensor(key, np.ascontiguousarray(arr).astype(np.int32))
         else:
             writer.add_tensor(key, np.ascontiguousarray(arr).astype(np.float16))
 
