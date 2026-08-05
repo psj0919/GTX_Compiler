@@ -829,7 +829,16 @@ def compile_model(model, name: str, input_shape, output_dir: str, quant=None,
     # codegen 과 gguf 가 같은 fold 결과(키)를 공유해야 정합 → 여기서 한 번만 계산.
     from shared.compile.const_fold import fold_constants
 
-    baked, skip = fold_constants(graph, (input_shape[-2], input_shape[-1]))
+    # const-fold 는 **기본 off** 다. skip 된 노드의 출력이 baked 에 안 들어가는 경우가 있어
+    # 하류 `ctx.inp()` 가 그래프 입력 x(= 이미지)로 폴백한다 — PVT 는 pos_embed 슬라이스가
+    # 접히면서 `ggml_add(ln4, permute(x))` 가 나와 can_repeat 로 죽었다.
+    # (실측: pvt 에서 410 노드 skip / 16 텐서만 bake. deploy 는 이 기능 자체가 없고 100/100.)
+    # G2C_CONST_FOLD=1 로 켤 수 있다.
+    import os as _cf_os
+    if _cf_os.environ.get("G2C_CONST_FOLD"):
+        baked, skip = fold_constants(graph, (input_shape[-2], input_shape[-1]))
+    else:
+        baked, skip = {}, set()
     if baked:
         print(f"[g2c] const-fold: {len(baked)} baked tensor(s), {len(skip)} node(s) skipped",
               flush=True)
