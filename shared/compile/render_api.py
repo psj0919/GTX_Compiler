@@ -166,6 +166,8 @@ class RenderContext:
 
     def __init__(self):
         self._var = {}        # id(tensor) -> C++ 변수명
+        self._var_by_name = {}  # tensor.name -> 변수명 (multi-output unbind 처럼 id() 재사용으로
+                                # id 키가 불안정한 경우용. 이름은 IR 에서 고유·안정).
         self._counter = 0
         self._weights = []    # (weight_key, [suffix...])
         self.lines = []       # forward 본문 라인
@@ -178,8 +180,45 @@ class RenderContext:
     def inp(self, node, i=0):
         ins = [t for t in node.in_tensors if t is not None]
         if i < len(ins):
-            return self._var.get(id(ins[i]), "x")
+            t = ins[i]
+            # 이름 기반 바인딩 우선(있으면): multi-output split/unbind 출력은 id() 가 GC 재사용으로
+            # 불안정 → 안정적 tensor.name 으로 정확히 해소. (그 op 출력에만 설정되므로 타 op 무영향.)
+            nm = getattr(t, "name", None)
+            if nm is not None and nm in self._var_by_name:
+                return self._var_by_name[nm]
+            v = self._var.get(id(t))
+            if v is not None:
+                return v
+            # producing node 가 없는 **자유 nn.Parameter**(PVT pos_embed, ViT class_token 등)는
+            # 어떤 op 도 만들지 않아 _var 에 없다 → gguf raw 텐서(m.find)로 직접 참조한다.
+            # 이 폴백이 없으면 아래 `return "x"` 가 **그래프 입력(= 이미지)** 을 흘려보내
+            # residual add 가 [64,16384] + [512,512,3] 같은 조합이 돼 can_repeat 로 죽는다
+            # (크래시가 안 나는 조합이면 조용히 틀린다).
+            key = self._param_key(t)
+            if key is not None:
+                if (key, []) not in self._weights:
+                    self._weights.append((key, []))
+                return f'm.find("{key}")'
+            return "x"
         return "x"
+
+    @staticmethod
+    def _param_key(t):
+        """자유 파라미터 텐서 → gguf 텐서명(state_dict 키). 아니면 None."""
+        is_param = getattr(t, "is_param_tensor", None)
+        try:
+            param = is_param() if callable(is_param) else (getattr(t, "_node", 1) is None)
+        except Exception:
+            param = False
+        if not param:
+            return None
+        if getattr(t, "data", None) is None:
+            return None
+        nm = getattr(t, "name", None) or getattr(t, "_name", None)
+        if not nm:
+            return None
+        # 그래프 프리픽스("VisionTransformer::class_token") 제거 → state_dict 키와 정합.
+        return str(nm).split("::")[-1]
 
     def bind(self, node, var):
         if node.out_tensors:
@@ -216,3 +255,16 @@ class RenderContext:
         key = weight_key(node)
         self._weights.append((key, list(suffixes)))
         return f'm["{key}"]'
+
+    def raw_weight(self, node, suffix):
+        """state_dict 키를 **텐서로** 직접 참조한다(`m["layer"]` 레이어 핸들이 아니라).
+
+        custom autograd op(mmcv deform 등)은 가중치가 `in_tensors` 에 안 실려 오는 경우가
+        있어 `inp()` 가 그래프 입력 `x`(= 이미지)로 폴백한다 — 그러면 이미지가 커널에
+        가중치로 들어가 `kernel->ne[2] == C` assert 로 죽는다.
+        그런 op 은 노드명에서 얻은 모듈 경로로 gguf 텐서를 직접 찾는다.
+        """
+        key = f"{weight_key(node)}.{suffix}"
+        if (key, []) not in self._weights:
+            self._weights.append((key, []))
+        return f'm.find("{key}")'

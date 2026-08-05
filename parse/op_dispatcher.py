@@ -29,6 +29,42 @@ from utils.jit_utils import *
 from utils.torch_utils import CmpFlag, compare_torch_version
 
 
+def _as_int(x, default=None):
+    """wrapped 상수(파서 Tensor 래퍼/스칼라/넘파이 등)에서 파이썬 int 를 방어적으로 추출."""
+    for get in (lambda v: int(v),
+                lambda v: int(v.item()),
+                lambda v: int(getattr(v, "data")),
+                lambda v: int(getattr(v, "value"))):
+        try:
+            return get(x)
+        except Exception:
+            continue
+    return default
+
+
+def _as_int_list(x):
+    """int[] 상수를 파이썬 list[int] 로 추출. 실패 원소가 있으면 None 반환(→ render 가 shape 로 추론)."""
+    seq = x
+    if not isinstance(seq, (list, tuple)):
+        for attr in ("data", "value"):
+            v = getattr(seq, attr, None)
+            if isinstance(v, (list, tuple)):
+                seq = v
+                break
+        else:
+            try:
+                seq = list(seq)
+            except Exception:
+                return None
+    out = []
+    for s in seq:
+        iv = _as_int(s)
+        if iv is None:
+            return None
+        out.append(iv)
+    return out or None
+
+
 class OpCreator(object):
 
     op_convert_map = {
@@ -95,6 +131,20 @@ class OpCreator(object):
                 (in_channels, out_channels/groups, kernel_size_0, kernel_size_1)
         """
         if (weight and weight.node != None) or (bias and bias.node != None):
+            # 동적 weight conv (예: DetectoRS 의 ConvAWS2d — 표준화된 weight 가 런타임 계산
+            # 텐서다). weight/bias 를 param 이 아닌 in_tensor 로 남겨 render 가
+            # `ggml_conv_2d(m, W, x, …)` 로 emit 한다. 정규 2D conv(ndim==4, non-transposed,
+            # groups==1)만 지원 — 그 외는 기존 raise.
+            # ⚠️ 여기서 raise 하면 op 이 통째로 unhandled 로 떨어져 **입력 이미지가 그대로**
+            #    다음 BN 으로 흘러간다(detectors 실측: `op149 = x` → batch_norm_2d abort).
+            if (weight and weight.node is not None and not transposed
+                    and getattr(weight, "ndim", 0) == 4 and int(groups) == 1):
+                op = TorchConv2dDynamic()
+                op.set_config("stride", _as_int_list(stride) or [1, 1])
+                op.set_config("padding", _as_int_list(padding) or [0, 0])
+                op.set_config("dilation", _as_int_list(dilation) or [1, 1])
+                op.set_config("has_bias", bias is not None)
+                return op
             raise ("weight or bias is not a constant param!")
         weight_size = weight.shape
         if transposed:
@@ -394,7 +444,14 @@ class OpCreator(object):
 
     def linear(self, input, weight, bias):
         if (weight and weight.node != None) or (bias and bias.node != None):
-            raise ("weight or bias is not a constant param!")
+            # 동적 weight/bias (예: nn.MultiheadAttention 이 in_proj_weight 를 split_with_sizes 로
+            # 나눈 q/k/v chunk). 상수 FC 가 아니므로 그래프 텐서 matmul 로 처리한다. weight/bias 를
+            # param 으로 잡지 않으면 driver 가 이미 채운 in_tensors(input,weight,[bias])로 남는다.
+            # ⚠️ 여기서 raise 하면 **op 이 통째로 unhandled 로 떨어져** attention 이 passthrough 가
+            #    된다(pvt: aten::linear 32건 + split_with_sizes 32건이 전부 TODO 주석으로 나갔다).
+            op = TorchLinearDynamic()
+            op.set_config("has_bias", bias is not None)
+            return op
         op = TorchLinear()
         weight_size = weight.shape
         op.set_param(op.ParamName.WEIGHTS, weight)
@@ -406,6 +463,86 @@ class OpCreator(object):
 
         op.set_config("out_features", weight_size[0])
         op.set_config("in_features", weight_size[1])
+        return op
+
+    def _std_var(self, optype, name, *args):
+        # std/var(Tensor self, int[1]? dim, bool unbiased=True, bool keepdim=False). ConvWS2d 의
+        # weight standardization(weight.view(c,-1).std(dim=1)) 등. render 가 mean·sub·sqr·mean·sqrt 로 전개.
+        sstr = SchemaHelper(self.cur_node.schema).toString()
+        # op 클래스가 있으면 그걸 쓴다 — ScriptWriter 의 `.py` export 가 클래스로 모듈을 찾는다.
+        # (없으면 `op_class_type of op (unknown) is unknown` 으로 export 만 실패한다.)
+        op = (TorchVariance() if optype == OP.VARIANCE
+              else TorchStd() if optype == OP.STD
+              else TorchPermuteInvarOp(optype, name))
+        op.set_config("input", args[0])
+        dim = None
+        unbiased = True
+        keepdim = False
+        if len(args) >= 2 and ("dim" in sstr):
+            d = args[1]
+            if isinstance(d, int) and not isinstance(d, bool):
+                d = [d]
+            if isinstance(d, (list, tuple)) and all(
+                isinstance(x, int) and not isinstance(x, bool) for x in d
+            ):
+                dim = list(d)
+            for a in args[2:]:
+                if isinstance(a, bool):
+                    unbiased = a
+                    break
+            if len(args) >= 4 and isinstance(args[3], bool):
+                keepdim = args[3]
+        elif len(args) >= 2 and isinstance(args[1], bool):
+            unbiased = args[1]
+        op.set_config("dim", dim)
+        op.set_config("unbiased", unbiased)
+        op.set_config("keepdim", keepdim)
+        return op
+
+    def var(self, *args):
+        return self._std_var(OP.VARIANCE, "variance", *args)
+
+    def std(self, *args):
+        return self._std_var(OP.STD, "std", *args)
+
+    def adaptive_max_pool2d(self, *args):
+        # BFP(Libra R-CNN) 등: 고해상도 레벨을 gather 크기로 다운샘플. render 가 out/in shape 로
+        # kernel=stride=in//out 계산(정수배면 정확). multi-output(값,인덱스)이나 값만 사용.
+        # 없으면 unhandled 로 떨어져 **다운샘플이 통째로 생략**되고, BFP 가 128x128 을 그대로
+        # 합쳐 뒤 reshape 이 nelements 로 죽는다(libra_rcnn 실측).
+        op = TorchAdaptiveMaxPool2d()
+        op.set_config("input", args[0])
+        if len(args) > 1:
+            op.set_config("output_size", args[1])
+        return op
+
+    def split_with_sizes(self, input, split_sizes, dim=0):
+        # split_with_sizes(x, [s0,s1,...], dim) = dim 축을 s_i 크기로 나눈 N개 텐서(unbind 와 달리
+        # 축을 제거하지 않고 크기만 자름). nn.MultiheadAttention 의 in_proj_weight[3E,E]→q/k/v 등.
+        # multi-output → render(render_split)가 out_tensors 별 view(누적 offset)를 emit.
+        # split_sizes/dim 은 wrapped 상수(Tensor)일 수 있다 → 방어적 추출. 크기 추출 실패해도
+        # render 가 out_tensor shape 에서 크기를 추론하므로 dim 만 확실히 넘기면 된다.
+        op = TorchBaseOperation(OP.SPLIT, "split")
+        op.set_config("input", input)
+        op.set_config("dim", _as_int(dim, 0))
+        sizes = _as_int_list(split_sizes)
+        if sizes is not None:
+            op.set_config("split_sizes", sizes)
+        return op
+
+    def split(self, input, split_size, dim=0):
+        # split(x, size, dim): 균등 크기 size 로 분할. split_with_sizes 로 위임(render 가 크기 추론).
+        op = TorchBaseOperation(OP.SPLIT, "split")
+        op.set_config("input", input)
+        op.set_config("dim", _as_int(dim, 0))
+        return op
+
+    def unbind(self, input, dim=0):
+        # unbind(x, dim) = dim 축을 따라 N개 텐서로 분리(각 = select(dim, i)). timm attention 의
+        # qkv.unbind(0) 등. multi-output → render(render_unbind)가 out_tensors 별 view 를 emit.
+        op = TorchBaseOperation(OP.UNBIND, "unbind")
+        op.set_config("input", input)
+        op.set_config("dim", _as_int(dim, 0))
         return op
 
     def flatten(self, input, start_dim=0, end_dim=-1):

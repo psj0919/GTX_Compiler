@@ -46,106 +46,168 @@ def _perm_args(order, ndim):
     return p
 
 
-def _fold_permute(in_shape, order):
-    """N-D permute(order) 를 블록 permute 로 축약. 인접 입력축이 출력에서도 연속·동순서면
-    한 블록으로 병합(평탄 재해석이라 비용 0). (block_sizes[torch 순], block_order) 반환.
-    order: 출력축 i ← 입력축 order[i] (torch permute 의미).
+def _merge_perm_axes(order, shape):
+    """target 에서도 인접·동순인 source 인접 축쌍을 병합해 permute 를 낮춘다.
+
+    연속 메모리에서 그런 축쌍은 원소 순서상 한 덩어리로 움직이므로 합쳐도 결과가 같다.
+    `(order, shape)` 를 더 못 줄일 때까지 반복해 돌려준다(4D 이하가 되면 permute 가능).
     """
-    n = len(in_shape)
-    inv = [0] * n                          # inv[입력축] = 그 축의 출력 위치
-    for out_pos, in_ax in enumerate(order):
-        inv[int(in_ax) % n] = out_pos
-    blocks = [[0]]
-    for ax in range(1, n):
-        if inv[ax] == inv[ax - 1] + 1:     # 출력에서도 직전 축 바로 뒤 → 병합
-            blocks[-1].append(ax)
-        else:
-            blocks.append([ax])
-    block_sizes = []
-    for blk in blocks:
-        s = 1
-        for ax in blk:
-            s *= int(in_shape[ax])
-        block_sizes.append(s)
-    order_blocks = sorted(range(len(blocks)), key=lambda b: inv[blocks[b][0]])
-    return block_sizes, order_blocks
+    order = [int(x) for x in order]
+    shape = [int(d) for d in shape]
+    changed = True
+    while len(shape) > 4 and changed:
+        changed = False
+        for i in range(len(shape) - 1):
+            if order.index(i + 1) == order.index(i) + 1:      # target 에서도 i, i+1 이 이 순서로 인접
+                shape = shape[:i] + [shape[i] * shape[i + 1]] + shape[i + 2:]
+                order = [x - 1 if x > i + 1 else x for x in order if x != i + 1]
+                changed = True
+                break
+    return order, shape
 
 
-def _swap_adj(ctx, var, sizes, p):
-    """contiguous var(블록 sizes 순)에서 인접 블록 p, p+1 을 교환. ≤4D window 로 표현.
-    [left=∏sizes[:p], sizes[p], sizes[p+1], right=∏sizes[p+2:]] 4D → 중간 둘 swap → cont.
+def _permute_steps(order, shape):
+    """>4D permute 를 **인접 전치의 연속**으로 분해한다.
+
+    임의의 순열은 인접 전치의 곱이고, 인접 전치 하나는 나머지 축을 앞/뒤로 뭉치면
+    **항상 4D permute 로 정확히 표현**된다:
+
+        [prod(앞), d_i, d_{i+1}, prod(뒤)]  --torch swap(1,2)-->  [prod(앞), d_{i+1}, d_i, prod(뒤)]
+
+    병합은 연속 메모리에서 원소 순서를 안 바꾸므로 수치 불변이다. 단계마다 `cont` 복사가
+    한 번씩 들어가므로 느리지만, `_merge_perm_axes` 로 안 줄어드는 순열(Swin qkv
+    `[2,0,3,1,4]`)의 유일한 정확 표현이다. 그 대안은 passthrough(= 틀린 값)뿐이었다.
+
+    돌려주는 것: `[(A, x, y, B), ...]` — 순서대로 적용하면 목표 permute 가 된다.
     """
-    left = 1
-    for s in sizes[:p]:
-        left *= s
-    bp, bp1 = sizes[p], sizes[p + 1]
-    right = 1
-    for s in sizes[p + 2:]:
-        right *= s
-    r = ctx.new_var("fld")
-    # torch [left,bp,bp1,right] → ggml ne=[right,bp1,bp,left]; torch dim1,2 swap = ggml 축 1,2.
-    ctx.line(f"    tensor {r} = ggml_reshape_4d(m, {var}, {right}, {bp1}, {bp}, {left});")
-    s = ctx.new_var("fld")
-    ctx.line(f"    tensor {s} = ggml_cont(m, ggml_permute(m, {r}, 0, 2, 1, 3));")
-    return s
-
-
-def _emit_block_permute(ctx, a, sizes, target):
-    """블록들을 target 순서로 재배열. K>4 면 인접 전치 시퀀스(각 ≤4D)로 분해 → 정확.
-    target[i] = 출력 위치 i 에 올 입력블록 인덱스. 반환: 최종 contiguous var.
-    """
-    K = len(sizes)
-    v = ctx.new_var("fld")
-    ctx.line(f"    tensor {v} = ggml_cont(m, {a});")
-    cur = list(range(K))                   # cur[pos] = 그 위치의 입력블록 인덱스
-    cs = list(sizes)
-    for i in range(K):
-        j = cur.index(target[i])           # target[i] 가 현재 어디 있나
-        while j > i:                       # 인접 전치로 한 칸씩 i 까지 끌어올림
-            v = _swap_adj(ctx, v, cs, j - 1)
-            cur[j - 1], cur[j] = cur[j], cur[j - 1]
-            cs[j - 1], cs[j] = cs[j], cs[j - 1]
+    order = [int(x) for x in order]
+    shape = [int(d) for d in shape]
+    cur = list(range(len(shape)))          # 각 위치에 현재 놓인 source 축
+    cshape = list(shape)
+    steps = []
+    for k in range(len(order)):
+        j = cur.index(order[k])
+        while j > k:                        # 왼쪽으로 한 칸씩 밀어 올린다
+            i = j - 1
+            A = 1
+            for d in cshape[:i]:
+                A *= d
+            B = 1
+            for d in cshape[i + 2:]:
+                B *= d
+            steps.append((A, cshape[i], cshape[i + 1], B))
+            cshape[i], cshape[i + 1] = cshape[i + 1], cshape[i]
+            cur[i], cur[i + 1] = cur[i + 1], cur[i]
             j -= 1
-    return v
+    return steps
 
 
 def _render_perm_general(node, ctx, order, in_shape, hint):
-    """>4D permute: 블록 축약 후 ggml(≤4D)로 정확히 표현. 물리버퍼는 producer 의 ≤4D flat.
+    """>4D permute 를 ggml(≤4D)로 **정확히** 표현한다. 3단 캐스케이드.
 
-    reshape↑/↓ 는 평탄 재해석이라 물리버퍼가 ≤4D 로 유지되고, 데이터 이동인 permute 만
-    표현하면 된다. 블록 ≤4 → 단일 reshape+permute(예: ShuffleNet channel-shuffle).
-    블록 >4(전체 reverse 등) → 인접 전치 시퀀스로 분해(각 단계 ≤4D) → 임의 N-D 도 정확.
+    ① **크기-1 축 squeeze** — 원소를 안 옮기므로 비-1 축의 permute 와 정확히 동치.
+       앞단 reshape(`_reshape_to_out`)도 같은 규칙으로 squeeze 하므로 실제 텐서와 정합한다.
+    ② **인접 축 병합**(`_merge_perm_axes`) — source 에서 인접하고 target 에서도 같은 순서로
+       인접한 축쌍은 합쳐도 flat 원소 순서가 안 바뀐다. Swin window partition 이 이 꼴이다:
+       `[B,Hp,7,Wp,7,C] order=[0,1,3,2,4,5]` → `[B*Hp,7,Wp,7*C] order=[0,2,1,3]`.
+    ③ **인접 전치의 연속**(`_permute_steps`) — 항상 가능. 단계마다 cont 1회.
+
+    ⚠️ ③ 뒤의 **정규화가 핵심**이다. 마지막 단계의 4D 그룹핑은 그 전치에 맞춘 임시 형태라
+    downstream 의 `_reshape_to_out` 규약(= 바깥 축 전부를 하나로 병합)과 어긋난다. 정규화가
+    없으면 뒤따르는 select/reshape 가 **원소 수는 맞는데 축 배치가 달라** `ggml_nelements`
+    assert 로 죽는다(실측: pvt · detectors · libra_rcnn · reid).
     """
     a = ctx.inp(node)
-    block_sizes, order_blocks = _fold_permute(in_shape, order)
-    K = len(block_sizes)
-    if K <= 4:
-        ne = ", ".join(str(d) for d in reversed(block_sizes))   # ggml ne = torch 역순
-        r = ctx.new_var("fld")
-        ctx.line(f"    tensor {r} = ggml_reshape_{K}d(m, ggml_cont(m, {a}), {ne});")
-        p = _perm_args(order_blocks, K)
-        return ctx.out(node, f"ggml_cont(m, ggml_permute(m, {r}, {p[0]}, {p[1]}, {p[2]}, {p[3]}))",
+    ndim = len(in_shape)
+    o = [int(x) % ndim for x in order]
+
+    # ① 크기-1 축 squeeze
+    keep = [ax for ax in range(ndim) if int(in_shape[ax]) != 1]
+    pos = {ax: i for i, ax in enumerate(keep)}
+    sq_order = [pos[o[i]] for i in range(ndim) if int(in_shape[o[i]]) != 1]
+    if 0 < len(sq_order) <= 4:
+        p = _perm_args(sq_order, len(sq_order))
+        return ctx.out(node, f"ggml_cont(m, ggml_permute(m, {a}, {p[0]}, {p[1]}, {p[2]}, {p[3]}))",
                        hint=hint)
-    v = _emit_block_permute(ctx, a, block_sizes, order_blocks)   # >4 블록 분해
-    ctx.bind(node, v)
-    return v
+
+    # ② 인접 축 병합
+    m_order, m_shape = _merge_perm_axes(o, [int(d) for d in in_shape])
+    if 0 < len(m_shape) <= 4:
+        ne = list(reversed(m_shape))
+        while len(ne) < 4:
+            ne.append(1)
+        p = _perm_args(m_order, len(m_shape))
+        src = f"ggml_reshape_4d(m, ggml_cont(m, {a}), {ne[0]}, {ne[1]}, {ne[2]}, {ne[3]})"
+        return ctx.out(node, f"ggml_cont(m, ggml_permute(m, {src}, {p[0]}, {p[1]}, {p[2]}, {p[3]}))",
+                       hint=hint)
+
+    # ③ 인접 전치 분해 + 규약 정규화
+    steps = _permute_steps(o, [int(d) for d in in_shape])
+    if steps:
+        expr = a
+        for (A, x, y, B) in steps:
+            # torch [A, x, y, B] → ggml ne 역순 [B, y, x, A]; torch swap(1,2) = perm(0,2,1,3)
+            expr = (f"ggml_cont(m, ggml_permute(m, ggml_reshape_4d(m, ggml_cont(m, {expr}), "
+                    f"{B}, {y}, {x}, {A}), 0, 2, 1, 3))")
+        osh = [int(in_shape[i]) for i in o]        # permute 결과 torch shape
+        head = 1
+        for d in osh[:len(osh) - 3]:
+            head *= d
+        ne = list(reversed([head] + osh[len(osh) - 3:]))
+        expr = f"ggml_reshape_4d(m, ggml_cont(m, {expr}), {ne[0]}, {ne[1]}, {ne[2]}, {ne[3]})"
+        return ctx.out(node, expr, hint=hint)
+
+    return ctx.out(node, f"ggml_cont(m, {a}) /* TODO(ggml): {ndim}D permute order={list(order)} */",
+                   hint=hint)
 
 
 def _reshape_to_out(node, ctx, hint):
     """정적 출력 shape 로 ggml_reshape_Nd (reshape/unsqueeze 공용).
 
-    ggml_reshape 는 contiguous 입력을 요구 → 항상 ggml_cont 로 감싼다.
-    >4D 출력: 물리버퍼를 ≤4D 로 유지(cont passthrough, 평탄 재해석). 전이 5D 의 그 사이
-    permute 는 _render_perm_general 이 블록 ≤4D 로 처리하고, 마지막 ≤4D reshape↓ 가 정합한다.
+    >4D(예: transformer MHA 의 [B,N,3,H,D]) 면 **크기-1 축을 squeeze** 해 ≤4D 로 낮춘다.
+    크기-1 차원은 flat 원소 순서에 영향이 없으므로 squeeze 는 수치 불변(정확). squeeze 후에도
+    >4D 면 표현 불가 → cont 폴백.
+
+    ⚠️ **어느 크기-1 축을 버리느냐가 broadcast 를 좌우한다.** ggml ne 는 torch shape 의 역순이라
+    torch **뒤쪽** 크기-1 은 `ne0`/`ne1`(가장 빠른 축)이 되고, `ggml_can_repeat` 은 ne 를 축별로
+    비교하므로 이걸 버리면 실제 축이 통째로 앞당겨져 broadcast 상대가 어긋난다.
+    반대로 torch **앞쪽**(바깥) 크기-1 은 ne 의 높은 슬롯이고 ggml 이 빈 상위 슬롯을 1 로 채우므로
+    버려도 의미가 보존된다. → **앞쪽부터 버린다.**
+    실제 사례(resnest Split-Attention): `atten.view(B, radix, -1, 1, 1)` = torch [1,2,64,1,1].
+      전부 squeeze → [2,64]      → ne [64,2,1,1]  ✗ (x=[128,128,64,2] 와 축이 안 맞음)
+      앞쪽만 squeeze → [2,64,1,1] → ne [1,1,64,2]  ✓
+    앞 레이어는 `128 % 64 == 0` 이라 assert 를 통과하며 **조용히 틀린 값**을 내고, 뒤 레이어에서
+    `64 % 128 ≠ 0` 으로 터진다 — 크래시 지점이 원인 지점이 아니다.
     """
     sh = out_shape(node)
     a = ctx.inp(node)
-    if not sh or len(sh) > 4:
-        return ctx.out(node, f"ggml_cont(m, {a}) /* reshape to {sh} (>4D → physical ≤4D 유지) */",
-                       hint=hint)
-    _, args = _ne_args(sh)
-    return ctx.out(node, f"ggml_reshape_{len(sh)}d(m, ggml_cont(m, {a}), {args})", hint=hint)
-
+    if not sh:
+        return ctx.out(node, f"ggml_cont(m, {a}) /* reshape: shape 미상 */", hint=hint)
+    sh2 = sh
+    if len(sh2) > 4:
+        sh2 = [d for d in sh if int(d) != 1]  # 크기-1 squeeze
+    # ⚠️ 이 순서(squeeze 먼저, 병합은 그래도 >4D 일 때만)를 바꾸지 마라.
+    #    "병합 우선" 도 "rank 보존 우선" 도 시도했으나 **둘 다 `pvt` 를 cos 1.0 → 0.87 로
+    #    회귀시켰다**(2026-08-03 실측, 회귀세트 `pvt·detr·resnest·ssd·yolo·regnet`).
+    #    Swin 의 `mask.unsqueeze(1).unsqueeze(0)`=[1,361,1,49,49] 이 squeeze 로 3D 가 돼
+    #    head broadcast 축을 잃는 문제는 남아 있다 — **이 함수가 아니라 소비하는 이항 연산에서**
+    #    좁게 고쳐야 한다(`sub.py` 의 양방향 broadcast 처리와 같은 방식).
+    if len(sh2) > 4:
+        # 아직 >4D → **바깥 축들을 하나로 병합**한다. 연속 메모리에서 인접 축 병합은 flat
+        # 원소 순서를 바꾸지 않으므로 수치 불변이고, cont 폴백(형태를 통째로 포기)보다 낫다.
+        # 예) Swin qkv [3,361,3,49,32] → [1083,3,49,32]. 뒤따르는 `select(dim=0)` 이
+        # 이 병합을 전제로 view 를 낸다(`select_render.render_select`).
+        head = [int(d) for d in sh2[:len(sh2) - 3]]
+        n = 1
+        for d in head:
+            n *= d
+        sh2 = [n] + [int(d) for d in sh2[len(sh2) - 3:]]
+    if len(sh2) > 4 or len(sh2) == 0:
+        return ctx.out(node, f"ggml_cont(m, {a}) /* reshape to {sh} (>4D) */", hint=hint)
+    _, args = _ne_args(sh2)
+    # ggml_reshape 는 contiguous 입력 필요 → slice/view/permute 출력이 들어오면 assert.
+    # cont 로 감싸 안전하게(이미 contiguous 면 복사 비용만, 수치 불변). attention 의 reshape(slice) 등.
+    return ctx.out(node, f"ggml_reshape_{len(sh2)}d(m, ggml_cont(m, {a}), {args})", hint=hint)
 
 def _permute_expr(a, order, ndim):
     # ≤4D 전용. >4D 는 render_transpose/render_permute 가 _render_perm_general 로 처리.
@@ -218,6 +280,29 @@ def render_reshape(node, ctx):
 @_rr(_OP.UNSQUEEZE)
 def render_unsqueeze(node, ctx):
     return _reshape_to_out(node, ctx, hint="uns")
+
+
+# squeeze/unflatten 도 정적 out_shape 기반 reshape 다 — `_reshape_to_out` 을 그대로 쓴다.
+# 없으면 unhandled 로 떨어져 축이 안 바뀐 채 흘러가고, 뒤따르는 matmul 이 `can_mul_mat` 으로 죽는다.
+@_rr(_OP.SQUEEZE, "squeeze")
+def render_squeeze(node, ctx):
+    return _reshape_to_out(node, ctx, hint="sq")
+
+
+@_rr("aten::unflatten", "unflatten")
+def render_unflatten(node, ctx):
+    return _reshape_to_out(node, ctx, hint="unf")
+
+
+@_rr(_OP.EXPAND, "expand", _OP.EXPAND_AS, "expand_as")
+def render_expand(node, ctx):
+    sh = out_shape(node)
+    a = ctx.inp(node)
+    if not sh or len(sh) > 4:
+        return ctx.out(node, f"ggml_cont(m, {a}) /* expand to {sh} (>4D best-effort) */", hint="exp")
+    _, args = _ne_args(sh)
+    ref = f"ggml_new_tensor_{len(sh)}d(m, GGML_TYPE_F32, {args})"
+    return ctx.out(node, f"ggml_repeat(m, {a}, {ref})", hint="exp")   # 타깃 shape 로 브로드캐스트
 
 
 @_rr(_OP.STACK)
@@ -294,9 +379,43 @@ def render_linspace(node, ctx):
     return ctx.out(node, f"ggml_arange(m, {start}f, {end + step / 2.0}f, {step}f)", hint="lin")
 
 
+def _uniform_scalar(data):
+    """상수 데이터(list/스칼라)를 평탄화해 단일값(또는 전부 동일값)이면 float 반환, 아니면 None.
+    YOLO head 의 anchor offset(0.5)·stride(8/16/32) 같은 스칼라 상수 추출용."""
+    if data is None:
+        return None
+
+    def flat(x):
+        r = []
+        for e in (x if isinstance(x, (list, tuple)) else [x]):
+            r += flat(e) if isinstance(e, (list, tuple)) else [e]
+        return r
+
+    try:
+        f = [float(v) for v in flat(data)]
+    except (TypeError, ValueError):
+        return None
+    if not f:
+        return None
+    if all(abs(v - f[0]) < 1e-9 for v in f):
+        return f[0]
+    return None
+
+
+def _filled_scalar(v):
+    # ggml 그래프에 채워진 1-element 상수 [v]: arange(v, v+0.5, 1) = [v] (no_alloc 컨텍스트라
+    # ggml_new_tensor 는 미초기화 → arange 로 값을 실제 채운다). 이후 broadcast 로 add/div 에 쓰임.
+    return f"ggml_arange(m, {float(v)}f, {float(v) + 0.5}f, 1.0f) /* const {float(v)} */"
+
+
 @_rr(_OP.CONST)
 def render_const(node, ctx):
-    # const 텐서(anchor seed). 정적 shape 의 영텐서로 emit (값은 GGUF/런타임 주입 대상).
+    # const 값은 parse 단계 set_config("data", ...) 로 IR 에 저장됨 → ctx.attr 로 읽어 채운다.
+    # ⚠️ 이 조회가 없으면 `ggml_new_tensor` 로만 나가는데 **no_alloc 컨텍스트라 미초기화**다 —
+    #    쓰레기 메모리가 상수 자리에 앉아 크래시 없이 조용히 틀린다(swin: const 168개).
+    v = _uniform_scalar(ctx.attr(node, "data", None))
+    if v is not None:
+        return ctx.out(node, _filled_scalar(v), hint="const")
     sh = out_shape(node)
     if sh and len(sh) <= 4:
         _, args = _ne_args(sh)
@@ -349,4 +468,17 @@ def render_meshgrid(node, ctx):
     else:
         var = ctx.out(node, f"ggml_cont(m, {a})", hint="mg")
     ctx.bind_outputs(node, var)
+    return var
+
+
+@_rr("dropout", "aten::dropout", "aten::dropout_")
+def render_dropout(node, ctx):
+    """추론 그래프에서 dropout 은 항등(no-op) — 입력 var 를 그대로 바인딩한다.
+
+    렌더러가 없으면 `unhandled op` 로 남아 passthrough 되는데, 그 자체는 값이 같지만
+    **새 변수를 만들어 바인딩**하므로 뒤따르는 shape 추론이 어긋날 수 있다.
+    Swin 계열에서 49건이 이 상태였다.
+    """
+    var = ctx.inp(node)
+    ctx.bind(node, var)
     return var

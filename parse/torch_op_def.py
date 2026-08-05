@@ -137,6 +137,56 @@ class TorchMish(Operation):
         utils.op_register(OP.MISH, "Mish")
 
 
+class TorchConv2dDynamic(Operation):
+    """weight/bias 를 **그래프 텐서로** 받는 conv (ConvWS2d/ConvAWS2d 의 표준화된 weight).
+
+    등록 이름은 `torch.nn.functional.conv2d` 의 "conv2d" — torch 네임스페이스에 실재해야
+    `op_class_type` 이 UNKNOWN 이 되지 않는다.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super(TorchConv2dDynamic, self).__init__(OP.CONV2D_DYNAMIC, *args, **kwargs)
+        utils.op_register(OP.CONV2D_DYNAMIC, "conv2d")
+
+
+class TorchLinearDynamic(Operation):
+    """weight 가 런타임 계산 텐서인 linear (nn.MultiheadAttention 의 q/k/v chunk)."""
+
+    def __init__(self, *args, **kwargs):
+        super(TorchLinearDynamic, self).__init__(OP.LINEAR_DYNAMIC, *args, **kwargs)
+        utils.op_register(OP.LINEAR_DYNAMIC, "linear")
+
+
+class TorchAdaptiveMaxPool2d(Operation):
+    """`F.adaptive_max_pool2d` — BFP(Libra R-CNN)가 레벨 정렬에 쓴다."""
+
+    def __init__(self, *args, **kwargs):
+        super(TorchAdaptiveMaxPool2d, self).__init__(OP.ADAPTIVEMAXPOOL2D, *args, **kwargs)
+        utils.op_register(OP.ADAPTIVEMAXPOOL2D, "adaptive_max_pool2d")
+
+
+class TorchVariance(Operation):
+    """`torch.var` — weight standardization(ConvWS2d/ConvAWS2d)이 쓴다.
+
+    ⚠️ `op_register` 의 두번째 인자는 **torch 네임스페이스에 실재하는 이름**이어야 한다.
+    `set_op_class_type` 이 `dir(torch.nn)` → `dir(torch.nn.functional)` → `dir(torch)` →
+    `dir(torch.Tensor)` 순으로 찾고, 못 찾으면 UNKNOWN 이 돼 `.py` export 가 실패한다.
+    그래서 모듈 클래스 이름("Variance")이 아니라 `torch.var` 의 "var" 를 준다.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super(TorchVariance, self).__init__(OP.VARIANCE, *args, **kwargs)
+        utils.op_register(OP.VARIANCE, "var")
+
+
+class TorchStd(Operation):
+    """`torch.std` — var 와 동형(sqrt 만 추가). 등록 이름은 `torch.std` 의 "std"."""
+
+    def __init__(self, *args, **kwargs):
+        super(TorchStd, self).__init__(OP.STD, *args, **kwargs)
+        utils.op_register(OP.STD, "std")
+
+
 class TorchTanh(Operation):
 
     def __init__(self, *args, **kwargs):

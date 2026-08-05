@@ -115,6 +115,28 @@ def render_gather(node, ctx):
     return ctx.out(node, f"ggml_get_rows(m, {a}, {idx})", hint="gat")
 
 
+def _focus_quad(node, ctx, osh):
+    """STRIDED_SLICE 가 YOLO Focus quadrant(마지막 2축 H,W 를 step=2 부분샘플)면 (sw, sh) 반환.
+
+    `ggml_view` 는 **ne0(=W) 축에 step 을 못 준다.** 그래서 `x[..., ::2, ::2]` 를 view 로
+    내면 step 이 무시돼 **좌상단 연속 블록**이 잘려 나온다 — 크래시 없이 조용히 틀린다
+    (yolox·bytetrack·ocsort·strongsort cos 0.27~0.46). 이 경우만 vision.cpp 의
+    `space_to_depth_quad` 로 분해한다.
+    """
+    starts, dims, steps = (ctx.attr(node, k, None) for k in ("start", "dim", "step"))
+    if not (isinstance(starts, (list, tuple)) and isinstance(dims, (list, tuple))
+            and isinstance(steps, (list, tuple)) and osh):
+        return None
+    nd = len(osh)                                      # torch out ndim (NCHW → 4)
+    stepped = {int(dims[i]): int(steps[i]) for i in range(len(steps))
+               if steps[i] is not None and int(steps[i]) != 1}
+    if set(stepped) != {nd - 2, nd - 1} or any(v != 2 for v in stepped.values()):
+        return None                                    # 마지막 2축(H,W) step=2 아니면 미대상
+    smap = {int(dims[i]): int(starts[i]) for i in range(len(starts))}
+    sh, sw = smap.get(nd - 2, 0), smap.get(nd - 1, 0)  # H, W 시작
+    return (sw, sh) if sh in (0, 1) and sw in (0, 1) else None
+
+
 @_rr(_OP.STRIDED_SLICE)
 def render_strided_slice(node, ctx):
     # ggml_view_Nd: 정적 출력 ne + 입력 nb(슬라이스는 축 stride 보존) + byte offset.
@@ -123,6 +145,9 @@ def render_strided_slice(node, ctx):
     a = ctx.inp(node)
     if not sh or len(sh) > 4:
         return ctx.out(node, f"ggml_cont(m, {a}) /* slice {sh} */", hint="sl")
+    q = _focus_quad(node, ctx, sh)                     # YOLO Focus step=2 2D 부분샘플
+    if q is not None:
+        return ctx.out(node, f"space_to_depth_quad(m, {a}, {q[0]}, {q[1]}) /* focus quad */", hint="sl")
     ndim = len(sh)
     ne, ne_args = _ne_args(sh)
     nb = ", ".join(f"{a}->nb[{i}]" for i in range(1, len(ne)))

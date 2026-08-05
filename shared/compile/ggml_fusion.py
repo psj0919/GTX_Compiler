@@ -122,10 +122,12 @@ FUSIONS = [
                [("sqr", _SQR), ("sum", {"sum"}), ("sqrt", {"sqrt"}), ("div", _DIV)],
                [("sqr", "sum"), ("sum", "sqrt"), ("sqrt", "div")],
                "div", _emit_l2_norm),
-    FusionSpec("flash_attn", "ggml_flash_attn_ext",
-               [("qk", {"matmul"}), ("softmax", {"softmax"}), ("av", {"matmul"})],
-               [("qk", "softmax"), ("softmax", "av")],
-               "av", _emit_flash_attn),
+    # flash_attn fusion 은 **의도적으로 비활성화**한다. best-effort emitter 가
+    # q/k/v 레이아웃·scale·mask 의미를 보존하지 못해 PVT/Libra/empirical-attention
+    # 그래프에서 틀린다. 게다가 융합으로 내부 노드가 skip 되면 그 출력이 바인딩되지 않아
+    # 하류 `ctx.inp()` 가 그래프 입력 x(= 이미지)로 폴백한다 —
+    # `ggml_add(ln4, permute(x))` 같은 코드가 나와 can_repeat 로 죽는다.
+    # 명시적 matmul → softmax → matmul 시퀀스를 그대로 둔다.
 ]
 
 

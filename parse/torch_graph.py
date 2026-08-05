@@ -245,6 +245,20 @@ class TorchValue(object):
             self._data = value
             self._device_info = ValueDeviceInfo()
 
+        elif value is None:
+            # DCN(ModulatedDeformConv2d) 등의 optional 인자(mask/offset)가 파이썬 None 으로
+            # 넘어온다. jit None 과 동일하게 '값 없음'으로 취급 — raise 하면 파서가 죽어
+            # codegen(있는 deform 커널)까지 도달 못 한다. fcos·dcnv2·dyhead COMPILE_FAIL 원인.
+            self._name = name
+            self._scope_name = ""
+            self._node = None
+            self._shape = None
+            self._is_none = True
+            self._is_plain_value = False
+            self._type = "NoneType"
+            self._data = None
+            self._device_info = ValueDeviceInfo()
+
         else:
             raise RuntimeError(f"The type of value ({type(value)}) is unkown.")
 
@@ -380,7 +394,10 @@ class TorchNode(NodeBase):
                 self._kind = node.kind().split("::")[-1]
             else:
                 self._kind = node.pyname()
-                import shared.nn.modules.function as fn
+                # `shared.nn.…` 은 존재하지 않는 경로다(패키지는 최상위 `nn`).
+                # PythonOp(커스텀 autograd Function) 를 쓰는 모델 — mmcv DCN 계열 —
+                # 에서만 이 분기를 타므로 평소엔 안 드러난다.
+                import nn.modules.function as fn
                 import inspect
 
                 native_fn = [

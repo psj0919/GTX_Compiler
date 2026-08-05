@@ -34,14 +34,20 @@ class _FusedActNode:
         self.op = op
 
 
+from shared.compile.options import DEFAULT as _CodegenDefault
+
+
 class VispCodeGenerator:
     def __init__(self, graph, output_dir, model_name="model", arch=None, quant_plan=None,
-                 baked=None, skip=None):
+                 baked=None, skip=None, options=None):
         self.graph = graph
         self.output_dir = output_dir
         self.model_name = model_name
         self.arch = arch or model_name
         self.quant_plan = quant_plan or {}
+        # 생성 동작 옵션. **환경변수를 읽지 않는다** — main() 의 argparse 에서 흘러온다.
+        # 미지정이면 검증된 기본값(shared/compile/options.py 의 DEFAULT).
+        self.opts = options or _CodegenDefault
         # const-fold 결과: baked={id(tensor):(gguf_key,arr)} 는 m.weights 로 로드,
         # skip={id(node)} 상수영역 노드는 emit 생략. (shared/compile/const_fold.py)
         self.baked = baked or {}
@@ -74,27 +80,22 @@ class VispCodeGenerator:
         # (정수 div/mod·값기반 top-k·gather 의미 mismatch) — CPU 후처리 영역(vision.cpp 도
         # NMS 를 host 에서 수행). 그래프에 그런 op 이 있으면 **자동으로** dense 예측 (1,C,A)
         # 까지만 출력한다(런타임 크래시 방지). top-k/NMS 는 harness 등 CPU 에서.
-        # env GTX_DENSE_OUT=1 로 강제도 가능, GTX_DENSE_OUT=0 로 비활성도 가능.
-        import os as _os
+        # `--dense-out on|off` 로 강제할 수 있다(기본 auto).
         _PP_OPS = {"max", "argmax", "topk", "aten::topk", "gather", "aten::gather", "index"}
-        _env = _os.environ.get("GTX_DENSE_OUT")
-        if _env == "0":
-            dense_out = False
-        elif _env:
-            dense_out = True
-        else:
+        if self.opts.dense_out is None:                  # auto — 그래프를 보고 판단
             dense_out = any(op_value(n) in _PP_OPS for n in self.graph.nodes)
+        else:
+            dense_out = bool(self.opts.dense_out)
         if dense_out:
             print("[g2c] NMS-free postprocess detected → emitting dense output "
                   "(top-k/NMS is CPU-side)", flush=True)
         dense_var = None
 
-        # 중간 텐서 탭(env GTX_DEBUG_TAPS="all" | "12,45,..."): 노드별 출력을
+        # 중간 텐서 탭(`--debug-taps all|12,45`): 노드별 출력을
         # compute_graph_output 으로 추가 표시 → harness 가 dump, eager 백엔드와 노드별 대조.
         # tap 이름 tap{node_idx} = 생성 .py 의 module_{node_idx} 와 정렬(동일 IR 노드 순서).
-        _taps = _os.environ.get("GTX_DEBUG_TAPS")
-        _tap_set = (None if not _taps or _taps == "all"
-                    else {int(i) for i in _taps.split(",") if i.strip().isdigit()})
+        _taps = self.opts.debug_taps
+        _tap_set = self.opts.tap_set
 
         def _tap(idx, var):
             if not _taps or var in (None, "x"):
@@ -341,8 +342,84 @@ static tensor conv_2d_deform(model_ref m, tensor x, tensor offset, tensor mask,
             out += "\n" + self._CONV_2D_DEFORM_HELPER
         return out
 
+    @staticmethod
+    def _prune_dead_lines(lines, roots):
+        """출력에서 역방향으로 도달 못 하는 `tensor <var> = …;` 선언을 걷어낸다.
+
+        IR 상으로는 소비자가 있어도, 렌더러가 그 입력을 무시하고 리터럴로 접는 경우가 있다.
+        대표 사례 EfficientNet 의 동적 same-padding — `x.shape` 정수 산술 체인이 emit 되지만
+        실제 pad 인자는 `ggml_pad_ext(m, x, 0,0,0,0,0,0,0,0)` 로 이미 상수다. 결과를 아무도
+        안 쓰는데 **실행은 되므로** `ggml_sub(m, const, x)` 의 broadcast assert 로
+        살아있는 모델이 죽는다. IR 레벨 DCE 로는 안 잡혀서(소비자가 있으니) 텍스트에서 지운다.
+        """
+        import re as _re
+        decl = _re.compile(r"^\s*tensor\s+(\w+)\s*=")
+        ident = _re.compile(r"\b([A-Za-z_]\w*)\b")
+        owner = {}                               # var -> 선언 줄 index
+        for i, l in enumerate(lines):
+            m = decl.match(l)
+            if m:
+                owner.setdefault(m.group(1), i)
+        live_lines, seen, stack = set(), set(roots), [r for r in roots]
+        while stack:
+            v = stack.pop()
+            i = owner.get(v)
+            if i is None or i in live_lines:
+                continue
+            live_lines.add(i)
+            rhs = lines[i].split("=", 1)[1] if "=" in lines[i] else ""
+            for name in ident.findall(rhs):
+                if name in owner and name not in seen:
+                    seen.add(name)
+                    stack.append(name)
+        out = []
+        for i, l in enumerate(lines):
+            if decl.match(l):
+                if i in live_lines:
+                    out.append(l)
+                continue
+            names = [n for n in ident.findall(l) if n in owner]
+            if names and all(owner[n] not in live_lines for n in names):
+                continue                          # 죽은 var 만 가리키는 부수 줄
+            out.append(l)
+        return out
+
     def _emit_source(self, ctx, last_var):
-        body = "\n".join(ctx.lines)
+        # `G2C_TRACE_SHAPES=1` — 텐서마다 **런타임 ne** 를 stderr 로 찍는 줄을 끼운다.
+        # shape assert(`ggml_reshape_4d` 의 nelements 등)는 **그래프 구축 중**에 터지므로
+        # 완성된 그래프를 나중에 훑을 수 없다. 만들어지는 족족 찍어야 크래시 직전까지 보인다.
+        # ── 죽은 선언 제거(DCE) ──────────────────────────────────────────────
+        # 출력에서 역방향으로 도달 못 하는 `tensor <var> = …;` 는 지운다. 결과를 아무도
+        # 안 쓰는데 **실행은 되므로** 거기서 assert 가 나면 살아있는 모델이 죽는다.
+        # 실측(swin): `x.shape` 정수 산술 체인이 remainder→rsub→remainder 로 emit 되는데
+        # 아무도 안 쓴다. 그 rsub 이 `add(const[1], x[128,128,96])` 라 can_repeat 로 abort.
+        # IR 레벨 DCE 로는 안 잡힌다(소비자가 있으니) → 텍스트에서 지운다. G2C_NO_DCE=1 로 끔.
+        _roots = []
+        _rn = getattr(self.graph, "return_node", None)
+        for _t in (getattr(_rn, "in_tensors", None) or []) if _rn is not None else []:
+            if _t is None:
+                continue
+            _rv = ctx._var.get(id(_t)) or ctx._var_by_name.get(getattr(_t, "name", None))
+            if _rv:
+                _roots.append(_rv)
+        _lines = (self._prune_dead_lines(ctx.lines, (_roots or []) + [last_var])
+                  if self.opts.dce else ctx.lines)
+        if self.opts.trace_shapes:
+            import re as _re
+            _decl = _re.compile(r"^\s*tensor\s+(\w+)\s*=")
+            _out = []
+            for _l in _lines:
+                _out.append(_l)
+                _m = _decl.match(_l)
+                if _m:
+                    _v = _m.group(1)
+                    _out.append(
+                        f'    fprintf(stderr, "[ne] {_v} %lld %lld %lld %lld\\n", '
+                        f'(long long){_v}->ne[0], (long long){_v}->ne[1], '
+                        f'(long long){_v}->ne[2], (long long){_v}->ne[3]);'
+                    )
+            _lines = _out
+        body = "\n".join(_lines)
         arch_id = self.arch.lower()  # GGUF general.architecture 규약(소문자)
         quant_helpers = self._emit_quant_helpers(ctx)
         # grid_sample custom 커널만 <cmath> 필요 — 안 쓰는 모델의 생성물은 그대로 둔다.
@@ -359,12 +436,40 @@ static tensor conv_2d_deform(model_ref m, tensor x, tensor offset, tensor mask,
             in_wrap = ("    // 입력 레이아웃 변환 (TODO: cwhn/whcn 자동 판별)\n"
                        "    x = cwhn_to_contiguous_2d(m, x);")
             out_wrap = f"    x = contiguous_2d_to_cwhn(m, {last_var});"
+
+        # ── 다중 출력 등록 ────────────────────────────────────────────────────
+        # 검출기(FPN)는 forward 가 **텐서 여러 개**를 반환한다. 마지막 노드 하나만
+        # `compute_graph_output(..., "result")` 로 내보내면 나머지 레벨이 통째로 사라진다
+        # (RetinaNet 은 5개 중 1개만 나옴 → 호스트가 out_0..out_N 을 못 찾아 덤프 0건).
+        # 진짜 출력 = forward return 텐서들. 각각 `out_i` 로 등록한다.
+        # **단일 출력 모델은 out_0 하나라 기존과 동일 동작**(회귀 없음).
+        ret_tensors = []
+        rn = getattr(self.graph, "return_node", None)
+        if rn is not None:
+            ret_tensors = [t for t in (getattr(rn, "in_tensors", None) or []) if t is not None]
+        _ol, _oi = [], 0
+        for t in ret_tensors:
+            ovar = ctx._var.get(id(t))
+            if ovar is None:
+                continue
+            _ol.append(f'    tensor out_{_oi} = compute_graph_output(m, '
+                       f'contiguous_2d_to_cwhn(m, {ovar}), "out_{_oi}");')
+            _oi += 1
+        if _ol:
+            out_wrap = "\n".join(_ol)
+            ret_expr = f"out_{_oi - 1}"
+        else:
+            # 반환 텐서를 못 잡으면 기존 단일 출력 경로 그대로. 이름만 `out_0` 로 맞춘다
+            # (검증 하네스가 out_N 규약으로 훑는다).
+            out_wrap += f'\n    tensor out_0 = compute_graph_output(m, x, "out_0");'
+            ret_expr = "out_0"
         return f"""// GENERATED BY SuperGate GTX Compiler (ggml/vision.cpp backend), DO NOT EDIT!
 #include "visp/arch/{self.model_name}.h"
 #include "visp/ml.h"
 #include "visp/nn.h"
 #include "visp/vision.h"
 #include "util/string.h"
+#include <cstdio>
 
 {extra_inc}#include <string_view>
 
@@ -377,7 +482,7 @@ tensor {self.arch}_forward(model_ref m, tensor x, {self.arch}_params const& p) {
 {body}
 
 {out_wrap}
-    return compute_graph_output(m, x, "result");
+    return {ret_expr};
 }}
 
 {self.arch}_params {self.arch}_detect_params(model_file const& f) {{

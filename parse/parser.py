@@ -65,9 +65,16 @@ def unknown_op_type_check(graph: Graph):
     #     ScreenLogger().info(f"You can make these new ops quantizable by add them to custom_quant_ops, \
     # e.g. quantizer= torch_quantizer(..., custom_quant_ops=['{list(custom_ops)[0]}',...])")
 
-    ScreenLogger().check2user(
-        QError.UNSUPPORTED_OPS, f"Unsupported Ops: {unkown_ops}.", len(unkown_ops) == 0
-    )
+    # 미지원 op 이 있으면 **하드 종료(exit)** 였다. 그러면 렌더러가 있는 op 까지
+    # 컴파일이 통째로 죽는다 — mmcv `DeformConv2dFunction` 은 custom autograd(PythonOp)라
+    # 여기서 unknown 으로 잡히지만, codegen 에는 그 키의 렌더러가 등록돼 있어 정상 emit 된다.
+    # → 경고로 낮추고 진행한다. 렌더러가 정말 없으면 생성 .cpp 에
+    #   `// TODO(ggml): unhandled op '<이름>'` 로 남으므로 `grep unhandled op` 로 걸러진다.
+    if unkown_ops:
+        ScreenLogger().warning2user(
+            QWarning.FLOAT_OP,
+            f"Unsupported Ops (codegen 렌더러 유무는 생성물의 `unhandled op` 로 확인): {unkown_ops}.",
+        )
 
 
 class TorchParser(object):

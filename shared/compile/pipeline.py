@@ -40,6 +40,10 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 
+from shared.compile.options import (DEFAULT as _CodegenDefault,
+                                    add_cli_arguments as add_codegen_arguments,
+                                    from_args as codegen_options_from_args)
+
 _console = Console()
 
 # 그래프 최적화 Action → 색상 (컴파일 로그 가독성)
@@ -64,7 +68,7 @@ if project_root not in sys.path:
 # codegen / weight 직렬화
 # --------------------------------------------------------------------------
 def generate_ggml_code(graph, output_dir: str, model_name: str = "model", quant_plan=None,
-                       baked=None, skip=None):
+                       baked=None, skip=None, options=None):
     """Graph → vision.cpp(ggml) arch 스타일 C++ 소스코드 생성. 설계: docs/ggml_codegen.md
 
     quant_plan: build_quant_plan 결과. 양자 conv 노드는 conv_2d_q 로 emit + 헬퍼 주입.
@@ -73,7 +77,8 @@ def generate_ggml_code(graph, output_dir: str, model_name: str = "model", quant_
     from shared.compile.ggml_codegen import VispCodeGenerator
 
     codegen = VispCodeGenerator(graph, output_dir=output_dir, model_name=model_name,
-                                quant_plan=quant_plan, baked=baked, skip=skip)
+                                quant_plan=quant_plan, baked=baked, skip=skip,
+                                options=options)
     return codegen.generate()
 
 
@@ -308,6 +313,11 @@ def generate_gguf(graph, output_dir: str, model_name: str, arch_id: str,
             qbytes = gguf_quants.quantize(a, entry["qtype"])
             writer.add_tensor(key, qbytes, raw_dtype=entry["qtype"])
             n_quant += 1
+        elif not np.issubdtype(np.asarray(arr).dtype, np.floating):
+            # 정수 버퍼(예: Swin 의 `relative_position_index`)를 float 으로 캐스팅하면 안 된다 —
+            # `ggml_get_rows` 는 인덱스 텐서가 **I32** 여야 하고, 아니면
+            # `GGML_ASSERT(b->type == GGML_TYPE_I32)` 로 죽는다(swin·glip·grounding_dino 공통).
+            writer.add_tensor(key, np.ascontiguousarray(arr).astype(np.int32))
         else:
             writer.add_tensor(key, np.ascontiguousarray(arr).astype(np.float16))
 
@@ -691,7 +701,13 @@ def fold_conv_bn_graph(graph, report=None):
 _SAFE_DEV_OPTS = [
     "strip_redundant_ops",       # CONTIGUOUS 등 잉여 op 제거
     "fuse_pad",                  # 명시적 Pad 노드 → conv/pool pad attr 흡수
-    "fuse_transpose_matmul",     # transpose+matmul → 단일 matmul(transpose flag)
+    # fuse_transpose_matmul — 제외: 이 패스는 PERMUTE 노드를 **그래프에서 지우고** matmul 의
+    #   `is_trans_b` 플래그가 대신 표현한다고 가정한다(xmodel/NPU 백엔드 규약). 그런데 ggml
+    #   MATMUL 렌더러는 그 플래그를 안 읽고 **항상** 두번째 피연산자를 transpose 한다 →
+    #   지워진 permute 만큼 수식이 달라진다. libra_rcnn NonLocal 이 실측 사례:
+    #     deploy  mul_mat(cont(transpose(phi)), permute(theta))   ← permute 3개
+    #     port    mul_mat(cont(permute(phi)),   theta)            ← permute 1개, can_mul_mat abort
+    #   렌더러가 is_trans_b 를 소비하도록 만들기 전에는 켜면 안 된다.
     "fuse_redundant_transpose",  # 상쇄되는 연속 transpose 제거
     "merge_permute_to_linear",   # linear 앞 permute 를 weight 축 재배열로 흡수
     "merge_consecutive_reshape", # 연속 reshape 를 하나로 병합
@@ -709,15 +725,19 @@ _SAFE_DEV_OPTS = [
 ]
 
 
-def apply_dev_graph_opts(graph, report=None):
+def apply_dev_graph_opts(graph, report=None, options=None):
     """_SAFE_DEV_OPTS 를 순차 적용(best-effort). 반환: 최적화된 dev_graph(clone) 또는 원본."""
-    if not _SAFE_DEV_OPTS:
+    # `--skip-opts pass1,pass2` 로 개별 pass 를, `--skip-opts all` 로 전부 끈다.
+    # 어느 pass 가 그래프를 망가뜨렸는지 이분 탐색할 때 쓴다.
+    opts = options or _CodegenDefault
+    passes = [p for p in _SAFE_DEV_OPTS if not opts.skips(p)]
+    if not passes:
         return graph
     try:
         from shared.compile.deploy_optimizer import DevGraphOptimizer
         opt = DevGraphOptimizer(graph)
         applied = []
-        for name in _SAFE_DEV_OPTS:
+        for name in passes:
             before = _node_snapshot(opt.dev_graph)
             getattr(opt, name)()
             applied.append(name)
@@ -754,7 +774,7 @@ def _convert_bn_affine(graph, report=None):
     return graph
 
 
-def apply_graph_opts(graph, level=0, report=None, ensure_bn_affine=False):
+def apply_graph_opts(graph, level=0, report=None, ensure_bn_affine=False, options=None):
     """--Opt 레벨별 그래프 최적화 — g2c(compile_model)·graph_visualizer 공유.
 
       0: 없음 (raw 파싱 그래프)
@@ -773,13 +793,13 @@ def apply_graph_opts(graph, level=0, report=None, ensure_bn_affine=False):
     elif ensure_bn_affine:
         _convert_bn_affine(graph, report=report)      # ConvertBNParams 만 (fold 없이)
     if level in (1, 3):
-        graph = apply_dev_graph_opts(graph, report=report)
+        graph = apply_dev_graph_opts(graph, report=report, options=options)
     return graph
 
 
 def compile_model(model, name: str, input_shape, output_dir: str, quant=None,
                   profile=False, profile_reps=1, opt_level=0,
-                  visualize=None, visualize_fmt="svg"):
+                  visualize=None, visualize_fmt="svg", options=None):
     """모델을 vision.cpp(ggml) arch C++ + GGUF 로 컴파일한다.
 
     profile: True 면 생성 runner 에 런타임 프로파일(GTX_PROFILE)을 baking.
@@ -787,9 +807,13 @@ def compile_model(model, name: str, input_shape, output_dir: str, quant=None,
       BN affine 변환·const-fold(컴파일 필수)를 항상 적용하고 그 위에 레벨 최적화를 얹는다.
     visualize: 경로(문자열)면 최종 컴파일 그래프를 그 경로에 DOT(+이미지)로 시각화.
       "__auto__" 면 `<output_dir>/<name>_graph`. None 이면 생략.
+    options: `CodegenOptions` — const-fold·DCE·진단 스위치. 환경변수 대신 이걸 쓴다.
+      미지정이면 검증된 기본값(shared/compile/options.DEFAULT).
     반환: 생성 파일 dict (source/header/weights_manifest) 또는 None(파싱 실패).
     """
     import traceback
+
+    opts = options or _CodegenDefault
 
     from parse import TorchParser
     from parse.rich_in_out_helper import StandardInputData
@@ -807,20 +831,30 @@ def compile_model(model, name: str, input_shape, output_dir: str, quant=None,
         init_ops = len(list(getattr(graph, "nodes", [])))
         # 공용 최적화(--Opt 레벨). g2c 는 BN affine 변환을 항상(ensure_bn_affine) → GGUF 정합.
         graph = apply_graph_opts(graph, level=opt_level, report=opt_report,
-                                 ensure_bn_affine=True)
+                                 ensure_bn_affine=True, options=opts)
         print(f"[g2c] Graph nodes: {len(list(getattr(graph, 'nodes', [])))}", flush=True)
-
-        from qproc.export import get_script_writer
-
-        export_name = name + TorchSymbol.SCRIPT_SUFFIX
-        get_script_writer(enable_quant=True).write(
-            graph, file_path=os.path.join(output_dir, export_name)
-        )
-        print(f"[g2c] Export written: {output_dir}/{export_name}", flush=True)
     except Exception:
-        print("[g2c] Parse/export 실패:")
+        print("[g2c] Parse 실패:")
         traceback.print_exc()
         return None
+
+    # .py(ggml 러너) export 는 **보조 산출물**이다. ScriptWriter 가 모르는 동적 op
+    # (linear_dynamic / variance / conv2d_dynamic 등)이 있으면 여기서 죽는데, 주 산출물인
+    # cpp/gguf 는 그 op 을 렌더할 수 있다. 같이 죽이면 op 하나 때문에 계열 전체가 날아간다
+    # (pvt: MultiheadAttention 의 linear_dynamic 하나로 컴파일 전체 실패).
+    # → 실패해도 삼키고 cpp/gguf 는 계속 만든다. 중간까지 쓰인 부분 .py 는 무효라 지운다.
+    export_name = name + TorchSymbol.SCRIPT_SUFFIX
+    export_path = os.path.join(output_dir, export_name)
+    try:
+        from qproc.export import get_script_writer
+
+        get_script_writer(enable_quant=True).write(graph, file_path=export_path)
+        print(f"[g2c] Export written: {export_path}", flush=True)
+    except Exception:
+        print("[g2c] .py export 건너뜀(ScriptWriter 미지원 op) — cpp/gguf 는 계속:")
+        traceback.print_exc()
+        if os.path.exists(export_path):
+            os.remove(export_path)
 
     # 양자화 단일 진실원천 — codegen(conv_2d_q emit)·gguf(2D 양자 저장) 가 같은 plan 사용.
     _, _, quant_plan = build_quant_plan(graph, quant)
@@ -829,7 +863,15 @@ def compile_model(model, name: str, input_shape, output_dir: str, quant=None,
     # codegen 과 gguf 가 같은 fold 결과(키)를 공유해야 정합 → 여기서 한 번만 계산.
     from shared.compile.const_fold import fold_constants
 
-    baked, skip = fold_constants(graph, (input_shape[-2], input_shape[-1]))
+    # const-fold 는 **기본 off** 다. skip 된 노드의 출력이 baked 에 안 들어가는 경우가 있어
+    # 하류 `ctx.inp()` 가 그래프 입력 x(= 이미지)로 폴백한다 — PVT 는 pos_embed 슬라이스가
+    # 접히면서 `ggml_add(ln4, permute(x))` 가 나와 can_repeat 로 죽었다.
+    # (실측: pvt 에서 410 노드 skip / 16 텐서만 bake. deploy 는 이 기능 자체가 없고 100/100.)
+    # `--const-fold` 로 켤 수 있다.
+    if opts.const_fold:
+        baked, skip = fold_constants(graph, (input_shape[-2], input_shape[-1]))
+    else:
+        baked, skip = {}, set()
     if baked:
         print(f"[g2c] const-fold: {len(baked)} baked tensor(s), {len(skip)} node(s) skipped",
               flush=True)
@@ -863,6 +905,7 @@ def compile_model(model, name: str, input_shape, output_dir: str, quant=None,
 
     print("[g2c] Generating visp/ggml arch C++...", flush=True)
     files = generate_ggml_code(graph, output_dir, name, quant_plan=quant_plan,
+                              options=opts,
                                baked=baked, skip=skip)
     for ftype, fpath in files.items():
         print(f"  → {ftype}: {fpath}")
@@ -937,7 +980,9 @@ def main(argv=None):
         "--visualize-format", default="svg", choices=["png", "svg", "pdf"],
         help="--visualize 이미지 포맷 (기본 svg).",
     )
+    add_codegen_arguments(ap)          # --const-fold / --no-dce / --skip-opts / 진단 스위치
     args = ap.parse_args(argv)
+    opts = codegen_options_from_args(args)
 
     shape = None
     if args.input_shape:
@@ -953,7 +998,8 @@ def main(argv=None):
     files = compile_model(model, name, shape, args.output, quant=args.quantize,
                           profile=profile_on, profile_reps=reps,
                           opt_level=args.Opt,
-                          visualize=args.visualize, visualize_fmt=args.visualize_format)
+                          visualize=args.visualize, visualize_fmt=args.visualize_format,
+                          options=opts)
     # --profile: 생성 모델을 실제 실행해 프로파일(콘솔+CSV/JSON/Perfetto)을 산출.
     if profile_on and files is not None:
         _run_profile(args.output, name, reps)
