@@ -198,7 +198,14 @@ def render_rsub(node, ctx):
     ins = [t for t in node.in_tensors if t is not None]
     if len(ins) > 1:
         neg = f"ggml_scale(m, {ctx.inp(node, 0)}, {-alpha}f)"
-        return ctx.out(node, f"ggml_add(m, {ctx.inp(node, 1)}, {neg})", hint="rsub")
+        other = ctx.inp(node, 1)
+        # `ggml_add(a, b)` 는 **b 가 a 로 repeat** 되는 단방향이다. 덧셈은 가환이므로
+        # 큰 쪽을 first 로 둔다 — other 가 스칼라 상수인데 그대로 first 로 두면
+        # a=[1,1,1,1] b=[128,128,96,1] 이 돼 `can_repeat` 로 죽는다(swin 실측).
+        na, nb = _nelem(ins[0]), _nelem(ins[1])
+        if na is not None and nb is not None and na > nb:
+            return ctx.out(node, f"ggml_add(m, {neg}, {other})", hint="rsub")
+        return ctx.out(node, f"ggml_add(m, {other}, {neg})", hint="rsub")
     # other 가 스칼라(`1 - x` 형태) → scale+bias 한 번으로 접는다.
     other = ctx.attr(node, "other", 0.0)
     other = float(other) if isinstance(other, (int, float)) else 0.0

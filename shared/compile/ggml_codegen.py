@@ -341,11 +341,68 @@ static tensor conv_2d_deform(model_ref m, tensor x, tensor offset, tensor mask,
             out += "\n" + self._CONV_2D_DEFORM_HELPER
         return out
 
+    @staticmethod
+    def _prune_dead_lines(lines, roots):
+        """출력에서 역방향으로 도달 못 하는 `tensor <var> = …;` 선언을 걷어낸다.
+
+        IR 상으로는 소비자가 있어도, 렌더러가 그 입력을 무시하고 리터럴로 접는 경우가 있다.
+        대표 사례 EfficientNet 의 동적 same-padding — `x.shape` 정수 산술 체인이 emit 되지만
+        실제 pad 인자는 `ggml_pad_ext(m, x, 0,0,0,0,0,0,0,0)` 로 이미 상수다. 결과를 아무도
+        안 쓰는데 **실행은 되므로** `ggml_sub(m, const, x)` 의 broadcast assert 로
+        살아있는 모델이 죽는다. IR 레벨 DCE 로는 안 잡혀서(소비자가 있으니) 텍스트에서 지운다.
+        """
+        import re as _re
+        decl = _re.compile(r"^\s*tensor\s+(\w+)\s*=")
+        ident = _re.compile(r"\b([A-Za-z_]\w*)\b")
+        owner = {}                               # var -> 선언 줄 index
+        for i, l in enumerate(lines):
+            m = decl.match(l)
+            if m:
+                owner.setdefault(m.group(1), i)
+        live_lines, seen, stack = set(), set(roots), [r for r in roots]
+        while stack:
+            v = stack.pop()
+            i = owner.get(v)
+            if i is None or i in live_lines:
+                continue
+            live_lines.add(i)
+            rhs = lines[i].split("=", 1)[1] if "=" in lines[i] else ""
+            for name in ident.findall(rhs):
+                if name in owner and name not in seen:
+                    seen.add(name)
+                    stack.append(name)
+        out = []
+        for i, l in enumerate(lines):
+            if decl.match(l):
+                if i in live_lines:
+                    out.append(l)
+                continue
+            names = [n for n in ident.findall(l) if n in owner]
+            if names and all(owner[n] not in live_lines for n in names):
+                continue                          # 죽은 var 만 가리키는 부수 줄
+            out.append(l)
+        return out
+
     def _emit_source(self, ctx, last_var):
         # `G2C_TRACE_SHAPES=1` — 텐서마다 **런타임 ne** 를 stderr 로 찍는 줄을 끼운다.
         # shape assert(`ggml_reshape_4d` 의 nelements 등)는 **그래프 구축 중**에 터지므로
         # 완성된 그래프를 나중에 훑을 수 없다. 만들어지는 족족 찍어야 크래시 직전까지 보인다.
-        _lines = ctx.lines
+        # ── 죽은 선언 제거(DCE) ──────────────────────────────────────────────
+        # 출력에서 역방향으로 도달 못 하는 `tensor <var> = …;` 는 지운다. 결과를 아무도
+        # 안 쓰는데 **실행은 되므로** 거기서 assert 가 나면 살아있는 모델이 죽는다.
+        # 실측(swin): `x.shape` 정수 산술 체인이 remainder→rsub→remainder 로 emit 되는데
+        # 아무도 안 쓴다. 그 rsub 이 `add(const[1], x[128,128,96])` 라 can_repeat 로 abort.
+        # IR 레벨 DCE 로는 안 잡힌다(소비자가 있으니) → 텍스트에서 지운다. G2C_NO_DCE=1 로 끔.
+        _roots = []
+        _rn = getattr(self.graph, "return_node", None)
+        for _t in (getattr(_rn, "in_tensors", None) or []) if _rn is not None else []:
+            if _t is None:
+                continue
+            _rv = ctx._var.get(id(_t)) or ctx._var_by_name.get(getattr(_t, "name", None))
+            if _rv:
+                _roots.append(_rv)
+        _lines = (ctx.lines if os.environ.get("G2C_NO_DCE")
+                  else self._prune_dead_lines(ctx.lines, (_roots or []) + [last_var]))
         if os.environ.get("G2C_TRACE_SHAPES"):
             import re as _re
             _decl = _re.compile(r"^\s*tensor\s+(\w+)\s*=")
