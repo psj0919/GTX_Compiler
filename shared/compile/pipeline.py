@@ -809,18 +809,28 @@ def compile_model(model, name: str, input_shape, output_dir: str, quant=None,
         graph = apply_graph_opts(graph, level=opt_level, report=opt_report,
                                  ensure_bn_affine=True)
         print(f"[g2c] Graph nodes: {len(list(getattr(graph, 'nodes', [])))}", flush=True)
-
-        from qproc.export import get_script_writer
-
-        export_name = name + TorchSymbol.SCRIPT_SUFFIX
-        get_script_writer(enable_quant=True).write(
-            graph, file_path=os.path.join(output_dir, export_name)
-        )
-        print(f"[g2c] Export written: {output_dir}/{export_name}", flush=True)
     except Exception:
-        print("[g2c] Parse/export 실패:")
+        print("[g2c] Parse 실패:")
         traceback.print_exc()
         return None
+
+    # .py(ggml 러너) export 는 **보조 산출물**이다. ScriptWriter 가 모르는 동적 op
+    # (linear_dynamic / variance / conv2d_dynamic 등)이 있으면 여기서 죽는데, 주 산출물인
+    # cpp/gguf 는 그 op 을 렌더할 수 있다. 같이 죽이면 op 하나 때문에 계열 전체가 날아간다
+    # (pvt: MultiheadAttention 의 linear_dynamic 하나로 컴파일 전체 실패).
+    # → 실패해도 삼키고 cpp/gguf 는 계속 만든다. 중간까지 쓰인 부분 .py 는 무효라 지운다.
+    export_name = name + TorchSymbol.SCRIPT_SUFFIX
+    export_path = os.path.join(output_dir, export_name)
+    try:
+        from qproc.export import get_script_writer
+
+        get_script_writer(enable_quant=True).write(graph, file_path=export_path)
+        print(f"[g2c] Export written: {export_path}", flush=True)
+    except Exception:
+        print("[g2c] .py export 건너뜀(ScriptWriter 미지원 op) — cpp/gguf 는 계속:")
+        traceback.print_exc()
+        if os.path.exists(export_path):
+            os.remove(export_path)
 
     # 양자화 단일 진실원천 — codegen(conv_2d_q emit)·gguf(2D 양자 저장) 가 같은 plan 사용.
     _, _, quant_plan = build_quant_plan(graph, quant)

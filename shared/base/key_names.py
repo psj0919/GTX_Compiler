@@ -191,6 +191,11 @@ class OP(object):
     CONVTRANSPOSE2D = "conv_transpose_2d"
     CONVTRANSPOSE3D = "conv_transpose_3d"
     DENSE = "dense"
+    # 가중치가 **상수가 아닌** FC/conv. nn.MultiheadAttention 은 `in_proj_weight` 를
+    # split_with_sizes 로 잘라 q/k/v 를 만들므로 weight 가 그래프 텐서다 → 별도 op 으로 가른다.
+    LINEAR_DYNAMIC = "linear_dynamic"
+    CONV2D_DYNAMIC = "conv2d_dynamic"
+    ADAPTIVEMAXPOOL2D = "adaptive_max_pool2d"
     DEPTHWISE_CONV1D = "depthwise_conv1d"
     DEPTHWISE_CONV2D = "depthwise_conv2d"
     DEPTHWISE_CONV3D = "depthwise_conv3d"

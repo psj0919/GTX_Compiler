@@ -29,6 +29,42 @@ from utils.jit_utils import *
 from utils.torch_utils import CmpFlag, compare_torch_version
 
 
+def _as_int(x, default=None):
+    """wrapped 상수(파서 Tensor 래퍼/스칼라/넘파이 등)에서 파이썬 int 를 방어적으로 추출."""
+    for get in (lambda v: int(v),
+                lambda v: int(v.item()),
+                lambda v: int(getattr(v, "data")),
+                lambda v: int(getattr(v, "value"))):
+        try:
+            return get(x)
+        except Exception:
+            continue
+    return default
+
+
+def _as_int_list(x):
+    """int[] 상수를 파이썬 list[int] 로 추출. 실패 원소가 있으면 None 반환(→ render 가 shape 로 추론)."""
+    seq = x
+    if not isinstance(seq, (list, tuple)):
+        for attr in ("data", "value"):
+            v = getattr(seq, attr, None)
+            if isinstance(v, (list, tuple)):
+                seq = v
+                break
+        else:
+            try:
+                seq = list(seq)
+            except Exception:
+                return None
+    out = []
+    for s in seq:
+        iv = _as_int(s)
+        if iv is None:
+            return None
+        out.append(iv)
+    return out or None
+
+
 class OpCreator(object):
 
     op_convert_map = {
@@ -394,7 +430,14 @@ class OpCreator(object):
 
     def linear(self, input, weight, bias):
         if (weight and weight.node != None) or (bias and bias.node != None):
-            raise ("weight or bias is not a constant param!")
+            # 동적 weight/bias (예: nn.MultiheadAttention 이 in_proj_weight 를 split_with_sizes 로
+            # 나눈 q/k/v chunk). 상수 FC 가 아니므로 그래프 텐서 matmul 로 처리한다. weight/bias 를
+            # param 으로 잡지 않으면 driver 가 이미 채운 in_tensors(input,weight,[bias])로 남는다.
+            # ⚠️ 여기서 raise 하면 **op 이 통째로 unhandled 로 떨어져** attention 이 passthrough 가
+            #    된다(pvt: aten::linear 32건 + split_with_sizes 32건이 전부 TODO 주석으로 나갔다).
+            op = TorchBaseOperation(OP.LINEAR_DYNAMIC, "linear_dynamic")
+            op.set_config("has_bias", bias is not None)
+            return op
         op = TorchLinear()
         weight_size = weight.shape
         op.set_param(op.ParamName.WEIGHTS, weight)
@@ -406,6 +449,35 @@ class OpCreator(object):
 
         op.set_config("out_features", weight_size[0])
         op.set_config("in_features", weight_size[1])
+        return op
+
+    def split_with_sizes(self, input, split_sizes, dim=0):
+        # split_with_sizes(x, [s0,s1,...], dim) = dim 축을 s_i 크기로 나눈 N개 텐서(unbind 와 달리
+        # 축을 제거하지 않고 크기만 자름). nn.MultiheadAttention 의 in_proj_weight[3E,E]→q/k/v 등.
+        # multi-output → render(render_split)가 out_tensors 별 view(누적 offset)를 emit.
+        # split_sizes/dim 은 wrapped 상수(Tensor)일 수 있다 → 방어적 추출. 크기 추출 실패해도
+        # render 가 out_tensor shape 에서 크기를 추론하므로 dim 만 확실히 넘기면 된다.
+        op = TorchBaseOperation(OP.SPLIT, "split")
+        op.set_config("input", input)
+        op.set_config("dim", _as_int(dim, 0))
+        sizes = _as_int_list(split_sizes)
+        if sizes is not None:
+            op.set_config("split_sizes", sizes)
+        return op
+
+    def split(self, input, split_size, dim=0):
+        # split(x, size, dim): 균등 크기 size 로 분할. split_with_sizes 로 위임(render 가 크기 추론).
+        op = TorchBaseOperation(OP.SPLIT, "split")
+        op.set_config("input", input)
+        op.set_config("dim", _as_int(dim, 0))
+        return op
+
+    def unbind(self, input, dim=0):
+        # unbind(x, dim) = dim 축을 따라 N개 텐서로 분리(각 = select(dim, i)). timm attention 의
+        # qkv.unbind(0) 등. multi-output → render(render_unbind)가 out_tensors 별 view 를 emit.
+        op = TorchBaseOperation(OP.UNBIND, "unbind")
+        op.set_config("input", input)
+        op.set_config("dim", _as_int(dim, 0))
         return op
 
     def flatten(self, input, start_dim=0, end_dim=-1):

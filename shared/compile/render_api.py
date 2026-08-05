@@ -166,6 +166,8 @@ class RenderContext:
 
     def __init__(self):
         self._var = {}        # id(tensor) -> C++ 변수명
+        self._var_by_name = {}  # tensor.name -> 변수명 (multi-output unbind 처럼 id() 재사용으로
+                                # id 키가 불안정한 경우용. 이름은 IR 에서 고유·안정).
         self._counter = 0
         self._weights = []    # (weight_key, [suffix...])
         self.lines = []       # forward 본문 라인
@@ -179,6 +181,11 @@ class RenderContext:
         ins = [t for t in node.in_tensors if t is not None]
         if i < len(ins):
             t = ins[i]
+            # 이름 기반 바인딩 우선(있으면): multi-output split/unbind 출력은 id() 가 GC 재사용으로
+            # 불안정 → 안정적 tensor.name 으로 정확히 해소. (그 op 출력에만 설정되므로 타 op 무영향.)
+            nm = getattr(t, "name", None)
+            if nm is not None and nm in self._var_by_name:
+                return self._var_by_name[nm]
             v = self._var.get(id(t))
             if v is not None:
                 return v

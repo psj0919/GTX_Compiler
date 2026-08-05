@@ -73,14 +73,54 @@ def render_deform_conv(node, ctx):
     )
 
 
+def _param_named(node, suffix):
+    # node 의 param in_tensor 중 이름이 suffix 로 끝나는 것의 (프리픽스 제거된) gguf 키.
+    for t in node.in_tensors:
+        if t is None or getattr(t, "_node", 1) is not None:
+            continue
+        nm = str(getattr(t, "name", "") or "").split("::")[-1]
+        if nm.endswith(suffix):
+            return nm
+    return None
+
+
 @register_render(OP.DENSE)
 def render_linear(node, ctx):
     # visp::linear = ggml_mul_mat(weight, x): x 의 ne[0] 가 in_features 여야 한다.
     # PyTorch Linear.weight[out,in] 를 그대로 GGUF 에 쓰면 ggml ne=[in,out] 이 되어
     # mul_mat 결과가 [out, N] 으로 정합한다 (앞단 flatten 이 [in, N] 을 만든다).
     has_bias = bool(ctx.attr(node, "bias", True))
+    raw_key = weight_key(node)
+    wname = _param_named(node, "weight")
+    # 표준 nn.Linear 는 weight 이름이 "<key>.weight" → 기존 linear() 경로. 비표준 이름
+    # (예: MHA in_proj_weight / out_proj.weight)이면 정확한 gguf 텐서명으로 직접 emit.
+    # ⚠️ 이게 없으면 노드명(= 모듈 경로)만으로 키를 만들어 `...attn.attn.weight` 를 찾다가
+    #    런타임에 `tensor not found` 로 죽는다 — 실제 텐서는 `...attn.attn.out_proj.weight` 다.
+    if wname is not None and wname != f"{raw_key}.weight":
+        x = ctx.inp(node)
+        ctx._weights.append((wname, []))
+        expr = f'ggml_mul_mat(m, m.find("{wname}"), {x})'
+        bname = _param_named(node, "bias") if has_bias else None
+        if bname is not None:
+            ctx._weights.append((bname, []))
+            expr = f'ggml_add(m, {expr}, m.find("{bname}"))'
+        return ctx.out(node, expr, hint="fc")
     key = ctx.weight(node, ["weight"] + (["bias"] if has_bias else []))
     return ctx.out(node, f"linear({key}, {ctx.inp(node)})", hint="fc")
+
+
+@register_render(OP.LINEAR_DYNAMIC)
+def render_linear_dynamic(node, ctx):
+    # F.linear(x, W, b) = x @ W.T + b 에서 W 가 동적 그래프 텐서(예: nn.MultiheadAttention 이
+    # in_proj_weight 를 split 한 q/k/v chunk). in_tensors = [input, weight, (bias)].
+    # ggml_mul_mat(W, x): W ne=[in,out](torch[out,in]), x ne0=in → 결과 ne0=out. (DENSE 와 동일 규약)
+    ins = [t for t in node.in_tensors if t is not None]
+    x = ctx.inp(node, 0)
+    w = ctx.inp(node, 1)
+    expr = f"ggml_mul_mat(m, {w}, {x})"
+    if bool(ctx.attr(node, "has_bias", False)) and len(ins) >= 3:
+        expr = f"ggml_add(m, {expr}, {ctx.inp(node, 2)})"
+    return ctx.out(node, expr, hint="fcd")
 
 
 @register_render(OP.MATMUL)
@@ -204,9 +244,16 @@ def render_mul(node, ctx):
     return ctx.out(node, f"ggml_mul(m, {a}, {b})")
 
 
-@register_render(OP.DIV)
+@register_render("aten::div", OP.DIV, "elemwise_div")
 def render_div(node, ctx):
-    return ctx.out(node, f"ggml_div(m, {ctx.inp(node, 0)}, {ctx.inp(node, 1)})")
+    # `aten::div` 별칭 필수 — dispatcher 가 OP.DIV 로 못 접는 경로가 있어(MultiheadAttention 의
+    # `q / sqrt(d)`) 그냥 두면 unhandled 로 떨어져 스케일이 통째로 빠진다.
+    ins = [t for t in node.in_tensors if t is not None]
+    a = ctx.inp(node, 0)
+    if len(ins) >= 2:
+        return ctx.out(node, f"ggml_div(m, {a}, {ctx.inp(node, 1)})", hint="div")
+    # 스칼라 ÷(상수) → 단일 텐서 입력. 정확한 상수는 후처리/스케일 대상(best-effort).
+    return ctx.out(node, f"ggml_cont(m, {a}) /* scalar div (best-effort) */", hint="div")
 
 
 @register_render(OP.CONCAT)
