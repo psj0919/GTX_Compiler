@@ -178,8 +178,40 @@ class RenderContext:
     def inp(self, node, i=0):
         ins = [t for t in node.in_tensors if t is not None]
         if i < len(ins):
-            return self._var.get(id(ins[i]), "x")
+            t = ins[i]
+            v = self._var.get(id(t))
+            if v is not None:
+                return v
+            # producing node 가 없는 **자유 nn.Parameter**(PVT pos_embed, ViT class_token 등)는
+            # 어떤 op 도 만들지 않아 _var 에 없다 → gguf raw 텐서(m.find)로 직접 참조한다.
+            # 이 폴백이 없으면 아래 `return "x"` 가 **그래프 입력(= 이미지)** 을 흘려보내
+            # residual add 가 [64,16384] + [512,512,3] 같은 조합이 돼 can_repeat 로 죽는다
+            # (크래시가 안 나는 조합이면 조용히 틀린다).
+            key = self._param_key(t)
+            if key is not None:
+                if (key, []) not in self._weights:
+                    self._weights.append((key, []))
+                return f'm.find("{key}")'
+            return "x"
         return "x"
+
+    @staticmethod
+    def _param_key(t):
+        """자유 파라미터 텐서 → gguf 텐서명(state_dict 키). 아니면 None."""
+        is_param = getattr(t, "is_param_tensor", None)
+        try:
+            param = is_param() if callable(is_param) else (getattr(t, "_node", 1) is None)
+        except Exception:
+            param = False
+        if not param:
+            return None
+        if getattr(t, "data", None) is None:
+            return None
+        nm = getattr(t, "name", None) or getattr(t, "_name", None)
+        if not nm:
+            return None
+        # 그래프 프리픽스("VisionTransformer::class_token") 제거 → state_dict 키와 정합.
+        return str(nm).split("::")[-1]
 
     def bind(self, node, var):
         if node.out_tensors:
