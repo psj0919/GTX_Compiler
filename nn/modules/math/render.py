@@ -20,7 +20,7 @@ pad_reflect_1d)와 head_render.py 의 floor_divide/remainder 를 통합한 모�
 전부 **실제 ggml 그래프 op** 으로 emit 한다 (register_render side-effect).
 """
 
-from shared.compile.render_api import register_render as _rr, out_shape
+from shared.compile.render_api import register_render as _rr, out_shape, ggml_axis
 from shared.base import OP as _OP
 
 
@@ -38,9 +38,48 @@ def render_sqrt(node, ctx):
     return ctx.out(node, f"ggml_sqrt(m, {ctx.inp(node)})", hint="sqrt")
 
 
+def _sum_over_axis(x, ax):
+    """ggml ne 축 ax 에 대한 합(size-1 keepdim 유지).
+
+    `ggml_sum_rows` 는 ne0 축만 줄이므로, 다른 축은 permute 로 ne0 자리에 데려왔다가 되돌린다.
+    """
+    if ax == 0:
+        return f"ggml_sum_rows(m, {x})"
+    p = [0, 1, 2, 3]
+    p[0], p[ax] = p[ax], p[0]
+    perm = f"{p[0]}, {p[1]}, {p[2]}, {p[3]}"
+    return (f"ggml_cont(m, ggml_permute(m, ggml_sum_rows(m, "
+            f"ggml_cont(m, ggml_permute(m, {x}, {perm}))), {perm}))")
+
+
 @_rr(_OP.SUM)
 def render_sum(node, ctx):
-    return ctx.out(node, f"ggml_sum(m, {ctx.inp(node)})", hint="sum")
+    # dim 미지정이면 전체 합, 지정이면 **축별** 합 후 keepdim=False squeeze.
+    # ⚠️ dim 을 무시하고 `ggml_sum` 을 내면 텐서가 통째로 **스칼라 1개**가 된다.
+    #    resnest Split-Attention 의 `.sum(radix축)` 이 그 꼴이라, 바로 뒤 avg pool 이
+    #    입력 [1,1,1,1] 에 kernel 128 을 받아 `GGML_ASSERT(ne[0] > 0)` 로 죽는다.
+    x = ctx.inp(node)
+    dims = ctx.attr(node, "dim", None)
+    if dims is None:
+        return ctx.out(node, f"ggml_sum(m, {x})", hint="sum")
+    if isinstance(dims, int):
+        dims = [dims]
+    try:
+        ndim = len([t for t in node.in_tensors if t is not None][0].shape)
+    except Exception:
+        sh0 = out_shape(node)
+        ndim = len(sh0) if sh0 else 4
+    expr = x
+    for ax in sorted({ggml_axis(d, ndim) for d in dims}):
+        expr = _sum_over_axis(expr, ax)
+    # 위 reduce 는 대상 축을 size-1 로 남긴 keepdim 형태다. torch out_shape 로 reshape 해
+    # keepdim=False 의 squeeze 를 반영한다. 없으면 축이 하나 밀린 채 남아 뒤따르는
+    # mul 이 `ggml_can_repeat` 로 죽는다.
+    sh = out_shape(node)
+    if sh and len(sh) <= 4:
+        ne = list(reversed([int(d) for d in sh]))
+        expr = f"ggml_reshape_{len(ne)}d(m, ggml_cont(m, {expr}), {', '.join(str(d) for d in ne)})"
+    return ctx.out(node, expr, hint="sum")
 
 
 @_rr(_OP.SUM_ROWS)
