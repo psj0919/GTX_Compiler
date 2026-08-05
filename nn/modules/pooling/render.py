@@ -22,26 +22,67 @@ from shared.compile.render_api import register_render, out_shape
 from shared.base import OP
 
 
+def _pair(v, d0, d1):
+    """torch (h, w) → 정수쌍. **비대칭** kernel/stride/padding 지원.
+
+    `ctx.scalar()` 는 리스트의 **첫 원소만** 쓴다 — `AvgPool2d((4,8))` 이 (4,4) 가 돼
+    출력 spatial 이 달라지고, 한참 뒤 flatten 이 `ggml_nelements` 로 죽는다(reid 실측).
+    파서는 kernel/stride/padding 을 (ne0,ne1)=(W,H) 순서로 저장하므로 ggml_pool_2d 의
+    (k0,k1) 에 **그대로** 넘긴다(스왑 금지).
+    """
+    if isinstance(v, (list, tuple)):
+        if len(v) >= 2:
+            return int(v[0]), int(v[1])
+        if len(v) == 1:
+            return int(v[0]), int(v[0])
+    if isinstance(v, int) and not isinstance(v, bool):
+        return v, v
+    return d0, d1
+
+
+def _is_static_kernel(v):
+    if isinstance(v, int) and not isinstance(v, bool):
+        return True
+    if isinstance(v, (list, tuple)) and v and all(
+            isinstance(d, int) and not isinstance(d, bool) for d in v):
+        return True
+    return False
+
+
 @register_render(OP.MAX_POOL)
 def render_maxpool(node, ctx):
-    k = ctx.scalar(ctx.attr(node, "kernel_size", [2, 2]))
-    s = ctx.scalar(ctx.attr(node, "stride", [k, k]))
-    p = ctx.scalar(ctx.attr(node, "padding", [0, 0]))
+    k0, k1 = _pair(ctx.attr(node, "kernel_size", [2, 2]), 2, 2)
+    s0, s1 = _pair(ctx.attr(node, "stride", [k0, k1]), k0, k1)
+    p0, p1 = _pair(ctx.attr(node, "padding", [0, 0]), 0, 0)
     return ctx.out(
         node,
-        f"ggml_pool_2d(m, {ctx.inp(node)}, GGML_OP_POOL_MAX, {k}, {k}, {s}, {s}, {p}, {p})"
-        " /* TODO(ggml): verify pool params/layout */",
+        f"ggml_pool_2d(m, {ctx.inp(node)}, GGML_OP_POOL_MAX, {k0}, {k1}, {s0}, {s1}, {p0}, {p1})",
     )
 
 
 @register_render(OP.AVG_POOL)
 def render_avgpool(node, ctx):
-    k = ctx.scalar(ctx.attr(node, "kernel_size", [2, 2]))
-    s = ctx.scalar(ctx.attr(node, "stride", [k, k]))
-    p = ctx.scalar(ctx.attr(node, "padding", [0, 0]))
+    ksz = ctx.attr(node, "kernel_size", [2, 2])
+    # 동적 kernel(global avg pool: `F.avg_pool2d(x, x.size()[2:])`)은 정적 int 가 아닌 Tensor.
+    # → 입력의 정적 spatial(H,W)로 kernel 을 잡아 전역 평균(output 1x1)으로 emit.
+    if not _is_static_kernel(ksz):
+        ish = None
+        try:
+            ish = [int(d) for d in [t for t in node.in_tensors if t is not None][0].shape]
+        except Exception:
+            ish = None
+        if ish and len(ish) == 4:
+            kh, kw = ish[2], ish[3]  # [N,C,H,W]
+            return ctx.out(node, f"ggml_pool_2d(m, {ctx.inp(node)}, GGML_OP_POOL_AVG, "
+                                 f"{kw}, {kh}, {kw}, {kh}, 0, 0) /* global avg */", hint="pool")
+        return ctx.out(node, f"ggml_cont(m, {ctx.inp(node)}) /* TODO avg_pool dynamic kernel */",
+                       hint="pool")
+    k0, k1 = _pair(ksz, 2, 2)
+    s0, s1 = _pair(ctx.attr(node, "stride", [k0, k1]), k0, k1)
+    p0, p1 = _pair(ctx.attr(node, "padding", [0, 0]), 0, 0)
     return ctx.out(
         node,
-        f"ggml_pool_2d(m, {ctx.inp(node)}, GGML_OP_POOL_AVG, {k}, {k}, {s}, {s}, {p}, {p})",
+        f"ggml_pool_2d(m, {ctx.inp(node)}, GGML_OP_POOL_AVG, {k0}, {k1}, {s0}, {s1}, {p0}, {p1})",
     )
 
 
