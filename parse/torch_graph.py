@@ -380,7 +380,10 @@ class TorchNode(NodeBase):
                 self._kind = node.kind().split("::")[-1]
             else:
                 self._kind = node.pyname()
-                import shared.nn.modules.function as fn
+                # `shared.nn.…` 은 존재하지 않는 경로다(패키지는 최상위 `nn`).
+                # PythonOp(커스텀 autograd Function) 를 쓰는 모델 — mmcv DCN 계열 —
+                # 에서만 이 분기를 타므로 평소엔 안 드러난다.
+                import nn.modules.function as fn
                 import inspect
 
                 native_fn = [
