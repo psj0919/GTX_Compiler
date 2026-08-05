@@ -30,13 +30,19 @@ def _pair(v, d0, d1):
     파서는 kernel/stride/padding 을 (ne0,ne1)=(W,H) 순서로 저장하므로 ggml_pool_2d 의
     (k0,k1) 에 **그대로** 넘긴다(스왑 금지).
     """
-    if isinstance(v, (list, tuple)):
-        if len(v) >= 2:
-            return int(v[0]), int(v[1])
-        if len(v) == 1:
-            return int(v[0]), int(v[0])
-    if isinstance(v, int) and not isinstance(v, bool):
-        return v, v
+    # ⚠️ 원소가 **Tensor 일 수 있다**(NAS-FPN 은 stride 를 런타임에 계산해 부른다).
+    #    `int(Tensor)` 는 TypeError 라 통째로 감싸고 기본값으로 떨어뜨린다 — 그 뒤
+    #    `render_maxpool` 이 출력 shape 로 검산해 역산한다.
+    try:
+        if isinstance(v, (list, tuple)):
+            if len(v) >= 2:
+                return int(v[0]), int(v[1])
+            if len(v) == 1:
+                return int(v[0]), int(v[0])
+        if isinstance(v, int) and not isinstance(v, bool):
+            return v, v
+    except (TypeError, ValueError):
+        pass
     return d0, d1
 
 
@@ -54,6 +60,27 @@ def render_maxpool(node, ctx):
     k0, k1 = _pair(ctx.attr(node, "kernel_size", [2, 2]), 2, 2)
     s0, s1 = _pair(ctx.attr(node, "stride", [k0, k1]), k0, k1)
     p0, p1 = _pair(ctx.attr(node, "padding", [0, 0]), 0, 0)
+
+    # kernel/stride 가 **동적**이라 `_pair` 가 기본값(2)으로 떨어지는 경우가 있다.
+    # NAS-FPN 의 merge cell 이 그렇다 — 레벨을 맞추려고 `F.max_pool2d(x, s, s)` 를
+    # `s = in/target` 로 계산해 부르므로 trace 에 상수로 안 남는다. 기본 2 로 나가면
+    # 크기가 안 맞고(80→40 인데 20 이어야 함), 그 add 가 `40 % 20 == 0` 이라 **조용히 통과**한 뒤
+    # 다음 add 에서 `20 % 40 ≠ 0` 으로 터진다 — 크래시 지점이 원인 지점이 아니다.
+    # → 판단 기준은 "attr 이 있느냐" 가 아니라 **그 값이 실제 출력 shape 을 만드느냐** 다.
+    try:
+        ish = [int(d) for d in [t for t in node.in_tensors if t is not None][0].shape]
+        osh = [int(d) for d in (out_shape(node) or [])]
+        if len(ish) >= 2 and len(osh) == len(ish) and osh[-1] and osh[-2]:
+            exp_h = (ish[-2] + 2 * p1 - k1) // s1 + 1
+            exp_w = (ish[-1] + 2 * p0 - k0) // s0 + 1
+            if (exp_h, exp_w) != (osh[-2], osh[-1]):
+                rh, rw = ish[-2] // osh[-2], ish[-1] // osh[-1]
+                if rh > 0 and rw > 0 and ish[-2] % osh[-2] == 0 and ish[-1] % osh[-1] == 0:
+                    k0, k1 = rw, rh          # (ne0,ne1)=(W,H) 순서
+                    s0, s1 = rw, rh
+                    p0, p1 = 0, 0
+    except Exception:
+        pass
     return ctx.out(
         node,
         f"ggml_pool_2d(m, {ctx.inp(node)}, GGML_OP_POOL_MAX, {k0}, {k1}, {s0}, {s1}, {p0}, {p1})",
