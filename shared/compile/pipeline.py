@@ -266,6 +266,7 @@ def generate_gguf(graph, output_dir: str, model_name: str, arch_id: str,
     #   depthwise    : graph [1,KH,KW,C]   → [C,1,KH,KW]             = (3,0,1,2)
     _CONV_REG = {"conv2d", "conv1d", "conv3d"}
     _CONV_DW = {"depthwise_conv2d", "depthwise_conv1d", "depthwise_conv3d"}
+    _CONV_TRANSPOSE = {"conv_transpose_2d", "convtranspose2d", "transposed-conv2d"}
     weights = {}        # gguf_key -> (arr, weight_key)
     for node in getattr(graph, "nodes", []):
         op = getattr(node, "op", None)
@@ -294,6 +295,11 @@ def generate_gguf(graph, output_dir: str, model_name: str, arch_id: str,
                     arr = np.transpose(arr, (0, 3, 1, 2))   # OHWI → OIHW
                 elif op_type in _CONV_DW:
                     arr = np.transpose(arr, (3, 0, 1, 2))   # [1,KH,KW,C] → [C,1,KH,KW]
+                elif str(op_type).lower() in _CONV_TRANSPOSE:
+                    # graph [OC,KH,KW,IC] → PyTorch/GGUF [IC,OC,KH,KW].
+                    # GGUF reverses these dimensions to ggml ne=[KW,KH,OC,IC],
+                    # which is the ggml_conv_transpose_2d_p0 kernel ABI.
+                    arr = np.transpose(arr, (3, 0, 1, 2))
             if key not in weights:
                 weights[key] = (arr, wk)   # raw(보통 f32) 유지 — 양자화/ f16 은 write 시 결정
 

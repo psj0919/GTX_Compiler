@@ -1,0 +1,37 @@
+{
+  "state": {
+    "camera": "B동 1층 출입게이트-02",
+    "time": "2026-09-21 08:41:13",
+    "event": "출입 인증 1회 후 게이트 통과 인원 2명 감지. 후방 인원 카드 태그 기록 없음. 안전모 미착용 1명."
+  },
+  "questions": {
+    "event_type": {
+      "type": "choice",
+      "instructions": "이 알람의 이벤트 유형은?",
+      "criteria": {
+        "normal": null,
+        "tailgating": null,
+        "loitering": null,
+        "fire": null,
+        "ppe": null
+      }
+    },
+    "severity": {
+      "type": "score",
+      "instructions": "이 알람의 심각도는?",
+      "criteria": [
+        "무시 가능",
+        "관제사 확인 필요",
+        "즉시 대응 필요"
+      ]
+    },
+    "needs_review": {
+      "type": "noul",
+      "instructions": "사람이 영상을 재확인해야 하는가?"
+    },
+    "tailgating": {
+      "type": "noul",
+      "instructions": "테일게이팅(무단 동반 출입)이 발생했는가?"
+    }
+  }
+}

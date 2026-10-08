@@ -1,5 +1,7 @@
 #  Compiler
 
+YOLOv8n·Laya·ResNet18 통합 빌드와 백업 복원 방법: [MIGRATION.md](MIGRATION.md).
+
 PyTorch 모델을 **vision.cpp(ggml) arch 스타일 C++ + GGUF 가중치**로 변환하는 컴파일러.
 생성물은 ggml(libggml.so) 위에서 그대로 실행/검증된다.
 
@@ -80,6 +82,37 @@ uv run g2c --model "ultralytics.YOLO('yolov8n')" --pth weights.pth \
 # 생성된 export 를 ggml(libggml.so) 커널로 직접 실행 (PyTorch 참조 없이 forward)
 uv run python output/yolo11n/DetectionModel.py     # [ggml] output: (1, ...)
 ```
+
+### Laya multilingual (한글 typed decision)
+
+Laya는 tokenizer/JSON 후처리는 호스트에서 실행하고, mmBERT encoder와 2-layer
+decision head를 각각 vision.cpp GGML 그래프로 실행한다. 초기 경로는 질문당 최대
+1024 tokens, 최대 20 options를 지원한다.
+
+```bash
+# 의존성 설치 및 checkpoint -> encoder/head GGUF 변환
+uv sync --extra laya
+OMP_NUM_THREADS=1 uv run g2c-laya --output output/laya-multilingual
+
+# vision.cpp runner 빌드
+bash tools/build_laya_cpp.sh output/laya-multilingual
+
+# 한글 JSON -> token/marker 입력
+uv run python tools/laya_io.py prepare \
+  --model-dir output/laya-multilingual \
+  --request test/laya_request_ko.json \
+  --output output/laya-request
+
+# 모든 질문을 실행하고 choice/score/noul JSON 출력
+uv run python tools/run_laya.py \
+  --model-dir output/laya-multilingual \
+  --batch output/laya-request/batch.json
+```
+
+`run_laya_encoder`와 `run_laya_head`는 `backend_init()`이 선택한 GGML backend에서
+실행된다. FPGA backend plugin이 등록된 환경에서는 동일 실행 파일로 graph를 전달할
+수 있다. 현재 구현은 질문별 실행이라 latency benchmark보다 FPGA 연산 정합 확인을
+우선한다.
 
 ### 테스트 / 예제 스크립트
 

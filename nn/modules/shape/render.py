@@ -458,9 +458,40 @@ def render_roll(node, ctx):
 
 @_rr("aten::meshgrid", "meshgrid")
 def render_meshgrid(node, ctx):
-    # meshgrid(x, y) → 두 2D 그리드. 각 출력 = 1D arange 를 출력 shape 로 broadcast.
-    sh = out_shape(node)
+    # meshgrid(a, b, indexing='ij') -> (grid_a, grid_b): grid_a[i,j]=a[i] (varies
+    # along torch dim0), grid_b[i,j]=b[j] (varies along torch dim1). Each output
+    # needs ITS OWN tensor -- binding both to a single repeat(a, ...) (the old
+    # behavior; still used as the >2D/single-input fallback below) silently
+    # drops b and gives every second-axis consumer wrong values. YOLO's
+    # anchor-point Y coordinate is exactly this: it comes out identical to the
+    # X coordinate instead of varying down the grid.
+    outs = node.out_tensors or []
+    ins = [t for t in node.in_tensors if t is not None]
+    sh = out_shape(node, 0)
     a = ctx.inp(node, 0)
+    if sh and len(sh) == 2 and len(ins) >= 2 and len(outs) >= 2:
+        # ne = [ggml_dim0, ggml_dim1] (reversed torch shape). A plain
+        # ggml_repeat(src[len==ne[0]], ref) broadcasts src across ne[1], so it
+        # varies along ne[0] == torch dim1. out[0] varies along torch dim0
+        # instead, so it's `a` reshaped to a [1, ne[1]] column (repeat then
+        # tiles it across ne[0]); out[1] varies along torch dim1, so it's `b`
+        # via the plain repeat. Verified against a PyTorch reference: swapping
+        # these (plain-repeat on out[0] instead) put every decoded box's Y
+        # coordinate in place of X and vice versa.
+        ne, args = _ne_args(sh)
+        ref = f"ggml_new_tensor_2d(m, GGML_TYPE_F32, {args})"
+        b = ctx.inp(node, 1)
+        a_col = ctx.new_var(hint="mgc")
+        ctx.line(f"    tensor {a_col} = ggml_reshape_2d(m, {a}, 1, {ne[1]});")
+        var_a = ctx.new_var(hint="mg")
+        ctx.line(f"    tensor {var_a} = ggml_repeat(m, {a_col}, {ref});")
+        if outs[0] is not None:
+            ctx._var[id(outs[0])] = var_a
+        var_b = ctx.new_var(hint="mg")
+        ctx.line(f"    tensor {var_b} = ggml_repeat(m, {b}, {ref});")
+        if outs[1] is not None:
+            ctx._var[id(outs[1])] = var_b
+        return var_a
     if sh and len(sh) <= 4:
         _, args = _ne_args(sh)
         ref = f"ggml_new_tensor_{len(sh)}d(m, GGML_TYPE_F32, {args})"

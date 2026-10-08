@@ -433,7 +433,32 @@ def _conv_transpose(op, builder):
 
 
 render_convT1d = _conv_transpose(OP.CONVTRANSPOSE1D, "ggml_conv_transpose_1d")
-render_convT2d = _conv_transpose(OP.CONVTRANSPOSE2D, "ggml_conv_transpose_2d_p0")
+
+
+@register_render(OP.CONVTRANSPOSE2D)
+def render_convT2d(node, ctx):
+    """Render the p0 ConvTranspose2d form supported by vision.cpp/GTX.
+
+    The vision.cpp wrapper resolves weight and optional bias from the model
+    reference and calls ggml_conv_transpose_2d_p0 with the correct tensor ABI.
+    """
+    padding = list(ctx.attr(node, "padding", [0, 0]))
+    output_padding = list(ctx.attr(node, "output_padding", [0, 0]))
+    dilation = list(ctx.attr(node, "dilation", [1, 1]))
+    groups = int(ctx.attr(node, "groups", 1))
+    stride = list(ctx.attr(node, "stride", [1, 1]))
+    if any(padding) or any(output_padding) or any(v != 1 for v in dilation) or groups != 1:
+        raise ValueError(
+            "ConvTranspose2d only supports padding=0, output_padding=0, "
+            f"dilation=1, groups=1 (got padding={padding}, "
+            f"output_padding={output_padding}, dilation={dilation}, groups={groups})"
+        )
+    if len(stride) != 2 or stride[0] != stride[1]:
+        raise ValueError("ConvTranspose2d only supports a symmetric 2D stride")
+
+    has_bias = bool(ctx.attr(node, "bias", False))
+    key = ctx.weight(node, ["weight"] + (["bias"] if has_bias else []))
+    return ctx.out(node, f"conv_transpose_2d({key}, {ctx.inp(node)}, {stride[0]})", hint="convT")
 
 # ── mmcv (Modulated)DeformConv2d ─────────────────────────────────────────────
 # main 의 `OP.DEFORM_CONV2D` 는 **torchvision::deform_conv2d** 스키마 전용이다.

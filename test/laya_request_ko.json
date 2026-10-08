@@ -1,0 +1,36 @@
+{
+  "state": {
+    "from": "user@acme.co.kr",
+    "subject": "3월 청구서 중복 결제 건",
+    "body": "안녕하세요, 3월 요금이 두 번 결제됐습니다. 오늘 중으로 중복 결제분 환불 안 해주시면 서비스 해지하겠습니다."
+  },
+  "questions": {
+    "department": {
+      "type": "choice",
+      "instructions": "이 요청을 처리해야 할 부서는?",
+      "criteria": {
+        "billing": "청구서, 결제, 환불",
+        "technical": "버그, 장애, 시스템 오류",
+        "sales": "가격, 신규 계약",
+        "other": "그 외 요청"
+      }
+    },
+    "urgency": {
+      "type": "score",
+      "instructions": "이 요청은 얼마나 긴급한가?",
+      "criteria": [
+        "긴급하지 않음",
+        "곧 처리 필요",
+        "마감 임박 또는 업무 차단"
+      ]
+    },
+    "churn_risk": {
+      "type": "noul",
+      "instructions": "사용자가 해지나 이탈을 위협하는가?"
+    },
+    "refund_requested": {
+      "type": "noul",
+      "instructions": "사용자가 환불을 명시적으로 요구하는가?"
+    }
+  }
+}
